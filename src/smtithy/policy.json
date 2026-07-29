@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "Declarative safety policy for AI review artifacts. verify.py interprets this; the file's sha256 is stamped into the transcript and posted comment.",
+  "artifact_schema": {
+    "summary": { "type": "string", "min_length": 1, "max_length": 4000, "markdown": true },
+    "findings": {
+      "type": "array",
+      "max_items": 10,
+      "item_fields": {
+        "path": {
+          "type": "string",
+          "min_length": 1,
+          "max_length": 500,
+          "pattern": "\\.?[A-Za-z0-9][A-Za-z0-9._/-]*"
+        },
+        "line": { "type": "integer", "minimum": 1 },
+        "severity": { "type": "enum", "values": ["critical", "high", "medium", "low"] },
+        "title": { "type": "string", "min_length": 1, "max_length": 120, "markdown": true, "pattern": "[^\\r\\n]+" },
+        "body": { "type": "string", "min_length": 1, "max_length": 2000, "markdown": true }
+      }
+    },
+    "residual_risk": { "type": "string", "min_length": 0, "max_length": 2000, "markdown": true }
+  },
+  "provenance": {
+    "path_must_be_changed_file": true,
+    "line_must_be_in_diff_hunk": true
+  },
+  "markdown": {
+    "allowed_nodes": [
+      "text",
+      "paragraph",
+      "inline",
+      "em",
+      "strong",
+      "code_inline",
+      "code_block",
+      "fence",
+      "bullet_list",
+      "ordered_list",
+      "list_item",
+      "softbreak",
+      "hardbreak",
+      "s"
+    ],
+    "link_host_allowlist": [
+      "github.com/aws-powertools/",
+      "docs.powertools.aws.dev"
+    ]
+  },
+  "secret_scan_patterns": [
+    "AKIA[0-9A-Z]{16}",
+    "ASIA[0-9A-Z]{16}",
+    "gh[pousr]_[A-Za-z0-9]{20,}",
+    "github_pat_[A-Za-z0-9_]{20,}",
+    "eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}",
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    "xox[baprs]-[A-Za-z0-9-]{10,}",
+    "(?i:aws_secret_access_key)\\s*[=:]\\s*[A-Za-z0-9/+=]{30,}"
+  ]
+}

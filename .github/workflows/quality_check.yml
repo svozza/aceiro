@@ -1,0 +1,52 @@
+name: Quality check
+
+# PROCESS
+#
+# The deterministic test suite for the artifact verifier: goldens, the
+# adversarial corpus, and hypothesis property tests. No external calls, no
+# secrets, no credential of any kind — so it runs on every pull request from
+# any branch and any fork, and blocks on any failure.
+#
+# This is deliberately the ONLY job in the repo right now. The eval suite
+# (real model calls against fixed scenarios) is step 2 of the extraction and
+# arrives with its own workflow: it executes the PR's own harness code against
+# a live credential, so it needs the human gate that ADR-0006 describes, and
+# mixing it in here would put a secret behind a job that currently needs none.
+#
+# Python only, and pytest only, for as long as the verifier is Python
+# (ADR-0003). A TypeScript runner joins it when the plan prover lands, and both
+# run for the whole duration of the verifier's eventual port, since the Python
+# is the differential oracle.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-check-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test_verifier:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout code only
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies (hash-pinned)
+        run: |
+          pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+      - name: Run verifier tests
+        run: python -m pytest tests/ -p no:cacheprovider -q
