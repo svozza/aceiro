@@ -9,3 +9,9 @@ __pycache__/
 venv/
 .pytest_cache/
 .hypothesis/
+
+# Account-side infrastructure, kept out of the repo on purpose. These templates
+# name a specific AWS account's providers, roles and environments, and the same
+# untracked-in-the-root arrangement is what the staging repo uses for
+# ai-review-bedrock-role.yaml. Deploy from a local copy.
+infra/
