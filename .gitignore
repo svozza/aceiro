@@ -1,0 +1,11 @@
+# Node. package-lock.json is deliberately NOT ignored: the harness pins
+# dependency bytes, so the lockfile is part of the reviewable surface.
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.hypothesis/
