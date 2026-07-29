@@ -1,2 +1,5 @@
-boto3
-markdown-it-py
+# The verifier's one runtime dependency, and the security boundary itself: the
+# markdown allowlist is only as good as what this renders. Version changes here
+# are behaviour changes to the verifier, so treat a bump as needing the
+# adversarial corpus re-run, not as routine maintenance.
+markdown-it-py==4.2.0
