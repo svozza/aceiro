@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Declarative safety policy for AI review artifacts. verify.py interprets this; the file's sha256 is stamped into the transcript and posted comment.",
+  "description": "Declarative safety policy for AI review artifacts. verify.py interprets this; the file's sha256 is stamped into the transcript and posted comment. This is the DEFAULT policy, and it is deliberately fail-closed: link_host_allowlist ships empty, so every link in a finding rejects until a consumer names the hosts it trusts. Entries are host+path prefixes: a trailing slash means prefix match (an org path under a forge, say), and a path-less entry matches that host and everything under it. Never list a host you do not control.",
   "artifact_schema": {
     "summary": { "type": "string", "min_length": 1, "max_length": 4000, "markdown": true },
     "findings": {
@@ -42,10 +42,7 @@
       "hardbreak",
       "s"
     ],
-    "link_host_allowlist": [
-      "github.com/aws-powertools/",
-      "docs.powertools.aws.dev"
-    ]
+    "link_host_allowlist": []
   },
   "secret_scan_patterns": [
     "AKIA[0-9A-Z]{16}",

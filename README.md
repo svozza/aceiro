@@ -52,10 +52,33 @@ Two test runners are expected here eventually — pytest for the Python verifier
 and a TypeScript runner for the plan prover — until the verifier is ported last,
 behind a differential oracle. ADR-0003 records the method.
 
-## Known coupling, not yet removed
+## Configuring the policy
 
-Inherited from the repository this was extracted from, and tracked in ADR-0002:
+`policy.json` ships fail-closed: `link_host_allowlist` is **empty**, so every
+link in a finding rejects until you name the hosts you trust. Link-free reviews
+work untouched — the common case is unaffected — but a consumer that wants
+findings to link to its own docs has to say so:
 
-- `policy.json`'s `link_host_allowlist` names Powertools hosts.
-- `requirements.txt` still pins `boto3`, which no remaining module imports —
-  the Bedrock loop it served was replaced by the Claude Code CLI upstream.
+```json
+"link_host_allowlist": ["docs.example.com", "github.com/your-org/"]
+```
+
+A trailing slash means prefix match; a path-less entry matches that host and
+everything beneath it. Never list a host you do not control: an allowlisted host
+is somewhere a compromised generator is permitted to point a maintainer.
+
+## Remaining coupling from the extraction
+
+Tracked in ADR-0002. Both of the original dependency/policy items are resolved —
+the Powertools hosts are out of the shipped policy (`tests/test_policy_defaults.py`
+holds that line), and `boto3` is gone. What is left arrives with the code that
+carries it:
+
+- `post.py`'s hardcoded `BOT_LOGIN`, which becomes runtime-resolved from the
+  credential in hand rather than a config input. It is a security property: the
+  comment marker is copyable, so ownership needs the author too.
+- The generator prompt's project description.
+
+The test fixtures still use Powertools hostnames and paths, deliberately. The
+adversarial corpus's near-misses are near-misses *of those exact strings*, so
+`tests/conftest.py` re-injects the two hosts the corpus was calibrated against.

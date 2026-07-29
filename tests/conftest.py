@@ -50,6 +50,23 @@ DELETED_FILE_DIFF = (
 
 POLICY = json.loads((HARNESS_DIR / "policy.json").read_text())
 
+# The shipped policy's link_host_allowlist is empty (fail-closed: a consumer
+# names the hosts it trusts). The tests need a POPULATED one, because an empty
+# allowlist can only ever reject — every link case would pass for the same
+# uninteresting reason, and the goldens asserting that a legitimate link is
+# ACCEPTED would have nothing left to assert.
+#
+# These two hosts are the ones the corpus was calibrated against, so they stay
+# exactly as they were: test_verify_adversarial.py's near-misses are near-misses
+# OF these strings (docs.powertools.aws.dev.evil.com, aws-powertools-evil/repo,
+# userinfo tricks ending @evil.com), and they only probe the prefix-matching
+# boundary while the thing they bracket is still on the list. Changing these
+# values silently weakens those cases into ordinary rejections.
+POLICY["markdown"]["link_host_allowlist"] = [
+    "github.com/aws-powertools/",
+    "docs.powertools.aws.dev",
+]
+
 
 @pytest.fixture(scope="session")
 def policy():
