@@ -38,8 +38,15 @@ the artifact verifier and its tests, moved behaviour-preserving:
 | `src/smtithy/policy.json` | the declarative policy — the reviewable security object, hashed into the transcript. |
 | `tests/` | goldens, hypothesis properties, and a 486-line adversarial corpus that is the executable spec of the threat model. |
 
-Still to arrive: the eval suite, context acquisition, the generator loop,
-rendering, GitHub I/O, and the plan prover.
+And the plan prover, in TypeScript:
+
+| | |
+| --- | --- |
+| `ts/plan/policy.ts` | the plan half of `policy.json`, typed. Loaded, never constructed: there are no defaults, because a default would be a rule nobody reviewed. |
+| `ts/plan/schema.ts` | the shape gate, carrying ADR-0004's three reserved closures. Runs before the solver — an encoding built from an unchecked shape is reasoning about a structure it assumed. |
+| `ts/plan/prove.ts` | ordering and frame conditions, asserted **negated** so `unsat` means the policy holds on every path. Returns a counterexample on `sat`. |
+
+Still to arrive: the eval workflow, context acquisition, rendering, and GitHub I/O.
 
 `tests/test_verify_adversarial.py` is not an ordinary test file. Its own
 docstring calls it the living spec of the threat model, where **a case that
@@ -56,9 +63,37 @@ pip install --require-hashes -r requirements.txt -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-Two test runners are expected here eventually — pytest for the Python verifier
-and a TypeScript runner for the plan prover — until the verifier is ported last,
-behind a differential oracle. ADR-0003 records the method.
+And the prover, on Node 24:
+
+```bash
+npm ci
+npm run typecheck
+npm test
+```
+
+Two runners, deliberately (ADR-0003): pytest for the artifact verifier, whose
+risk is `markdown-it` rendering behaviour and a hand-tabulated Unicode table, and
+`node --test` for the plan prover, whose risk is reachability reasoning. Both run
+until the verifier is ported last, behind a differential oracle — the Python is
+the oracle, so the second runner is not saved until the port finishes.
+
+### Reading the prover's tests
+
+The policies are asserted **negated**, so `unsat` means "holds". That makes one
+failure mode invisible to ordinary tests: an encoding that is accidentally
+*contradictory* returns `unsat` for every plan — a prover that approves
+everything, and looks green doing it. So the load-bearing cases are the ones
+named `CATCHES`, which must come back `sat` with a counterexample naming the
+offending step. Verified by mutation: making the ordering encoding contradictory
+fails all three `CATCHES` cases while the rest stay green.
+
+`proveTaint` is expected to hold for every plan the schema admits, because
+`argument_forms` is `["literal"]` and there is nothing to taint from. A check
+that is green forever carries no signal, so it takes a synthetic `bindings`
+argument the schema can never produce, and the corpus uses it to assert `sat`
+with the expected leaking path — including one laundered through an intermediate
+step, since transitivity is the part most easily got wrong. ADR-0004 requires
+this: the prover is tested beyond what the policy admits.
 
 ## Configuring the policy
 

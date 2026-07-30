@@ -13,10 +13,16 @@ name: Quality check
 # a live credential, so it needs the human gate that ADR-0006 describes, and
 # mixing it in here would put a secret behind a job that currently needs none.
 #
-# Python only, and pytest only, for as long as the verifier is Python
-# (ADR-0003). A TypeScript runner joins it when the plan prover lands, and both
-# run for the whole duration of the verifier's eventual port, since the Python
-# is the differential oracle.
+# TWO RUNNERS, deliberately (ADR-0003). pytest covers the artifact verifier,
+# which stays Python because its risk is markdown-it rendering behaviour and a
+# hand-tabulated Unicode table. node --test covers the plan prover, which is
+# TypeScript because its risk is reachability reasoning. Both run for the whole
+# duration of the verifier's eventual port, since the Python is the differential
+# oracle for it -- the second runner is not saved until the port finishes.
+#
+# Separate jobs rather than one: a prover failure and a verifier failure are
+# different problems, and reading which one broke off the job name is worth more
+# than the few seconds a shared checkout would save.
 
 on:
   pull_request:
@@ -50,3 +56,28 @@ jobs:
           pip install --require-hashes -r requirements.txt -r requirements-dev.txt
       - name: Run verifier tests
         run: python -m pytest tests/ -p no:cacheprovider -q
+
+  test_prover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # checkout code only
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Node
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install dependencies (lockfile-pinned)
+        # `ci`, not `install`: it installs exactly the lockfile and fails if
+        # package.json disagrees with it, which is the npm equivalent of the
+        # --require-hashes above.
+        run: npm ci
+      - name: Typecheck
+        # Separate from the test run so a type error reads as a type error. The
+        # strict set is load-bearing for the prover: a plan arrives as parsed
+        # JSON, so every field access is an "is it there?" question.
+        run: npm run typecheck
+      - name: Run prover tests
+        run: npm test

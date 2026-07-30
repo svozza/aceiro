@@ -44,6 +44,52 @@
     ],
     "link_host_allowlist": []
   },
+  "plan": {
+    "max_steps": 20,
+    "control_flow": [],
+    "argument_forms": ["literal"],
+    "step_kinds": {
+      "patch": {
+        "write_class": false,
+        "args": {
+          "path": { "type": "string", "min_length": 1, "max_length": 500, "pattern": "\\.?[A-Za-z0-9][A-Za-z0-9._/-]*" },
+          "old": { "type": "string", "min_length": 1, "max_length": 20000 },
+          "new": { "type": "string", "min_length": 0, "max_length": 20000 }
+        }
+      },
+      "push_branch": {
+        "write_class": true,
+        "args": {
+          "name": { "type": "string", "min_length": 1, "max_length": 240, "pattern": "[A-Za-z0-9][A-Za-z0-9._/-]*" }
+        }
+      },
+      "open_pr": {
+        "write_class": true,
+        "args": {
+          "branch": { "type": "string", "min_length": 1, "max_length": 240, "pattern": "[A-Za-z0-9][A-Za-z0-9._/-]*" },
+          "title": { "type": "string", "min_length": 1, "max_length": 120, "pattern": "[^\\r\\n]+" },
+          "body": { "type": "string", "min_length": 1, "max_length": 4000, "markdown": true }
+        }
+      },
+      "label": {
+        "write_class": true,
+        "args": {
+          "name": { "type": "string", "min_length": 1, "max_length": 50, "pattern": "[A-Za-z0-9][A-Za-z0-9 ._/-]*" }
+        }
+      }
+    },
+    "ordering": [
+      { "before": "patch", "after": "push_branch" },
+      { "before": "push_branch", "after": "open_pr" }
+    ],
+    "max_patched_files": 3,
+    "max_changed_lines": 120,
+    "path_denylist": [
+      ".github/**",
+      "**/*.pem",
+      "**/*.key"
+    ]
+  },
   "secret_scan_patterns": [
     "AKIA[0-9A-Z]{16}",
     "ASIA[0-9A-Z]{16}",
