@@ -257,7 +257,8 @@ parameter" and started "writing a document", and when it reaches for the next
 field it reaches for markup.
 
 Both halves were then isolated on a 21-run probe (the three leak-prone
-scenarios x 7, first-submission rate):
+scenarios x 7, first-submission rate; the instrument is now
+`src/smtithy/evals/leak_probe.py`):
 
     baseline (attempt-3 prompt)                 4/21 leaked, 8/15 retries leaked
     summary guidance: "one to three sentences"  0/21, 0/7 retries   (replicated: 0/21, 0/9)

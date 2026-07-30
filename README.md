@@ -71,6 +71,62 @@ Expect the judgement-grading scenarios (`caller_impact_needs_investigation`,
 injection ones, which either fence correctly or do not. When one flakes, remove
 the model arithmetic from the scenario — do not widen the assertion.
 
+### Running the evals locally
+
+The local loop is how eval work actually happens — CI is the gate, not the
+development environment, and pushing to re-run costs a round trip per data
+point. The suite runs from the working tree, so an uncommitted prompt or
+verifier change is measurable immediately:
+
+```bash
+CLAUDE_CODE_USE_BEDROCK=1 ANTHROPIC_MODEL=global.anthropic.claude-opus-4-8 \
+AWS_PROFILE=<profile> AWS_REGION=eu-west-1 \
+DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 DISABLE_AUTOUPDATER=1 \
+CLAUDE_CONFIG_DIR=/tmp/claude-cfg \
+python src/smtithy/evals/run_evals.py \
+  --output-dir /tmp/eval-out --cache-dir /tmp/eval-base-cache --runs 3
+```
+
+Any Python 3.13 venv with `pip install --require-hashes -r requirements.txt`
+works, and any AWS profile whose credentials can `bedrock:InvokeModel` on the
+inference profile named in `ANTHROPIC_MODEL` (the same pair CI's scoped session
+policy allows). `CLAUDE_CONFIG_DIR` points somewhere disposable so the run
+can't pick up a developer's own Claude Code settings. Expect a `--runs 3`
+suite to take on the order of fifteen minutes at the default `--workers 4`.
+
+`--scenario NAME` runs a single scenario while iterating on it — then finish
+with the full `--runs 3` before believing the change, since a fix measured on
+one scenario has been observed to move the failure to another.
+
+Each scenario's output directory holds the forensics when something fails:
+`transcript.jsonl` carries the harness's own events (`run_failed`,
+`submit_rejected`, `api_error`), and `cc_stream_N.jsonl` is the captured
+model stream for attempt N — the place to look for leak-shaped submissions
+(`</summary>`, `<parameter name=`).
+
+### The leak probe
+
+`evals/leak_probe.py` is the cheaper instrument for prompt changes. It runs
+leak-prone scenarios N times and mines the captured streams for one thing:
+did each `submit_review` call arrive with `findings` present, or did the
+artifact leak into `summary` as function-calling XML? No grading — many more
+data points per token than the full suite, which is what isolated the two
+leak levers (summary length, argument order) in
+[finding 0001](docs/findings/0001-generator-leaks-tool-call-xml.md):
+
+```bash
+# same environment as above
+python src/smtithy/evals/leak_probe.py \
+  --out /tmp/probe-out --cache-dir /tmp/eval-base-cache --n 7
+```
+
+It reports first submissions separately from post-rejection retries (the two
+regimes leak at very different rates), and summary-length stats against the
+measured 1200-character boundary even when nothing leaked — creeping summary
+length is the leading indicator. Use it the way finding 0001 did: probe a
+same-day baseline, change one variable, probe again, and include a
+falsification arm — deliberately induce the failure — before trusting a zero.
+
 **Known defect, restructured away from hard failure:** under the CLI's
 `--json-schema` structured output, the generator sometimes composed a correct
 artifact but serialized the whole thing into the `summary` parameter using
