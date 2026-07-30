@@ -136,6 +136,38 @@ Two incidental observations from the same data:
   That scenario passed. Benign, but it shows the sparse fixture is visible to the
   model as a partial tree.
 
+## Attempt 2 (works): a literal valid JSON example in the prompt
+
+The user's suggestion, and it is the one that worked. Two complete artifacts are
+now embedded in the prompt — one with a finding, one with `findings: []`.
+
+    baseline (original prompt)   8/33 failures (24%),  9 leaks
+    attempt 1 (no narration)     9/33 failures (27%), 10 leaks
+    attempt 2 (JSON example)     2/33 failures ( 6%),  4 leaks
+
+Checked against the possibility of a lucky sample, since that error had already
+been made twice here: if the true failure rate were still 24%, the probability of
+observing 2 or fewer failures in 33 runs is **0.7%**. The leak reduction is weaker
+but consistent (p ≈ 0.03). Two of the four remaining leaks RECOVERED on a later
+attempt instead of exhausting the budget, which did not happen at all before.
+
+Why it plausibly works, and why my argument against it was wrong: I reasoned that
+showing a JSON document would reinforce "write this as text" when `StructuredOutput`
+is a tool call. The data says the opposite. The model was already trying to emit a
+serialised object — that is what `</summary><parameter name="findings">` IS — so it
+was never choosing between prose and JSON. It was choosing a SYNTAX for nested
+structure, and having no correct example in front of it, it reached for a
+function-calling dialect. Showing the right shape displaces the wrong one.
+
+Worth keeping as a lesson about the argument, not just the fix: "this example might
+teach the wrong thing" was plausible, cost two experiments to test, and was
+backwards. On this defect, three theories were advanced and the only one that held
+was the one arrived at by looking at the raw output rather than reasoning about the
+model.
+
+Not eliminated: 6% is not 0%. `tests/test_prompt.py` grades every embedded example
+with `check_schema`, so the examples cannot rot into teaching an invalid shape.
+
 ## What is still untested
 
 **The provider.** Tool-use ids are `toolu_bdrk_*` and the CLI reports
