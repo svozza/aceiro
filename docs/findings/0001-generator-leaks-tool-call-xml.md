@@ -107,3 +107,51 @@ about why it said it.
 Fail-closed and visible: the job goes red, `run_evals.py` names the scenario and
 the reason, and no unverified artifact is posted. It costs eval reliability and
 wasted model calls, not safety.
+
+## Attempt 1 (refuted): removing the anti-pattern narration
+
+Hypothesis: step 5's "never serialize the whole review as markup or JSON inside a
+single field" was priming the behaviour it forbade. Steps 4 and 5 were rewritten to
+say only what to do, naming `StructuredOutput` and its three parameters.
+
+Measured with `--runs 3` on the same 11 scenarios:
+
+    before   8/33 failures (24%),  9 XML leaks
+    after    9/33 failures (27%), 10 XML leaks
+
+Refuted. Statistically indistinguishable, and if anything slightly worse. The
+prompt's prose is not what drives the leak, so the priming theory was wrong and
+the change was reverted — the original text is more informative to a human reader
+and costs nothing behaviourally.
+
+Two incidental observations from the same data:
+
+- The model sometimes invents extra keys on a finding (`body_ok`, `note`,
+  `severity_note`), caught by `additionalProperties: false` as
+  `/findings/0: must NOT have additional properties` on 4 attempts. It
+  self-corrects, so this is not fatal, but it is the same class of behaviour:
+  the model annotating its output in-band.
+- One `caller_impact_needs_investigation` run probed for a `tests/` directory the
+  BASE fixture does not fetch, got a clean "Path does not exist", and continued.
+  That scenario passed. Benign, but it shows the sparse fixture is visible to the
+  model as a partial tree.
+
+## What is still untested
+
+**The provider.** Tool-use ids are `toolu_bdrk_*` and the CLI reports
+`fast_mode_disabled_reason: not_first_party`, so every measurement here is the
+Bedrock path. Whether the same rate occurs against the first-party API is unknown,
+and it is the largest untested variable — worth settling before any further prompt
+contortion, because a provider-specific tool-call serialisation difference would
+explain a 24% leak that prose cannot shift.
+
+**A literal JSON example in the prompt.** Arguable both ways, and untried. For: the
+failure is the model reaching for a syntax to express nested structure and picking
+the wrong one, so a concrete correct example gives it something to match. Against:
+`StructuredOutput` is a tool call, not a document the model writes, and showing a
+JSON blob may reinforce the very framing that produces `</summary>` mid-string.
+
+**The retry feedback.** The model resubmits the same malformed shape up to five
+times while being told exactly which property is missing. Whatever the root cause,
+a retry that restated the requirement as "call the tool with three parameters"
+rather than echoing a schema error might recover a run that is currently lost.
