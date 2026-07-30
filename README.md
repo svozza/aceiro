@@ -71,6 +71,14 @@ Expect the judgement-grading scenarios (`caller_impact_needs_investigation`,
 injection ones, which either fence correctly or do not. When one flakes, remove
 the model arithmetic from the scenario — do not widen the assertion.
 
+**Known open defect:** roughly a quarter of scenario-runs die with "agent could
+not produce schema-valid output within the CLI's retry budget", because the
+generator omits the required `findings` field when it has nothing to report.
+Measured at 8/33 over `--runs 3`. It is fail-closed — the job goes red and no
+unverified artifact is posted — so it costs eval reliability, not safety. See
+[docs/findings/0001](docs/findings/0001-structured-output-omits-findings.md),
+which also records how a single green run was briefly mistaken for a fix.
+
 `tests/test_verify_adversarial.py` is not an ordinary test file. Its own
 docstring calls it the living spec of the threat model, where **a case that
 starts passing is a regression in the verifier's safe grammar**. Treat a
