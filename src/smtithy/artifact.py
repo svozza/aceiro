@@ -254,6 +254,36 @@ class Transcript:
 def sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+
+# The one project-specific sentence fragment in the shipped prompt (ADR-0002's
+# last coupling). It is replaced at runtime, not edited in the file: prompt
+# edits are measured changes (docs/findings/0001), and substitution in code
+# leaves the assembled prompt BYTE-IDENTICAL whenever no consumer description
+# is supplied — so the shipped default needs no eval re-run, and a consumer's
+# description changes exactly one clause. test_prompt.py pins this constant to
+# the prompt file verbatim; if the prompt is reworded without updating this,
+# the suite fails rather than the substitution silently matching nothing.
+DEFAULT_PROJECT_DESCRIPTION = (
+    "`aws-powertools/powertools-lambda-python`, an\n"
+    "AWS Lambda developer toolkit used in production by many teams"
+)
+
+
+def apply_project_description(prompt_text: str, description: str | None) -> str:
+    """Swap the prompt's project description for the consumer's, if given.
+
+    `description` is the consumer's own account of their repository (they are
+    describing their project to their own reviewer, so it is their text to
+    write); None or empty returns the prompt unchanged. A description that is
+    supplied must land: matching nothing would silently review the consumer's
+    repository as if it were the default project, so that raises instead.
+    """
+    if not description:
+        return prompt_text
+    if DEFAULT_PROJECT_DESCRIPTION not in prompt_text:
+        raise ValueError("prompt no longer contains the default project description; cannot substitute")
+    return prompt_text.replace(DEFAULT_PROJECT_DESCRIPTION, description.strip())
+
 def render_constraints(policy: dict) -> str:
     """Render the enforced artifact constraints from policy.json as a system
     prompt section, so the prose the model reads can never drift from what

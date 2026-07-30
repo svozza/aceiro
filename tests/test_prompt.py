@@ -21,7 +21,12 @@ from pathlib import Path
 
 import pytest
 
-from artifact import PROMPT_PATH, render_constraints
+from artifact import (
+    DEFAULT_PROJECT_DESCRIPTION,
+    PROMPT_PATH,
+    apply_project_description,
+    render_constraints,
+)
 from conftest import POLICY
 from verify import Rejection, check_schema
 
@@ -86,6 +91,38 @@ class TestAssembledPromptHasNoHoles:
         assert "docs.example.com" in assembled
         for line in assembled.splitlines():
             assert not line.rstrip().endswith(": .")
+
+
+class TestProjectDescription:
+    """The one consumer-substituted region of the prompt (ADR-0002's last
+    coupling). The substitution is anchored to a verbatim constant, so the
+    load-bearing assertions are: the anchor still matches the file, absence
+    of a description changes nothing, and a supplied description that cannot
+    land raises rather than silently reviewing under the wrong identity."""
+
+    def test_the_prompt_contains_the_anchor_verbatim(self):
+        # Reword the prompt's opening without updating the constant and the
+        # substitution would match nothing; this failure names the pair.
+        assert DEFAULT_PROJECT_DESCRIPTION in PROMPT
+
+    def test_no_description_is_byte_identical(self):
+        # The shipped default carries the eval history; an unset consumer
+        # description must not perturb a single byte of it.
+        assert apply_project_description(PROMPT, None) == PROMPT
+        assert apply_project_description(PROMPT, "") == PROMPT
+
+    def test_description_replaces_exactly_the_anchor(self):
+        swapped = apply_project_description(PROMPT, "`svozza/artel`, a Rust peer-to-peer file syncer")
+        assert "`svozza/artel`, a Rust peer-to-peer file syncer" in swapped
+        assert DEFAULT_PROJECT_DESCRIPTION not in swapped
+        # Everything outside the anchor is untouched.
+        assert swapped.replace(
+            "`svozza/artel`, a Rust peer-to-peer file syncer", DEFAULT_PROJECT_DESCRIPTION
+        ) == PROMPT
+
+    def test_unmatched_anchor_raises_not_silently_skips(self):
+        with pytest.raises(ValueError, match="default project description"):
+            apply_project_description("a prompt that was reworded", "some description")
 
 
 class TestEmbeddedExamples:

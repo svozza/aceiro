@@ -224,9 +224,15 @@ resolved too: the executor now asks the write token who it is (GraphQL
 `/user` is 403 for the installation tokens Actions issues) and fails closed if
 it can't. It is a security property, not configuration: the comment marker is
 copyable, so ownership needs the author, and the author must come from the
-credential in hand. What is left arrives with the code that carries it:
+credential in hand.
 
-- The generator prompt's project description.
+The prompt's project description is a runtime substitution now, too: set
+`SMTITHY_PROJECT_DESCRIPTION` and the one project-naming clause in the prompt
+is swapped for the consumer's own text (`artifact.apply_project_description`).
+Unset, the assembled prompt is byte-identical to the measured default — prompt
+edits are measured changes, and this seam is built so the default never needs
+re-measuring. A supplied description that cannot land raises rather than
+silently reviewing under the wrong project identity.
 
 The test fixtures still use Powertools hostnames and paths, deliberately. The
 adversarial corpus's near-misses are near-misses *of those exact strings*, so

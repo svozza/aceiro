@@ -50,6 +50,7 @@ from artifact import (
     POLICY_PATH,
     PROMPT_PATH,
     Transcript,
+    apply_project_description,
     build_artifact_schema,
     build_user_message,
     redact_text,
@@ -321,8 +322,11 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
     transcript = Transcript(output_dir / "transcript.jsonl", policy)
 
     schema = build_artifact_schema(policy)
+    # SMTITHY_PROJECT_DESCRIPTION is the consumer's own account of their
+    # repository; absent, the assembled prompt is byte-identical to before
+    # this seam existed, so the shipped default carries its eval history.
     system_prompt = (
-        PROMPT_PATH.read_text()
+        apply_project_description(PROMPT_PATH.read_text(), os.environ.get("SMTITHY_PROJECT_DESCRIPTION"))
         + render_constraints(policy)
         + tool_guidance(base_root.resolve(), pr_root.resolve())
     )
