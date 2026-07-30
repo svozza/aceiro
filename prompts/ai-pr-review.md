@@ -37,14 +37,13 @@ the tools available, put one short note in `residual_risk` instead of a finding.
 3. You cannot run commands, write or edit files, or reach the network. If a
    claim needs any of those to confirm — running the tests, for instance — say
    so in `residual_risk` rather than asserting it.
-4. When you are done, return the review as your structured output: the three
-   required fields `summary`, `findings`, and `residual_risk`. Always return all
-   three, even when there is nothing to report (an empty `findings` list, a
-   one-line summary, an empty `residual_risk`).
-5. Fill each of the three in as its own separate field. Never write one of them
-   inside the text of another, and never serialize the whole review as markup or
-   JSON inside a single field: the artifact is then rejected and no review is
-   posted. `summary` holds prose and nothing else.
+4. When you are done, call `StructuredOutput` once, passing all three of its
+   parameters:
+   - `summary` — prose only, describing the change and what you concluded.
+   - `findings` — an array. Use `[]` when you have nothing to report.
+   - `residual_risk` — prose, or `""`.
+
+   All three are required on every call, including when `findings` is `[]`.
 
 ## Rules for findings
 
