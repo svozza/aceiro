@@ -57,6 +57,16 @@
           "new": { "type": "string", "min_length": 0, "max_length": 20000 }
         }
       },
+      "suggest": {
+        "write_class": false,
+        "args": {
+          "path": { "type": "string", "min_length": 1, "max_length": 500, "pattern": "\\.?[A-Za-z0-9][A-Za-z0-9._/-]*" },
+          "line": { "type": "integer", "minimum": 1 },
+          "old": { "type": "string", "min_length": 1, "max_length": 20000 },
+          "new": { "type": "string", "min_length": 0, "max_length": 20000 },
+          "note": { "type": "string", "min_length": 1, "max_length": 1000, "markdown": true }
+        }
+      },
       "push_branch": {
         "write_class": true,
         "args": {

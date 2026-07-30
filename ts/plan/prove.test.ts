@@ -51,6 +51,16 @@ const POLICY: PlanPolicy = checkPlanPolicy({
       },
     },
     label: { write_class: true, args: { name: { type: 'string', min_length: 1, max_length: 50 } } },
+    suggest: {
+      write_class: false,
+      args: {
+        path: { type: 'string', min_length: 1, max_length: 500 },
+        line: { type: 'integer', minimum: 1 },
+        old: { type: 'string', min_length: 1, max_length: 20000 },
+        new: { type: 'string', min_length: 0, max_length: 20000 },
+        note: { type: 'string', min_length: 1, max_length: 1000 },
+      },
+    },
     // Not in the shipped policy: there is no read_pr_file kind, because the
     // generator reads at generation time (ADR-0004). Declared HERE so the taint
     // cases can build the plan the shipped policy cannot express.
@@ -65,7 +75,7 @@ const POLICY: PlanPolicy = checkPlanPolicy({
   path_denylist: ['.github/**', '**/*.pem', '**/*.key'],
 });
 
-function plan(...steps: readonly { kind: string; args: Record<string, string> }[]): Plan {
+function plan(...steps: readonly { kind: string; args: Record<string, string | number> }[]): Plan {
   return checkPlanSchema(
     { steps: steps.map((step, index) => ({ id: `s${index}`, kind: step.kind, args: step.args })) },
     POLICY,
@@ -73,6 +83,7 @@ function plan(...steps: readonly { kind: string; args: Record<string, string> }[
 }
 
 const patch = (path: string) => ({ kind: 'patch', args: { path, old: 'a', new: 'b' } });
+const suggest = (path: string) => ({ kind: 'suggest', args: { path, line: 1, old: 'a', new: 'b', note: 'n' } });
 const pushBranch = (name = 'fix/x') => ({ kind: 'push_branch', args: { name } });
 const openPr = () => ({ kind: 'open_pr', args: { branch: 'fix/x', title: 't', body: 'b' } });
 const readPrFile = (path = 'src/a.py') => ({ kind: 'read_pr_file', args: { path } });
@@ -158,6 +169,35 @@ describe('proveFrame', () => {
   it('does not accept a path that merely shares a prefix with a changed file', async () => {
     const result = await proveFrame(plan(patch('src/a.py.bak')), POLICY, ['src/a.py']);
     assert.equal(result.holds, false);
+  });
+
+  it('holds when a suggestion targets a changed file', async () => {
+    const result = await proveFrame(plan(suggest('src/a.py')), POLICY, ['src/a.py']);
+    assert.equal(result.holds, true);
+  });
+
+  it('CATCHES a suggestion outside the changed set (ADR-0009: suggest binds to the frame)', async () => {
+    // An applied suggestion modifies the file exactly as a patch would. A frame
+    // check that only counted `patch` steps would pass this plan — the vacuous
+    // acceptance ADR-0009's consequences call out.
+    const result = await proveFrame(plan(suggest('src/evil.py')), POLICY, ['src/a.py']);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('src/evil.py')));
+  });
+});
+
+describe('ordering with suggest steps (ADR-0009)', () => {
+  it('holds for a suggestion-only plan, vacuously — no write-class steps at all', async () => {
+    const result = await proveOrdering(plan(suggest('src/a.py')), POLICY);
+    assert.equal(result.holds, true);
+  });
+
+  it('CATCHES push_branch before patch in a plan that also carries suggestions', async () => {
+    // Vacuous-pass is this policy's known failure mode: suggest steps must not
+    // dilute the ordering obligation on the write chain they sit beside.
+    const result = await proveOrdering(plan(suggest('src/a.py'), pushBranch(), patch('src/b.py')), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('push_branch')));
   });
 });
 

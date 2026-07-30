@@ -192,8 +192,12 @@ export async function proveFrame(
     return next;
   };
 
+  // suggest joins patch here (ADR-0009): a suggestion the contributor applies
+  // modifies the file exactly as a patch would, so the frame condition binds
+  // both. GitHub's own diff-anchoring makes an out-of-frame suggestion
+  // unpostable anyway, but the policy must hold before mechanics are trusted.
   const patchedPaths = plan.steps
-    .filter((step) => step.kind === 'patch')
+    .filter((step) => step.kind === 'patch' || step.kind === 'suggest')
     .map((step) => step.args['path'])
     .filter((path): path is string => typeof path === 'string');
 

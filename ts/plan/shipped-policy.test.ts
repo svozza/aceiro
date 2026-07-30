@@ -31,10 +31,16 @@ describe('the shipped policy.json', () => {
     assert.ok(policy.max_steps > 0);
   });
 
-  it('declares the four step kinds §2.5 counts as mutating actions', () => {
+  it('declares the step-kind universe: §2.5\'s four plus ADR-0009\'s suggest', () => {
     // "more than one mutating action?" is what routes to a solver at all.
+    // suggest (ADR-0009) joins as a NON-mutating kind: it becomes a review
+    // comment the contributor applies, so it adds no write-class action and
+    // does not change the §2.5 count.
     const policy = loadPlanPolicy(POLICY_PATH);
-    assert.deepEqual(Object.keys(policy.step_kinds).sort(), ['label', 'open_pr', 'patch', 'push_branch']);
+    assert.deepEqual(
+      Object.keys(policy.step_kinds).sort(),
+      ['label', 'open_pr', 'patch', 'push_branch', 'suggest'],
+    );
   });
 
   it('marks exactly the effects-outside-the-harness kinds as write-class', () => {
