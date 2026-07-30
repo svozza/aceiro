@@ -1,11 +1,20 @@
-"""Runs the Claude Code CLI to produce a review artifact.
+"""Runs Claude Code via the Agent SDK to produce a review artifact.
 
 Writes review.json and transcript.jsonl; exits non-zero without an artifact on
 any failure. Everything derived from policy.json lives in artifact.py.
 
+The artifact arrives through an in-process `submit_review` tool rather than the
+CLI's --json-schema structured output. Structured output routed the whole
+review through one long text channel, and the model leaked function-calling
+XML into it often enough to burn the CLI's five internal retries on ~20% of
+runs (docs/findings/0001). A named tool gives the model separate native
+arguments per field, and its handler runs verify() in this process — so a
+rejected submission gets the verifier's actual reason as tool feedback and the
+retry keeps its session, instead of five blind identical attempts.
+
 Tool calls are not mediated: the CLI's Read/Grep/Glob run in its own sandbox
-scoped by --add-dir, and the transcript records them after the fact for audit
-only.
+scoped by add_dirs, and the transcript records them after the fact for audit
+only. submit_review is the one exception — its handler IS this process.
 
 Usage:
     python cc_loop.py --context-dir "$CONTEXT_DIR" --pr-root "$PR_QUARANTINE" \
@@ -15,12 +24,26 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+import anyio
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKError,
+    ProcessError,
+    ResultMessage,
+    ToolUseBlock,
+    query,
+    tool,
+)
+from mcp.server import Server
+from mcp.types import CallToolResult, TextContent, Tool
 
 from artifact import (
     MAX_REPEATED_REJECTIONS,
@@ -35,31 +58,29 @@ from artifact import (
     render_rejection_guidance,
     sha256,
 )
-from diff_map import split_diff_lines as split_ndjson_lines
 from verify import Rejection, verify
 
-ALLOWED_TOOLS = "Read,Grep,Glob"
+SUBMIT_TOOL = "mcp__review__submit_review"
 
-# --allowedTools does NOT restrict the surface to the tools it names: probing the
+ALLOWED_TOOLS = ["Read", "Grep", "Glob", SUBMIT_TOOL]
+
+# allowed_tools does NOT restrict the surface to the tools it names: probing the
 # agent showed Workflow, Skill, ToolSearch, ReportFindings and the deferred
 # Task*/Cron*/Worktree set all still reachable. Workflow spawns subagents with
 # their own Bash/Write; ReportFindings looks like the reviewer's own reporting
 # tool but writes to the CLI's UI, not to the artifact, and the agent that used
 # it then omitted `findings` entirely. Both must be denied by name.
-DISALLOWED_TOOLS = ",".join(
-    [
-        "Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch",
-        "Task", "Agent", "TodoWrite", "ReportFindings",
-        "Workflow", "Skill", "ToolSearch", "SendMessage",
-        "TaskCreate", "TaskUpdate", "TaskStop", "TaskGet", "TaskList", "TaskOutput",
-        "CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
-        "EnterWorktree", "ExitWorktree",
-    ],
-)
+DISALLOWED_TOOLS = [
+    "Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "WebFetch", "WebSearch",
+    "Task", "Agent", "TodoWrite", "ReportFindings",
+    "Workflow", "Skill", "ToolSearch", "SendMessage",
+    "TaskCreate", "TaskUpdate", "TaskStop", "TaskGet", "TaskList", "TaskOutput",
+    "CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
+    "EnterWorktree", "ExitWorktree",
+]
 
-# Both bounds fail closed: exceeding either yields no structured_output, so
-# run() returns non-zero with no artifact. --max-turns is absent from
-# `claude --help` on 2.1.220 but is documented and does enforce.
+# Both bounds fail closed: exceeding either yields no accepted submission, so
+# run() returns non-zero with no artifact.
 MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "30"))
 
 # PER ATTEMPT, and it must leave room for MAX_ATTEMPTS of them plus the backoff
@@ -69,6 +90,12 @@ MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "30"))
 WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "150"))
 
 MAX_ATTEMPTS = 4
+
+# Submissions are bounded separately from API-error attempts now that a
+# rejected submission retries in-session rather than consuming a whole CLI
+# invocation. Four keeps the old budget: at most three rejections, then the
+# final one either lands or the run fails.
+MAX_SUBMISSIONS = 4
 
 # Doubled per attempt, so the budget spans 1s + 2s + 4s of waiting.
 API_ERROR_BACKOFF_SECONDS = float(os.environ.get("CC_API_ERROR_BACKOFF_SECONDS", "1"))
@@ -110,80 +137,163 @@ def tool_guidance(base_root: Path, pr_root: Path) -> str:
     )
 
 
-def build_command(schema: dict, system_prompt: str, base_root: Path, pr_root: Path, resume: str | None) -> list[str]:
-    cmd = [
-        "claude",
-        "-p",
-        "--output-format", "stream-json",
-        "--verbose",
-        "--json-schema", json.dumps(schema),
-        "--system-prompt", system_prompt,
-        "--allowedTools", ALLOWED_TOOLS,
-        "--disallowedTools", DISALLOWED_TOOLS,
-        "--max-turns", str(MAX_TURNS),
-        "--add-dir", str(base_root),
-        "--add-dir", str(pr_root),
-        # No project CLAUDE.md, skills, hooks, plugins or MCP servers: the
-        # review must depend on the prompt we audit, not on ambient config.
-        "--safe-mode",
-        "--strict-mcp-config",
-        "--permission-mode", "dontAsk",
-    ]
-    if model := os.environ.get("CC_MODEL"):
-        cmd += ["--model", model]
-    # Session persistence must stay ON: --resume is how a rejected attempt keeps
-    # its investigation, and --no-session-persistence makes it unresumable, which
-    # turns every rejection into a hard failure.
-    if resume:
-        cmd += ["--resume", resume]
-    return cmd
+def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_fn, diff_text: str,
+                     changed_files: list[str], policy: dict, guidance: str):
+    """The submission channel: verify in-process, answer with the real reason.
 
-
-def parse_stream(stdout: str) -> tuple[dict | None, list[dict]]:
-    """Split the stream-json output into (result envelope, intermediate events).
-
-    Never `str.splitlines()`: JSON does not treat U+2028/U+2029/U+0085 as line
-    breaks but splitlines() does, and JavaScript's JSON.stringify emits them
-    literally. A review whose text contains one would be cut mid-record, both
-    fragments would fail to parse, and the run would end with no artifact.
+    Returning `is_error` sends the text back as tool feedback, so the model
+    retries in the SAME session with its investigation intact — the property
+    the old flow needed --resume plumbing for. Fail-closed throughout: nothing
+    is recorded as accepted except through verify_fn.
     """
-    result, events = None, []
-    for line in split_ndjson_lines(stdout):
-        if not (line := line.strip()):
-            continue
+
+    def error(text: str) -> dict:
+        return {"content": [{"type": "text", "text": text}], "is_error": True}
+
+    def nested_artifact_note(args) -> str:
+        """Name the leak shape when a submission carries it, or ''.
+
+        The generic missing-keys reason measurably fails to dislodge this mode:
+        two live runs resubmitted the identical shape three times against it
+        (docs/findings/0001 has the XML-dialect ancestor). The model composes
+        the review correctly and fumbles the serialization layer, so the fix
+        is feedback that names the layer. Only fires on evidence — a missing
+        field plus serialization markup in the summary — because falsely
+        telling a model its complete artifact is nested induces the very
+        degradation it warns about (see run_evals.INJECTED_REJECTION_REASON).
+        """
+        summary = args.get("summary") if isinstance(args, dict) else None
+        if not isinstance(summary, str) or (isinstance(args, dict) and "findings" in args):
+            return ""
+        markers = ('"findings"', "'findings'", "<parameter", "</summary>")
+        if not any(marker in summary for marker in markers):
+            return ""
+        return (
+            "\n\nYour summary contains the rest of the review serialized as text. "
+            "Do not serialize fields inside other fields: pass `findings` as its "
+            "own array argument and `residual_risk` as its own string argument, "
+            "with `summary` holding only your prose summary."
+        )
+
+    @tool(
+        name="submit_review",
+        description="Submit the completed review artifact. Call exactly once, when your review is final.",
+        input_schema=schema,
+    )
+    async def submit_review(args):
+        state["round"] += 1
+        if state["accepted"] is not None:
+            return error("A review has already been accepted; this submission was not saved.")
+        if state["abort_reason"]:
+            return error("The run is aborted; this submission was not saved.")
         try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if record.get("type") == "result":
-            result = record
-        else:
-            events.append(record)
-    return result, events
+            verify_fn(args, diff_text, changed_files, policy)
+        except Rejection as exc:
+            transcript.log("submit_rejected", round=state["round"], reason=str(exc), artifact=args)
+            fingerprint = rejection_fingerprint(str(exc))
+            state["repeated"] = state["repeated"] + 1 if fingerprint == state["last_fingerprint"] else 1
+            state["last_fingerprint"] = fingerprint
+            # Same breaker as before the port: a run repeating one failure
+            # degrades into a placeholder that passes; fail loud instead.
+            if state["repeated"] >= MAX_REPEATED_REJECTIONS or state["round"] >= MAX_SUBMISSIONS:
+                state["abort_reason"] = f"final submission rejected: {exc}"
+                return error(
+                    f"Your review was rejected by the verifier: {exc}\n\n"
+                    "The submission budget is exhausted; the run is aborted and no review will be posted."
+                )
+            return error(f"Your review was rejected by the verifier: {exc}{nested_artifact_note(args)}\n\n{guidance}")
+        state["accepted"] = args
+        return {"content": [{"type": "text", "text": "Review accepted and recorded. Do not submit again."}]}
+
+    return submit_review
 
 
-def log_tool_calls(transcript: Transcript, events: list[dict], attempt: int) -> int:
-    """Copy the CLI's tool calls into the transcript as `tool_request` records.
+def build_review_server(submit) -> dict:
+    """Wrap the submit tool in an in-process MCP server, WITHOUT the MCP
+    layer's own input validation.
 
-    Names are recorded as the agent called them, so a record can be matched
-    against the CLI's own stream. The eval harness reads these to assert the
-    agent investigated.
+    The SDK's create_sdk_mcp_server validates arguments against the input
+    schema before the handler runs, and a leak-shaped submission (everything
+    serialized into `summary`, `findings` absent) then bounces off it with the
+    same generic "'findings' is a required property" the CLI's structured
+    output gave — observed live: 16 identical bounces until the wall clock
+    killed the run, because the handler's breaker never saw a single one.
+    verify() rejects the same shapes with a reason the model can act on, so
+    validation is delegated to it: every submission must reach the handler.
     """
-    count = 0
-    for record in events:
-        if record.get("type") != "assistant":
-            continue
-        for block in record.get("message", {}).get("content", []):
-            if block.get("type") != "tool_use":
-                continue
-            transcript.log(
-                "tool_request",
-                round=attempt,
-                tool=block.get("name", "?"),
-                input=block.get("input", {}),
-            )
-            count += 1
-    return count
+    server = Server("review", version="1.0.0")
+    tool_def = Tool(name=submit.name, description=submit.description, inputSchema=submit.input_schema)
+
+    @server.list_tools()
+    async def list_tools() -> list[Tool]:
+        return [tool_def]
+
+    @server.call_tool(validate_input=False)
+    async def call_tool(name: str, arguments: dict) -> CallToolResult:
+        result = await submit.handler(arguments)
+        content = [TextContent(type="text", text=item["text"]) for item in result["content"]]
+        return CallToolResult(content=content, isError=result.get("is_error", False))
+
+    return {"type": "sdk", "name": "review", "instance": server}
+
+
+def build_options(system_prompt: str, base_root: Path, pr_root: Path, server) -> ClaudeAgentOptions:
+    return ClaudeAgentOptions(
+        system_prompt=system_prompt,
+        mcp_servers={"review": server},
+        allowed_tools=ALLOWED_TOOLS,
+        disallowed_tools=DISALLOWED_TOOLS,
+        max_turns=MAX_TURNS,
+        permission_mode="dontAsk",
+        cwd=str(base_root),
+        add_dirs=[str(base_root), str(pr_root)],
+        model=os.environ.get("CC_MODEL"),
+        # No project CLAUDE.md, skills, hooks, plugins or ambient MCP servers:
+        # the review must depend on the prompt we audit, not on ambient config.
+        setting_sources=[],
+        strict_mcp_config=True,
+        extra_args={"safe-mode": None},
+    )
+
+
+def serialize_message(message) -> str:
+    """One JSONL line per SDK message, for the captured-stream artifact.
+
+    The SDK consumes the CLI's raw stdout itself, so what we capture is its
+    typed messages re-serialized. `default=str` because a message may carry
+    non-JSON values; a lossy field beats a lost line when diagnosing.
+    """
+    record = {"type": type(message).__name__}
+    if dataclasses.is_dataclass(message):
+        record.update(dataclasses.asdict(message))
+    return json.dumps(record, ensure_ascii=False, default=str)
+
+
+async def _run_session(user_message: str, options: ClaudeAgentOptions, transcript: Transcript,
+                       state: dict, output_dir: Path, attempt: int, policy: dict) -> ResultMessage | None:
+    """One CLI session. Returns its ResultMessage, or None if the stream ended
+    without one. The captured stream is written even when the session dies —
+    a partial stream is precisely the evidence a hang or crash leaves."""
+    lines: list[str] = []
+    result = None
+    try:
+        with anyio.fail_after(WALL_CLOCK_SECONDS):
+            async for message in query(prompt=user_message, options=options):
+                lines.append(serialize_message(message))
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, ToolUseBlock):
+                            transcript.log("tool_request", round=attempt, tool=block.name, input=block.input)
+                            state["tool_calls"] += 1
+                if isinstance(message, ResultMessage):
+                    result = message
+    finally:
+        # Redacted before being written, not after: the whole output_dir is
+        # uploaded as a CI artifact, so writing the raw capture would route a
+        # credential the agent surfaced around the transcript's secret scan.
+        text = "\n".join(lines) + ("\n" if lines else "")
+        (output_dir / f"cc_stream_{attempt}.jsonl").write_text(redact_text(text, policy))
+    return result
 
 
 def fail(transcript: Transcript, reason: str, **fields) -> int:
@@ -219,11 +329,11 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
 
     transcript.log(
         "run_start",
-        generator="claude-code",
+        generator="claude-agent-sdk",
         model_id=os.environ.get("CC_MODEL", "default"),
         prompt_sha256=sha256(system_prompt),
         policy_sha256=sha256(policy_text),
-        max_rounds=MAX_ATTEMPTS,
+        max_rounds=MAX_SUBMISSIONS,
     )
 
     user_message = build_user_message(context_dir)
@@ -233,71 +343,50 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
     changed_files = json.loads((context_dir / "changed_files.json").read_text())
     guidance = render_rejection_guidance(policy)
 
-    message, session_id = user_message, None
-    repeated, last_fingerprint = 0, None
-
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        cmd = build_command(schema, system_prompt, base_root.resolve(), pr_root.resolve(), session_id)
+        # Fresh per attempt: an api_error retry restarts the session, so its
+        # submission counters must not carry over.
+        state = {
+            "round": 0, "repeated": 0, "last_fingerprint": None,
+            "accepted": None, "abort_reason": None, "tool_calls": 0,
+        }
+        submit = make_submit_tool(schema, state, transcript, verify_fn, diff_text, changed_files, policy, guidance)
+        server = build_review_server(submit)
+        options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server)
+
         try:
-            proc = subprocess.run(
-                cmd,
-                input=message,
-                capture_output=True,
-                text=True,
-                cwd=str(base_root),
-                timeout=WALL_CLOCK_SECONDS,
-                check=False,  # a non-zero exit is a logged run_failed, not an exception
-            )
-        except subprocess.TimeoutExpired as timeout:
-            # TimeoutExpired carries whatever was read before the kill; a hang is
-            # precisely when that partial output is the only evidence there is.
-            partial = timeout.stdout or ""
-            if isinstance(partial, bytes):
-                partial = partial.decode("utf-8", "replace")
-            (output_dir / f"cc_stream_{attempt}_timeout.jsonl").write_text(redact_text(partial, policy))
+            result = anyio.run(_run_session, user_message, options, transcript, state, output_dir, attempt, policy)
+        except TimeoutError:
             return fail(
                 transcript,
                 f"wall-clock timeout after {WALL_CLOCK_SECONDS}s on attempt {attempt}",
-                partial_bytes=len(partial),
+                tool_calls=state["tool_calls"],
             )
+        except ProcessError as exc:
+            return fail(
+                transcript,
+                f"claude CLI exited {exc.exit_code} without a result envelope",
+                stderr=(exc.stderr or "")[-2000:],
+            )
+        except ClaudeSDKError as exc:
+            return fail(transcript, f"claude-agent-sdk error: {exc}")
 
-        # Redacted before being written, not after: the whole output_dir is
-        # uploaded as a 90-day CI artifact, so writing the raw stream would route
-        # a credential the agent surfaced around the same secret scan the
-        # transcript applies. Redacting the TEXT rather than parsed records keeps
-        # malformed lines, which are the ones worth having when diagnosing.
-        (output_dir / f"cc_stream_{attempt}.jsonl").write_text(redact_text(proc.stdout, policy))
-        result, events = parse_stream(proc.stdout)
-
-        # A turn-limit exit is non-zero but DOES carry a result envelope, so
-        # name it: "exited 1" alone would send a reader hunting for a CLI fault
-        # when the real cause is a bound we set.
-        if result is not None and result.get("subtype") == "error_max_turns":
+        # A turn-limit exit is an error subtype but DOES carry a result
+        # envelope, so name it: a generic failure would send a reader hunting
+        # for a CLI fault when the real cause is a bound we set.
+        if result is not None and result.subtype == "error_max_turns":
             return fail(
                 transcript,
                 f"agent hit the {MAX_TURNS}-turn limit without submitting a review",
-                num_turns=result.get("num_turns"),
-                tool_calls=log_tool_calls(transcript, events, attempt),
+                num_turns=result.num_turns,
+                tool_calls=state["tool_calls"],
             )
 
-        # The CLI retries schema-invalid structured output internally (5 attempts)
-        # and then exits with no artifact. Name it: "exited 1" sent a reader
-        # hunting for a CLI fault when the real cause was the agent repeatedly
-        # omitting a required field. `errors` carries the CLI's own message.
-        if result is not None and result.get("subtype") == "error_max_structured_output_retries":
-            return fail(
-                transcript,
-                "agent could not produce schema-valid output within the CLI's retry budget",
-                errors=result.get("errors"),
-                num_turns=result.get("num_turns"),
-                tool_calls=log_tool_calls(transcript, events, attempt),
-            )
-
-        # Reports `subtype: success` with no structured_output, so it must be
-        # matched on terminal_reason or a dead run counts as a successful one.
-        # No --resume on retry, since the session may have died mid-turn.
-        if result is not None and result.get("terminal_reason") == "api_error":
-            detail = str(result.get("result") or "")
+        # Reports `subtype: success` with no submission, so it must be matched
+        # on terminal_reason or a dead run counts as a successful one. No
+        # session resume on retry, since the session may have died mid-turn.
+        if result is not None and result.terminal_reason == "api_error":
+            detail = str(result.result or "")
             permanent = is_permanent_api_error(detail)
             retrying = not permanent and attempt < MAX_ATTEMPTS
             backoff = API_ERROR_BACKOFF_SECONDS * 2 ** (attempt - 1) if retrying else 0
@@ -307,72 +396,53 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
             transcript.log(
                 "api_error",
                 round=attempt,
-                reason=str(result.get("result"))[:500],
-                num_turns=result.get("num_turns"),
-                api_ms=result.get("duration_api_ms"),
-                wall_ms=result.get("duration_ms"),
+                reason=detail[:500],
+                num_turns=result.num_turns,
+                api_ms=result.duration_api_ms,
+                wall_ms=result.duration_ms,
                 retrying=retrying,
                 backoff_seconds=backoff,
-                tool_calls=log_tool_calls(transcript, events, attempt),
+                tool_calls=state["tool_calls"],
             )
             if retrying:
                 time.sleep(backoff)
-                message, session_id = user_message, None
                 continue
             if permanent:
                 return fail(transcript, f"unretryable API error: {detail[:300]}")
             return fail(transcript, f"upstream API error on all {MAX_ATTEMPTS} attempts")
 
-        if proc.returncode != 0 or result is None:
-            return fail(
-                transcript,
-                f"claude CLI exited {proc.returncode} without a result envelope",
-                subtype=result.get("subtype") if result else None,
-                terminal_reason=result.get("terminal_reason") if result else None,
-                stderr=proc.stderr[-2000:],
-            )
+        if result is None:
+            return fail(transcript, "stream ended without a result envelope")
 
-        tool_calls = log_tool_calls(transcript, events, attempt)
-        session_id = result.get("session_id")
         transcript.log(
             "model_response",
             round=attempt,
-            stop_reason=result.get("stop_reason"),
-            usage=result.get("usage"),
-            num_turns=result.get("num_turns"),
-            cost_usd=result.get("total_cost_usd"),
-            duration_ms=result.get("duration_ms"),
+            stop_reason=result.stop_reason,
+            usage=result.usage,
+            num_turns=result.num_turns,
+            cost_usd=result.total_cost_usd,
+            duration_ms=result.duration_ms,
             # With num_turns this makes ms-per-turn derivable, which is how a
             # throttled-but-successful run is distinguishable from a healthy one.
-            api_ms=result.get("duration_api_ms"),
-            tool_calls=tool_calls,
-            permission_denials=result.get("permission_denials"),
+            api_ms=result.duration_api_ms,
+            tool_calls=state["tool_calls"],
+            permission_denials=result.permission_denials,
         )
 
-        artifact = result.get("structured_output")
+        if state["abort_reason"]:
+            return fail(transcript, state["abort_reason"])
+
+        artifact = state["accepted"]
         if artifact is None:
             return fail(
                 transcript,
-                f"no structured_output in result envelope (subtype={result.get('subtype')})",
+                f"agent completed without calling submit_review (subtype={result.subtype})",
+                num_turns=result.num_turns,
             )
-
-        try:
-            verify_fn(artifact, diff_text, changed_files, policy)
-        except Rejection as exc:
-            transcript.log("submit_rejected", round=attempt, reason=str(exc), artifact=artifact)
-            fingerprint = rejection_fingerprint(str(exc))
-            repeated = repeated + 1 if fingerprint == last_fingerprint else 1
-            last_fingerprint = fingerprint
-            if repeated >= MAX_REPEATED_REJECTIONS or attempt == MAX_ATTEMPTS:
-                return fail(transcript, f"final submission rejected: {exc}")
-            # Resume the session so the retry keeps the investigation it already
-            # did, and tell it WHY — the property PRs #496/#503 exist for.
-            message = f"Your review was rejected by the verifier: {exc}\n\n{guidance}"
-            continue
 
         (output_dir / "review.json").write_text(json.dumps(artifact, indent=2, ensure_ascii=False))
         transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
-        transcript.log("run_complete", rounds=attempt)
+        transcript.log("run_complete", rounds=state["round"])
         transcript.close()
         return 0
 

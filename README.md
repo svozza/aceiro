@@ -71,21 +71,30 @@ Expect the judgement-grading scenarios (`caller_impact_needs_investigation`,
 injection ones, which either fence correctly or do not. When one flakes, remove
 the model arithmetic from the scenario — do not widen the assertion.
 
-**Known defect, largely mitigated:** scenario-runs sometimes die with "agent could
-not produce schema-valid output within the CLI's retry budget". The generator
-composes a correct artifact but writes the whole thing into the `summary` parameter
-using function-calling XML (`</summary>` `<parameter name="findings">`), so the
-required `findings` property is genuinely absent and the CLI rejects it. Not a
-JSON-generation failure: structured output validated, rejected, and named the
-missing property — five times.
-
-Embedding two literal valid JSON artifacts in the prompt took this from **24% to
-6%** of scenario-runs (`--runs 3`; p ≈ 0.007 against the null). Fail-closed
-throughout — the job goes red, no unverified artifact is posted — so the residue
-costs eval reliability, not safety.
+**Known defect, restructured away from hard failure:** under the CLI's
+`--json-schema` structured output, the generator sometimes composed a correct
+artifact but serialized the whole thing into the `summary` parameter using
+function-calling XML (`</summary>` `<parameter name="findings">`), so the
+required `findings` property was genuinely absent and the CLI burned its five
+internal retries on identical attempts — a hard scenario failure with no
+recovery channel, ~20% of scenario-runs at its worst.
 [docs/findings/0001](docs/findings/0001-generator-leaks-tool-call-xml.md) has the
-numbers, and records the two wrong diagnoses and one refuted fix that preceded the
-one that worked.
+numbers, and records the two wrong diagnoses and one refuted fix that preceded
+the mitigations.
+
+The artifact now arrives through the in-process `submit_review` tool instead
+(see `cc_loop.build_review_server`), which changes the failure's shape rather
+than assuming it away: a leak-shaped submission reaches `verify()`, gets a
+rejection that names the serialization mistake, and the model corrects it
+in-session — bounded by the same-rejection breaker, never a spiral. Two
+subtleties are load-bearing and pinned by tests: the MCP layer's own schema
+validation must stay OFF (its generic "required property" bounce hides the
+submission from the breaker — observed live, 16 identical bounces to a wall-
+clock timeout), and the nested-artifact note only fires on evidence, because
+falsely telling a model its complete artifact is nested induces the very
+degradation it warns about. Fail-closed throughout — the job goes red, no
+unverified artifact is posted — so any residue costs eval reliability, not
+safety.
 
 `tests/test_verify_adversarial.py` is not an ordinary test file. Its own
 docstring calls it the living spec of the threat model, where **a case that

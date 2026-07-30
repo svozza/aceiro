@@ -58,7 +58,7 @@ def _scalar_to_json_schema(spec: dict) -> dict:
 
 def build_artifact_schema(policy: dict) -> dict:
     """Translate policy.json's artifact_schema into a JSON Schema for the
-    generator's structured output (`claude -p --json-schema`)."""
+    generator's submit_review tool input."""
     schema = policy["artifact_schema"]
     findings = schema["findings"]
     json_schema = {

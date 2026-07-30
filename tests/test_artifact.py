@@ -263,7 +263,7 @@ class TestRenderConstraints:
 
 
 class TestBuildArtifactSchema:
-    """The JSON Schema handed to the CLI's structured output.
+    """The JSON Schema of the submit_review tool's input.
 
     A live run failed with "could not provide valid structured output after 5
     attempts" because the model returned only `summary`. The schema was correct;

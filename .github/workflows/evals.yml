@@ -102,11 +102,6 @@ env:
   AWS_REGION: eu-west-1
   BEDROCK_INFERENCE_PROFILE: global.anthropic.claude-opus-4-8
   BEDROCK_FOUNDATION_MODEL: anthropic.claude-opus-4-8
-  # Pinned to the version the reviewer runs, so evals grade the same generator.
-  CLAUDE_CODE_VERSION: 2.1.220
-  # The published tarball's integrity hash. The version pin alone names a label;
-  # this pins the bytes, so a re-publish of the same version fails the job.
-  CLAUDE_CODE_INTEGRITY: sha512-3CGFCnI0gpgsqNeJruFALBDGJaKXOuok3alQEg56ty2yOPpIrOx/r2Y0+T4uhJl7kP5Hzw4IFkxo4DZKWvzQ7Q==
 
 jobs:
   # Resolves the author's REAL repository permission so the jobs below can branch
@@ -210,36 +205,14 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements*.txt
+      # The generator (claude-agent-sdk) installs here too: the SDK wheel
+      # bundles the Claude Code CLI binary, so the hash pin below covers both.
+      # tests/test_cc_loop.py asserts the bundled CLI version, so a wheel that
+      # silently ships a different generator fails the suite. This step runs
+      # BEFORE the Bedrock role is assumed, so nothing during install can reach
+      # the credential.
       - name: Install harness dependencies (hash-pinned)
         run: pip install --require-hashes -r requirements.txt
-      # This job runs the PR's own code by design, so the version and hash come
-      # from the PR's workflow file. Three things narrow the supply-chain
-      # surface, in order of weight:
-      #
-      # 1. The platform package is installed directly rather than the wrapper.
-      #    The wrapper's postinstall fetches this binary, so installing it
-      #    ourselves makes --ignore-scripts viable: the package declares NO
-      #    lifecycle scripts, so npm executes no third-party code at install.
-      #    (--ignore-scripts on the wrapper alone yields a CLI that refuses to
-      #    start: "claude native binary not installed".)
-      # 2. The tarball's integrity hash is checked. A version pin names a label,
-      #    not bytes, so a re-publish of the same version would be invisible; on
-      #    mismatch the job fails instead of executing.
-      # 3. It runs BEFORE the Bedrock role is assumed, so nothing during install
-      #    can reach the credential even if the two above were bypassed.
-      - name: Install review generator (pinned, integrity-checked)
-        run: |
-          set -euo pipefail
-          PKG="@anthropic-ai/claude-code-linux-x64@${CLAUDE_CODE_VERSION}"
-          ACTUAL="$(npm view "$PKG" dist.integrity)"
-          if [[ "$ACTUAL" != "$CLAUDE_CODE_INTEGRITY" ]]; then
-            echo "::error::integrity mismatch for ${PKG}: expected ${CLAUDE_CODE_INTEGRITY}, registry served ${ACTUAL}"
-            exit 1
-          fi
-          npm install --no-save --ignore-scripts --prefix "$RUNNER_TEMP/cli" "$PKG"
-          BIN="$RUNNER_TEMP/cli/node_modules/@anthropic-ai/claude-code-linux-x64"
-          echo "$BIN" >> "$GITHUB_PATH"
-          "$BIN/claude" --version
       - name: Configure AWS credentials (Bedrock-invoke only)
         uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
         with:

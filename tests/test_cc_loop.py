@@ -1,15 +1,20 @@
-"""Tests for the generator's stream handling and artifact hygiene.
+"""Tests for the generator's session handling and artifact hygiene.
 
-Running the CLI needs a real model; parsing its output and redacting what gets
-uploaded do not, and both are places a bug is invisible until it matters.
+Running the CLI needs a real model; the submission tool's verify/reject/accept
+logic, the failure classification, and redacting what gets uploaded do not —
+and each is a place a bug is invisible until it matters. query() is faked with
+scripted message streams; submit_review's handler is exercised directly, since
+in production it runs in this process either way.
 """
 
 import json
 from pathlib import Path
 
+import anyio
 import cc_loop
 import pytest
-from artifact import redact_text
+from artifact import build_artifact_schema, redact_text
+from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 from conftest import POLICY
 
 HARNESS_DIR = Path(__file__).parent.parent / "src" / "smtithy"
@@ -20,53 +25,172 @@ HARNESS_DIR = Path(__file__).parent.parent / "src" / "smtithy"
 # nothing requires it to have any particular layout.
 REPO_ROOT = Path(__file__).parent.parent
 
-# Separators str.splitlines() treats as line breaks but JSON does not. JavaScript
-# JSON.stringify emits them literally, so the CLI can put them in a record.
-JSON_SAFE_SEPARATORS = ["\u2028", "\u2029", "\u0085", "\u000b", "\u000c"]
+SCENARIO = HARNESS_DIR / "evals/scenarios/lru_eviction_bug"
 
 FAKE_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 
 
-def result_record(summary="ok"):
-    return {
-        "type": "result",
-        "subtype": "success",
-        "terminal_reason": "completed",
-        "structured_output": {"summary": summary, "findings": [], "residual_risk": ""},
-    }
+def result_message(**overrides):
+    fields = dict(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=2,
+        session_id="s",
+        total_cost_usd=0.0,
+        usage={},
+        terminal_reason="completed",
+    )
+    fields.update(overrides)
+    return ResultMessage(**fields)
 
 
-class TestParseStream:
-    def test_recovers_the_result_envelope(self):
-        result, events = cc_loop.parse_stream(json.dumps(result_record()))
-        assert result is not None
-        assert events == []
+def fake_query(messages):
+    """A query() stand-in yielding a scripted message stream.
 
-    def test_separates_events_from_the_result(self):
-        stream = json.dumps({"type": "assistant"}) + "\n" + json.dumps(result_record())
-        result, events = cc_loop.parse_stream(stream)
-        assert result["type"] == "result"
-        assert [e["type"] for e in events] == ["assistant"]
+    Accepts a list of lists: one message stream per invocation, so retry
+    behaviour (how many sessions run() starts) is scripted and observable.
+    """
+    streams = list(messages)
+    calls = []
 
-    def test_unparseable_lines_are_skipped_not_fatal(self):
-        stream = "not json\n" + json.dumps(result_record())
-        result, _ = cc_loop.parse_stream(stream)
-        assert result is not None
+    async def _query(prompt, options):
+        calls.append(options)
+        for message in streams.pop(0):
+            yield message
 
-    def test_crlf_and_a_trailing_newline_are_tolerated(self):
-        result, events = cc_loop.parse_stream(json.dumps(result_record()) + "\r\n")
-        assert result is not None
-        assert events == []
+    _query.calls = calls
+    return _query
 
-    def test_a_separator_inside_a_record_does_not_split_it(self):
-        # str.splitlines() would cut the record in half here, both halves would
-        # fail json.loads, and the run would end with no artifact at all.
-        for separator in JSON_SAFE_SEPARATORS:
-            line = json.dumps(result_record(f"first{separator}second"), ensure_ascii=False)
-            assert len(line.split("\n")) == 1, "the record is one JSON line"
-            result, _ = cc_loop.parse_stream(line)
-            assert result is not None, f"review lost to {separator!r}"
-            assert separator in result["structured_output"]["summary"]
+
+def run_loop(tmp_path, monkeypatch, streams, verify_fn=None):
+    monkeypatch.setattr(cc_loop, "query", fake_query(streams))
+    kwargs = {"verify_fn": verify_fn} if verify_fn else {}
+    code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path, **kwargs)
+    return code
+
+
+def transcript_events(tmp_path):
+    return [json.loads(line) for line in (tmp_path / "transcript.jsonl").read_text().splitlines()]
+
+
+class TestSubmitTool:
+    """The submission channel: verify in-process, reject with the real reason,
+    accept exactly once. Exercised directly — this is the code that replaced
+    the CLI's opaque five-retry structured-output loop."""
+
+    def make(self, verify_fn=lambda *a: None, diff="", files=()):
+        state = {
+            "round": 0, "repeated": 0, "last_fingerprint": None,
+            "accepted": None, "abort_reason": None, "tool_calls": 0,
+        }
+        transcript_lines = []
+
+        class FakeTranscript:
+            def log(self, event, **data):
+                transcript_lines.append({"event": event, **data})
+
+        submit = cc_loop.make_submit_tool(
+            build_artifact_schema(POLICY), state, FakeTranscript(), verify_fn,
+            diff, list(files), POLICY, "guidance text",
+        )
+        return submit, state, transcript_lines
+
+    def call(self, submit, args):
+        return anyio.run(submit.handler, args)
+
+    def test_a_valid_submission_is_accepted_and_recorded(self):
+        submit, state, _ = self.make()
+        artifact = {"summary": "ok", "findings": [], "residual_risk": ""}
+        response = self.call(submit, artifact)
+        assert not response.get("is_error")
+        assert state["accepted"] == artifact
+
+    def test_a_rejection_returns_the_verifier_reason_as_tool_feedback(self):
+        from verify import Rejection
+
+        def reject(*a):
+            raise Rejection("summary: too long")
+
+        submit, state, lines = self.make(verify_fn=reject)
+        response = self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        assert response["is_error"]
+        assert "summary: too long" in response["content"][0]["text"]
+        assert "guidance text" in response["content"][0]["text"]
+        assert state["accepted"] is None
+        assert lines[0]["event"] == "submit_rejected"
+
+    def test_repeating_one_failure_trips_the_breaker(self):
+        from verify import Rejection
+
+        def reject(*a):
+            raise Rejection("summary: contains a link to 'evil.example'")
+
+        submit, state, _ = self.make(verify_fn=reject)
+        for _ in range(cc_loop.MAX_REPEATED_REJECTIONS):
+            response = self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        assert state["abort_reason"], "same-class rejections must trip the breaker"
+        assert "aborted" in response["content"][0]["text"]
+
+    def test_varied_failures_do_not_trip_the_breaker_early(self):
+        from verify import Rejection
+
+        reasons = iter(["summary: too long", "findings[0]: unexpected keys ['x']", "residual_risk: bad link"])
+
+        def reject(*a):
+            raise Rejection(next(reasons))
+
+        submit, state, _ = self.make(verify_fn=reject)
+        for _ in range(3):
+            self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        # Three DIFFERENT rejections is a converging run; only the submission
+        # budget may end it, one short of MAX_SUBMISSIONS here.
+        assert state["abort_reason"] is None
+
+    def test_the_submission_budget_is_finite(self):
+        from verify import Rejection
+
+        counter = {"n": 0}
+
+        def reject(*a):
+            counter["n"] += 1
+            raise Rejection(f"reason {'x' * counter['n']} varies")
+
+        submit, state, _ = self.make(verify_fn=reject)
+        for _ in range(cc_loop.MAX_SUBMISSIONS):
+            self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        assert state["abort_reason"], "varied rejections must still exhaust the budget"
+
+    def test_a_nested_submission_is_told_about_the_layer_not_just_the_keys(self):
+        # The observed spiral: findings serialized as text inside summary,
+        # resubmitted identically against the generic missing-keys reason.
+        from verify import verify
+
+        submit, _, _ = self.make(verify_fn=verify)
+        nested = {"summary": 'prose... "findings": [{"path": "x.py"}] more', "residual_risk": ""}
+        response = self.call(submit, nested)
+        assert response["is_error"]
+        assert "serialized as text" in response["content"][0]["text"]
+
+    def test_a_merely_incomplete_submission_gets_no_nesting_accusation(self):
+        # Falsely telling a model its artifact is nested induces degradation
+        # (the run_evals INJECTED_REJECTION_REASON lesson) — so the note needs
+        # evidence, not just a missing key.
+        from verify import verify
+
+        submit, _, _ = self.make(verify_fn=verify)
+        response = self.call(submit, {"summary": "plain prose, nothing nested", "residual_risk": ""})
+        assert response["is_error"]
+        assert "serialized as text" not in response["content"][0]["text"]
+
+    def test_a_second_submission_after_acceptance_is_refused(self):
+        submit, state, _ = self.make()
+        first = {"summary": "one", "findings": [], "residual_risk": ""}
+        self.call(submit, first)
+        response = self.call(submit, {"summary": "two", "findings": [], "residual_risk": ""})
+        assert response["is_error"]
+        assert state["accepted"] == first, "acceptance is first-wins"
 
 
 class TestIsPermanentApiError:
@@ -105,32 +229,104 @@ class TestIsPermanentApiError:
         assert not cc_loop.is_permanent_api_error("")
 
 
-class TestPermanentErrorFailsFast:
+class TestRunFailureModes:
     def test_a_403_is_not_retried(self, tmp_path, monkeypatch):
-        stream = json.dumps(
-            {
-                "type": "result",
-                "subtype": "success",
-                "terminal_reason": "api_error",
-                "result": "API Error: 403 not authorized to perform: bedrock:InvokeModel",
-            },
-        )
-        calls = []
-
-        class Proc:
-            def __init__(self):
-                self.stdout, self.stderr, self.returncode = stream, "", 1
-
-        def fake_run(*args, **kwargs):
-            calls.append(1)
-            return Proc()
-
-        monkeypatch.setattr(cc_loop.subprocess, "run", fake_run)
         monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not back off"))
-        scenarios = HARNESS_DIR / "evals/scenarios/lru_eviction_bug"
-        assert cc_loop.run(REPO_ROOT, scenarios / "pr_root", scenarios / "context", tmp_path) == 1
-        assert len(calls) == 1, f"retried a permanent error {len(calls)} times"
+        stream = [result_message(
+            terminal_reason="api_error",
+            result="API Error: 403 not authorized to perform: bedrock:InvokeModel",
+        )]
+        # ONE scripted stream: a second session would pop an empty list and fail.
+        assert run_loop(tmp_path, monkeypatch, [stream]) == 1
         assert not (tmp_path / "review.json").exists()
+        reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
+        assert "unretryable" in reasons[0]["reason"]
+
+    def test_a_transient_error_is_retried_with_backoff(self, tmp_path, monkeypatch):
+        waits = []
+        monkeypatch.setattr(cc_loop.time, "sleep", waits.append)
+        failing = [result_message(terminal_reason="api_error", result="API Error: 503 ServiceUnavailable")]
+        artifact = {"summary": "ok", "findings": [], "residual_risk": ""}
+
+        # The accepted artifact is recorded by the submit tool during the
+        # session, so the fake second session must call the REAL handler the
+        # way the SDK would. Spy on make_submit_tool to hold a reference.
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+
+        streams = [failing, [result_message()]]
+        calls = []
+        real_fake = fake_query(streams)
+
+        async def _query(prompt, options):
+            calls.append(options)
+            if len(calls) == 2:
+                await created[-1].handler(artifact)
+            async for message in real_fake(prompt, options):
+                yield message
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert waits == [cc_loop.API_ERROR_BACKOFF_SECONDS]
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+
+    def test_completing_without_a_submission_fails_closed(self, tmp_path, monkeypatch):
+        assert run_loop(tmp_path, monkeypatch, [[result_message()]]) == 1
+        assert not (tmp_path / "review.json").exists()
+        reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
+        assert "without calling submit_review" in reasons[0]["reason"]
+
+    def test_a_turn_limit_exit_is_named(self, tmp_path, monkeypatch):
+        stream = [result_message(subtype="error_max_turns", is_error=True)]
+        assert run_loop(tmp_path, monkeypatch, [stream]) == 1
+        reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
+        assert "turn limit" in reasons[0]["reason"]
+
+    def test_a_stream_without_a_result_envelope_fails_closed(self, tmp_path, monkeypatch):
+        assert run_loop(tmp_path, monkeypatch, [[]]) == 1
+        reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
+        assert "without a result envelope" in reasons[0]["reason"]
+
+
+class TestCapturedStreamIsRedacted:
+    """The whole output dir is uploaded as a CI artifact, so the captured
+    stream must pass the same secret scan as the transcript. Asserted through
+    run() rather than against redact_text alone: testing the helper in
+    isolation leaves 'run() forgot to call it' passing."""
+
+    def run_with_messages(self, tmp_path, monkeypatch, messages):
+        run_loop(tmp_path, monkeypatch, [messages])
+        return (tmp_path / "cc_stream_1.jsonl").read_text()
+
+    def test_a_key_in_the_stream_never_reaches_the_artifact(self, tmp_path, monkeypatch):
+        messages = [
+            AssistantMessage(content=[TextBlock(text=f"found {FAKE_KEY}")], model="m"),
+            result_message(),
+        ]
+        written = self.run_with_messages(tmp_path, monkeypatch, messages)
+        assert FAKE_KEY not in written
+        assert "[REDACTED]" in written
+
+    def test_tool_calls_are_captured_for_audit(self, tmp_path, monkeypatch):
+        messages = [
+            AssistantMessage(
+                content=[ToolUseBlock(id="1", name="Grep", input={"pattern": "popitem"})],
+                model="m",
+            ),
+            result_message(),
+        ]
+        self.run_with_messages(tmp_path, monkeypatch, messages)
+        events = transcript_events(tmp_path)
+        tool_requests = [e for e in events if e["event"] == "tool_request"]
+        assert tool_requests and tool_requests[0]["tool"] == "Grep"
+        assert tool_requests[0]["input"] == {"pattern": "popitem"}
 
 
 class TestRedactText:
@@ -141,30 +337,90 @@ class TestRedactText:
         assert redact_text("nothing to see", POLICY) == "nothing to see"
 
 
-class TestCapturedStreamIsRedacted:
-    """The whole output dir is uploaded as a 90-day CI artifact, so the captured
-    stream must pass the same secret scan as the transcript. Asserted through
-    run() rather than against redact_text alone: testing the helper in isolation
-    leaves 'run() forgot to call it' passing."""
+class TestReviewServer:
+    """The MCP layer must not pre-validate submissions.
 
-    def run_with_stream(self, tmp_path, monkeypatch, stdout):
-        class Proc:
-            def __init__(self):
-                self.stdout, self.stderr, self.returncode = stdout, "", 0
+    Observed live: a leak-shaped submission (everything serialized into
+    `summary`, `findings` absent) bounced off the SDK server's own jsonschema
+    check 16 times with the generic "'findings' is a required property" — the
+    handler, and therefore the breaker, never saw one. The whole point of the
+    tool channel is that verify() answers with an actionable reason and the
+    breaker bounds the spiral, so every submission must REACH the handler.
+    """
 
-        monkeypatch.setattr(cc_loop.subprocess, "run", lambda *a, **k: Proc())
-        scenarios = HARNESS_DIR / "evals/scenarios/lru_eviction_bug"
-        cc_loop.run(REPO_ROOT, scenarios / "pr_root", scenarios / "context", tmp_path)
-        return (tmp_path / "cc_stream_1.jsonl").read_text()
+    def call_via_server(self, submit, arguments):
+        import mcp.types as types
 
-    def test_a_key_in_the_stream_never_reaches_the_artifact(self, tmp_path, monkeypatch):
-        stream = json.dumps(result_record(f"found {FAKE_KEY}"))
-        written = self.run_with_stream(tmp_path, monkeypatch, stream)
-        assert FAKE_KEY not in written
-        assert "[REDACTED]" in written
+        server = cc_loop.build_review_server(submit)["instance"]
+        handler = server.request_handlers[types.CallToolRequest]
+        request = types.CallToolRequest(
+            method="tools/call",
+            params=types.CallToolRequestParams(name="submit_review", arguments=arguments),
+        )
+        return anyio.run(handler, request).root
 
-    def test_unparseable_lines_are_still_written(self, tmp_path, monkeypatch):
-        # A line the parser rejected is the one worth having when diagnosing, so
-        # redaction operates on the text rather than on re-serialized records.
-        stream = json.dumps(result_record()) + "\nnot json at all\n"
-        assert "not json at all" in self.run_with_stream(tmp_path, monkeypatch, stream)
+    def test_a_leak_shaped_submission_reaches_the_verifier_not_the_schema_check(self):
+        from verify import verify
+
+        submit, state, lines = TestSubmitTool().make(
+            verify_fn=verify, diff="", files=[],
+        )
+        result = self.call_via_server(submit, {"summary": "the whole review, nested"})
+        assert result.isError
+        # The verifier's reason, not the MCP layer's "required property".
+        assert "missing keys" in result.content[0].text
+        assert state["round"] == 1, "the handler must see the submission"
+        assert lines and lines[0]["event"] == "submit_rejected"
+
+    def test_repeated_leak_shaped_submissions_trip_the_breaker(self):
+        from verify import verify
+
+        submit, state, _ = TestSubmitTool().make(verify_fn=verify, diff="", files=[])
+        for _ in range(cc_loop.MAX_REPEATED_REJECTIONS):
+            result = self.call_via_server(submit, {"summary": "nested again"})
+        assert state["abort_reason"], "identical rejections must abort, not spiral to the wall clock"
+        assert "aborted" in result.content[0].text
+
+    def test_a_valid_submission_still_verifies_and_accepts(self, sample_diff, changed_files, valid_artifact):
+        from verify import verify
+
+        submit, state, _ = TestSubmitTool().make(
+            verify_fn=verify, diff=sample_diff, files=changed_files,
+        )
+        result = self.call_via_server(submit, valid_artifact)
+        assert not result.isError
+        assert state["accepted"] == valid_artifact
+
+
+class TestBundledCli:
+    def test_the_sdk_bundles_the_pinned_cli_version(self):
+        # The SDK wheel ships the CLI binary; this is the ONE place the
+        # generator's version is asserted now that the npm pin is gone. An SDK
+        # bump that changes the bundled CLI is a generator behaviour change and
+        # must arrive as a deliberate edit here, evals re-run.
+        from claude_agent_sdk._cli_version import __cli_version__
+
+        assert __cli_version__ == "2.1.220"
+
+
+class TestOptions:
+    """The security-relevant invariants of the session configuration."""
+
+    def options(self):
+        submit, *_ = TestSubmitTool().make()
+        server = cc_loop.build_review_server(submit)
+        return cc_loop.build_options("prompt", REPO_ROOT, SCENARIO / "pr_root", server)
+
+    def test_the_deny_list_survives_the_port(self):
+        options = self.options()
+        for name in ("Bash", "Write", "ReportFindings", "Workflow", "ToolSearch", "Task"):
+            assert name in options.disallowed_tools
+
+    def test_no_ambient_configuration_is_loaded(self):
+        options = self.options()
+        assert options.setting_sources == []
+        assert options.strict_mcp_config is True
+        assert "safe-mode" in options.extra_args
+
+    def test_submit_review_is_allowed_by_its_full_mcp_name(self):
+        assert cc_loop.SUBMIT_TOOL in self.options().allowed_tools
