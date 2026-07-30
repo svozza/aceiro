@@ -1,7 +1,11 @@
 # The generator leaks tool-call XML into a parameter value
 
-Open defect, measured 2026-07-30 against `global.anthropic.claude-opus-4-8` via
-Bedrock, Claude Code CLI 2.1.220.
+Measured 2026-07-30 against `global.anthropic.claude-opus-4-8` via Bedrock,
+Claude Code CLI 2.1.220. **Status: contained, not eliminated** — attempt 3
+(bed9fd8) rehoused the submission in a named tool with verifier feedback, which
+took hard failures from 18–27% to 5% of scenario-runs and bounds the residue
+with the rejection breaker. The leak itself still occurs; see attempt 3's
+"stubborn tail" below.
 
 ## What actually happens
 
@@ -168,22 +172,80 @@ model.
 Not eliminated: 6% is not 0%. `tests/test_prompt.py` grades every embedded example
 with `check_schema`, so the examples cannot rot into teaching an invalid shape.
 
+## The origin's CI history confirms the mechanism (2026-07-30)
+
+The origin repo's own eval workflow gave the defect a clean natural experiment.
+Its run history bisects exactly: 15 of 16 develop pushes green while the
+Bedrock loop was the generator, then 0 of 7 green after the swap to
+`claude -p --json-schema` merged (their PR #516). Downloading all five
+post-swap runs' artifacts: 35 `run_failed` in 165 scenario-runs (12–33% per
+run, mean 21%), every one `Failed to provide valid structured output after 5
+attempts`, and the XML leak present in the stream of every failure. The
+inference-profile switch (eu → global) is exonerated — two green develop runs
+followed it — and CLI drift is too: the rate has no trend across the post-swap
+runs; it started broken at the merge.
+
+The sharpest fact is in that PR's own commit message: the deleted Bedrock loop
+contained `salvage_nested_artifact`, ~245 lines that existed because the model
+sometimes serialized all three fields into one string parameter of
+`submit_review` — this exact leak, predating structured output. The deletion
+rationale was "`--json-schema` enforces the shape, so there is nothing to
+reassemble". The schema does enforce the shape; what it removed was the
+recovery channel, converting a salvaged non-event into five blind identical
+retries and a hard failure. The same commit also measured the naming effect:
+under "call `submit_review` exactly once" the model went off-channel 0/36
+runs; after that wording had to be removed (the tool no longer existed), 9/36.
+
+## Attempt 3 (works): rehouse the submission in a named tool (bed9fd8)
+
+The port to `claude-agent-sdk` (same pinned CLI 2.1.220, bundled in the wheel)
+replaced structured output with an in-process `submit_review` MCP tool whose
+handler runs `verify()` directly. This restores both things the CI history
+identified: the imperative target, and a recovery channel — a rejection now
+returns the verifier's actual reason as tool feedback and the model corrects
+in-session, bounded by the same-rejection breaker.
+
+Measured, 11 scenarios x 3 runs x 3 suites (99 scenario-runs):
+
+    structured output, local     6-9/33 failures (18-27%)
+    structured output, origin CI 35/165 failures (21% mean)
+    submit_review tool           5/99 failures (5%), leak in 5 streams,
+                                 all but the failures corrected in-session
+
+Two traps found on the way, both now pinned by tests:
+
+- **The SDK's MCP layer re-creates the original bug.** Its built-in jsonschema
+  validation answers a leak-shaped submission with the same generic
+  `'findings' is a required property` the CLI gave — before the handler runs,
+  so the breaker never sees it. Observed live: 16 identical bounces until the
+  wall clock killed the run. `build_review_server` registers the tool with
+  `validate_input=False`; every submission must reach `verify()`, whose
+  rejection the model can act on and whose repetition the breaker bounds.
+- **The generic missing-keys reason does not dislodge the nesting mode.** Two
+  runs resubmitted the identical nested shape three times against it. The
+  rejection now appends a note naming the serialization mistake — but only on
+  evidence (missing field AND markup in `summary`), because falsely telling a
+  model its complete artifact is nested induces the degradation it warns
+  about, the same lesson as `run_evals.INJECTED_REJECTION_REASON`.
+
+**The stubborn tail:** one run in the final suite resubmitted the nested shape
+three times against feedback that named it explicitly — its third attempt
+ended in literal `</parameter></invoke>`. The breaker aborted it, fail-closed,
+shape visible in the transcript. So the attractor survives contact with every
+mitigation tried; the harness now converts it from a lost review into a
+bounded, diagnosable failure at ~5%.
+
 ## What is still untested
 
 **The provider.** Tool-use ids are `toolu_bdrk_*` and the CLI reports
 `fast_mode_disabled_reason: not_first_party`, so every measurement here is the
-Bedrock path. Whether the same rate occurs against the first-party API is unknown,
-and it is the largest untested variable — worth settling before any further prompt
-contortion, because a provider-specific tool-call serialisation difference would
-explain a 24% leak that prose cannot shift.
+Bedrock path. Whether the same rate occurs against the first-party API is
+unknown — a provider-specific tool-call serialisation difference would explain
+an attractor this stubborn, and would be worth reporting upstream with the
+captured streams.
 
-**A literal JSON example in the prompt.** Arguable both ways, and untried. For: the
-failure is the model reaching for a syntax to express nested structure and picking
-the wrong one, so a concrete correct example gives it something to match. Against:
-`StructuredOutput` is a tool call, not a document the model writes, and showing a
-JSON blob may reinforce the very framing that produces `</summary>` mid-string.
-
-**The retry feedback.** The model resubmits the same malformed shape up to five
-times while being told exactly which property is missing. Whatever the root cause,
-a retry that restated the requirement as "call the tool with three parameters"
-rather than echoing a schema error might recover a run that is currently lost.
+**Salvage.** The Bedrock loop's answer — reassemble the nested fields and
+re-verify — was never ported. At a 5% bounded rate it is probably not worth its
+weight; if the residue matters later, the handler is already holding the raw
+nested string at the moment of rejection, so a schema-validated salvage would
+be a small, well-placed addition rather than a rewrite.
