@@ -32,17 +32,40 @@ name: Evals
 # A single green run is NOT evidence of stability -- that is the misreading
 # ADR-0008 exists to guard against.
 #
-# GATE CORRECTNESS (why the environment name matters)
+# GATE CORRECTNESS: two environments, two different jobs
 #
-# eval_approve must be bound to an environment that actually has required
-# reviewers. Binding it to the runtime environment -- which carries only the
-# credential -- made it resolve INSTANTLY in the staging repo, gating nothing.
-# Worse, and observed in THIS repository: a create call that is rejected still
-# leaves an environment behind with no protection, and flipping repository
-# visibility silently strips the protection rule from one that had it. See
-# docs/adr/0006-addendum-observed-gate-failures.md. Neither failure makes a run
-# go red, so the environment configuration is not self-verifying and the in-code
-# assertion ADR-0006 requires is still owed.
+# The configuration below mirrors the repository this was extracted from, read
+# from its live API rather than inferred:
+#
+#   ai-pr-review          required_reviewers, no branch policy    <- THE GATE
+#   ai-pr-review-runtime  branch policy only, NO reviewers        <- scopes the
+#                                                                    credential
+#
+# Both halves are load-bearing and each has already been got wrong:
+#
+# 1. Binding the gate to the RUNTIME environment makes it resolve instantly,
+#    gating nothing -- the credential-scoping environment has no reviewers, so
+#    there is no human in the loop. That is the staging repo's recorded defect.
+# 2. Putting reviewers ON the runtime environment (done here first, wrong) is the
+#    opposite error and is just as bad in its own way. eval_approve deliberately
+#    SKIPS for an author holding write-or-above on a non-draft pull request, and
+#    skips entirely on dispatch and schedule -- but a protected runtime
+#    environment blocks the evals job regardless, so every path waits for a click
+#    and the trust distinction the conditional exists to express is overridden by
+#    configuration. Fail-closed rather than fail-open, so nothing leaks, but a
+#    gate that fires for everyone carries no signal about anyone.
+#
+# The runtime environment's protection is a BRANCH POLICY: only main may reach
+# the credential. That is also why pull_request_target is load-bearing here --
+# the policy checks the ref the RUN executes under, which for
+# pull_request_target is the base branch, whereas pull_request resolves to
+# refs/pull/N/merge and would never match.
+#
+# None of this is self-verifying. docs/adr/0006-addendum-observed-gate-failures.md
+# records four ways the gate has silently failed open, including a rejected
+# create call leaving an unprotected environment behind and a visibility flip
+# stripping a protection rule. No run went red for any of them, which is why the
+# in-code assertion ADR-0006 requires is still owed.
 
 on:
   # Label-triggered, so a maintainer opts a specific pull request in after
