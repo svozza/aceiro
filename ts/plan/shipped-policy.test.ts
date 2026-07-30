@@ -51,6 +51,16 @@ describe('the shipped policy.json', () => {
     assert.deepEqual([...writeClassKinds(policy)].sort(), ['label', 'open_pr', 'push_branch']);
   });
 
+  it('open_pr has no base argument — the base is never model-suppliable', () => {
+    // ADR-0009 addendum: the follow-up PR is STACKED on the reviewed PR's own
+    // head branch, and the executor sets that base from PR context. A `base`
+    // arg appearing here would make the merge target model-suppliable — the
+    // same banned move as a model-selected policy version — so its absence is
+    // pinned exactly, not implied by the arg list happening to be short.
+    const policy = loadPlanPolicy(POLICY_PATH);
+    assert.deepEqual(Object.keys(policy.step_kinds['open_pr']!.args).sort(), ['body', 'branch', 'title']);
+  });
+
   it('reserves control_flow as empty and argument_forms as literal-only', () => {
     // ADR-0004's first and second closures, as shipped. Both are reservations
     // that refuse their shape TODAY, so a non-empty control_flow here would mean

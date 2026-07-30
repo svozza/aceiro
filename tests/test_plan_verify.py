@@ -180,6 +180,14 @@ class TestShippedPolicyAgreement:
         # applies; it adds no write-class action to the §2.5 count.
         assert PLAN_POLICY["step_kinds"]["suggest"]["write_class"] is False
 
+    def test_open_pr_has_no_base_argument(self):
+        # ADR-0009 addendum: the follow-up PR is STACKED on the reviewed PR's
+        # own head branch, and the executor sets that base from PR context. A
+        # `base` arg here would make the merge target model-suppliable — the
+        # same banned move as a model-selected policy version — so the arg set
+        # is pinned exactly. Mirrored in ts/plan/shipped-policy.test.ts.
+        assert sorted(PLAN_POLICY["step_kinds"]["open_pr"]["args"]) == ["body", "branch", "title"]
+
     def test_every_string_arg_is_markdown_checked_or_pattern_constrained(self):
         # verify.py's markdown_fields rule, applied to plan args: a string
         # that is neither would flow into a posted comment or a git ref
