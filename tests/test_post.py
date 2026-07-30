@@ -1,8 +1,9 @@
 """Tests for post.py — the trusted executor holding the write token.
 
-Covers the three units with no prior coverage: the render template, the
-marker+author sticky-comment upsert (hijack guard), and main()'s re-verify /
-TOCTOU-SHA gates. Network is never touched: api_json/paginate are stubbed.
+Covers the render template, the marker+author sticky-comment upsert (hijack
+guard), the runtime resolution of the bot's own login (and its fail-closed
+path), and main()'s re-verify / TOCTOU-SHA gates. Network is never touched:
+api_json/paginate are stubbed.
 """
 
 import json
@@ -116,7 +117,59 @@ class TestRender:
         assert "@" not in valid_artifact["summary"]  # sanity: golden is clean
 
 
+# ------------------------------------------------------ resolve_bot_login ---
+
+
+class TestResolveBotLogin:
+    def stub_graphql(self, monkeypatch, response, calls=None):
+        def fake_api_json(path, method="GET", payload=None):
+            if calls is not None:
+                calls.append({"path": path, "method": method, "payload": payload})
+            return response
+
+        monkeypatch.setattr(post, "api_json", fake_api_json)
+
+    def test_resolves_viewer_login_via_graphql(self, monkeypatch):
+        # The one identity call every token type answers: REST /user is 403
+        # "Resource not accessible by integration" for installation tokens,
+        # which is what Actions' GITHUB_TOKEN is.
+        calls = []
+        self.stub_graphql(monkeypatch, {"data": {"viewer": {"login": "github-actions[bot]"}}}, calls)
+        assert post.resolve_bot_login() == "github-actions[bot]"
+        assert calls == [
+            {"path": "/graphql", "method": "POST", "payload": {"query": post.VIEWER_LOGIN_QUERY}},
+        ]
+
+    def test_app_bot_login_is_used_verbatim(self, monkeypatch):
+        # viewer.login already carries the [bot] suffix for app tokens --
+        # byte-identical to comment user.login, so no mapping may sit between.
+        self.stub_graphql(monkeypatch, {"data": {"viewer": {"login": "my-review-app[bot]"}}})
+        assert post.resolve_bot_login() == "my-review-app[bot]"
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            {"errors": [{"message": "Resource not accessible by integration"}]},
+            {"data": {"viewer": None}},
+            {"data": {"viewer": {"login": ""}}},
+            {"data": {"viewer": {"login": None}}},
+            {"data": None},
+            {},
+            [],
+        ],
+        ids=["graphql-error", "null-viewer", "empty-login", "null-login", "null-data", "empty", "non-dict"],
+    )
+    def test_fails_closed_on_anything_but_a_login(self, monkeypatch, response):
+        # Guessing an identity here means the executor may edit comments it
+        # does not own; every malformed shape must exit, not default.
+        self.stub_graphql(monkeypatch, response)
+        with pytest.raises(SystemExit):
+            post.resolve_bot_login()
+
+
 # -------------------------------------------------------- upsert_comment ---
+
+BOT_LOGIN = "github-actions[bot]"
 
 
 @pytest.fixture
@@ -137,7 +190,7 @@ def capture_api(monkeypatch):
     return calls, lambda pages: monkeypatch.setattr(post, "paginate", make_paginate(pages))
 
 
-def comment(cid, body, login=post.BOT_LOGIN):
+def comment(cid, body, login=BOT_LOGIN):
     return {"id": cid, "body": body, "user": {"login": login}}
 
 
@@ -145,7 +198,7 @@ class TestUpsertComment:
     def test_updates_existing_bot_comment(self, capture_api):
         calls, set_pages = capture_api
         set_pages([[comment(42, f"old {post.MARKER}")]])
-        post.upsert_comment("o/r", 1, "new body")
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
         assert len(calls) == 1
         assert calls[0]["method"] == "PATCH"
         assert "/comments/42" in calls[0]["path"]
@@ -155,14 +208,23 @@ class TestUpsertComment:
         # Hijack guard: anyone can paste the marker; only the bot's comment is ours.
         calls, set_pages = capture_api
         set_pages([[comment(99, f"forged {post.MARKER}", login="attacker")]])
-        post.upsert_comment("o/r", 1, "new body")
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
         assert calls[0]["method"] == "POST"
         assert "/issues/1/comments" in calls[0]["path"]
+
+    def test_resolved_identity_scopes_ownership(self, capture_api):
+        # The consumer swapped GITHUB_TOKEN for an app token: the incumbent's
+        # old github-actions[bot] comment carries the right marker but is no
+        # longer OURS to edit. A hardcoded login would have hijacked it.
+        calls, set_pages = capture_api
+        set_pages([[comment(42, f"old review {post.MARKER}", login="github-actions[bot]")]])
+        post.upsert_comment("o/r", 1, "new body", bot_login="my-review-app[bot]")
+        assert calls[0]["method"] == "POST", "edited a comment authored by a different identity"
 
     def test_no_marker_creates_new(self, capture_api):
         calls, set_pages = capture_api
         set_pages([[comment(7, "unrelated comment")]])
-        post.upsert_comment("o/r", 1, "new body")
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
         assert calls[0]["method"] == "POST"
 
     def test_finds_bot_comment_across_pages(self, capture_api):
@@ -170,7 +232,7 @@ class TestUpsertComment:
         page1 = [comment(1, "chatter"), comment(2, f"forged {post.MARKER}", login="someone")]
         page2 = [comment(3, f"ours {post.MARKER}")]
         set_pages([page1, page2])
-        post.upsert_comment("o/r", 1, "new body")
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
         assert calls[0]["method"] == "PATCH"
         assert "/comments/3" in calls[0]["path"]
 
@@ -182,7 +244,7 @@ class TestUpsertComment:
         # sibling's comment is present would PATCH the sibling's review away.
         calls, set_pages = capture_api
         set_pages([[comment(42, f"the incumbent's review {post.MARKER}")]])
-        post.upsert_comment("o/r", 1, "new body", self.HANDROLLED)
+        post.upsert_comment("o/r", 1, "new body", self.HANDROLLED, bot_login=BOT_LOGIN)
         assert calls[0]["method"] == "POST", "hijacked another generator's comment instead of creating its own"
 
     def test_each_generator_updates_its_own_comment(self, capture_api):
@@ -192,12 +254,12 @@ class TestUpsertComment:
         both = [comment(10, f"incumbent {post.MARKER}"), comment(11, f"handrolled {self.HANDROLLED}")]
 
         set_pages([list(both)])
-        post.upsert_comment("o/r", 1, "x")
+        post.upsert_comment("o/r", 1, "x", bot_login=BOT_LOGIN)
         assert "/comments/10" in calls[0]["path"]
 
         calls.clear()
         set_pages([list(both)])
-        post.upsert_comment("o/r", 1, "y", self.HANDROLLED)
+        post.upsert_comment("o/r", 1, "y", self.HANDROLLED, bot_login=BOT_LOGIN)
         assert "/comments/11" in calls[0]["path"]
 
 
@@ -234,11 +296,15 @@ def main_env(tmp_path, monkeypatch, artifact_dir):
 
 
 def stub_pr_shas(monkeypatch, *responses):
-    """Stub the PR fetches main() does for its TOCTOU checks: one (head, base)
-    pair per expected call, the last pair reused if more calls arrive."""
+    """Stub the API calls main() makes before posting: the identity resolution
+    (any /graphql call answers with the bot's viewer login) and the PR fetches
+    for the TOCTOU checks — one (head, base) pair per expected call, the last
+    pair reused if more calls arrive."""
     remaining = list(responses)
 
-    def fake_api_json(*args, **kwargs):
+    def fake_api_json(path, method="GET", payload=None):
+        if path == "/graphql":
+            return {"data": {"viewer": {"login": BOT_LOGIN}}}
         head, base = remaining.pop(0) if len(remaining) > 1 else remaining[0]
         return {"head": {"sha": head}, "base": {"sha": base}}
 
@@ -255,7 +321,9 @@ class TestMain:
         monkeypatch.setattr(
             post,
             "upsert_comment",
-            lambda repo, pr, body, marker=None: posted.update(repo=repo, pr=pr, body=body, marker=marker),
+            lambda repo, pr, body, marker=None, bot_login=None: posted.update(
+                repo=repo, pr=pr, body=body, marker=marker, bot_login=bot_login,
+            ),
         )
 
         post.main()
@@ -265,6 +333,26 @@ class TestMain:
         # Bytes posted == render() of the artifact that was verified.
         assert posted["body"].splitlines()[0] == post.MARKER
         assert valid_artifact["summary"] in posted["body"]
+        # The ownership check runs under the identity the token resolved to,
+        # not a configured one.
+        assert posted["bot_login"] == BOT_LOGIN
+
+    def test_unresolvable_identity_posts_nothing(self, main_env, monkeypatch):
+        # Fail-closed: if the token's own login cannot be resolved, the
+        # executor must not guess -- guessing decides which comments it may
+        # edit. Verification and the TOCTOU pre-check pass; identity fails.
+        def fake_api_json(path, method="GET", payload=None):
+            if path == "/graphql":
+                return {"errors": [{"message": "something upstream broke"}]}
+            return {"head": {"sha": "reviewed-sha"}, "base": {"sha": "reviewed-base"}}
+
+        monkeypatch.setattr(post, "api_json", fake_api_json)
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
+
+        with pytest.raises(SystemExit):
+            post.main()
+        assert posted == []
 
     def test_main_passes_its_marker_to_both_render_and_upsert(self, main_env, monkeypatch, valid_artifact):
         # The two must agree or the reviewer searches for a comment it never writes
@@ -278,7 +366,7 @@ class TestMain:
         monkeypatch.setattr(
             post,
             "upsert_comment",
-            lambda repo, pr, body, marker=None: posted.update(body=body, marker=marker),
+            lambda repo, pr, body, marker=None, bot_login=None: posted.update(body=body, marker=marker),
         )
 
         post.main()
@@ -327,7 +415,9 @@ class TestMain:
         # just-posted review with a stale notice and fails the job.
         stub_pr_shas(monkeypatch, UNMOVED, ("pushed-sha", "reviewed-base"))
         posted = []
-        monkeypatch.setattr(post, "upsert_comment", lambda repo, pr, body, marker=None: posted.append(body))
+        monkeypatch.setattr(
+            post, "upsert_comment", lambda repo, pr, body, marker=None, bot_login=None: posted.append(body),
+        )
 
         with pytest.raises(SystemExit):
             post.main()
@@ -339,7 +429,9 @@ class TestMain:
     def test_base_retarget_during_post_withdraws_comment(self, main_env, monkeypatch):
         stub_pr_shas(monkeypatch, UNMOVED, ("reviewed-sha", "retargeted-base"))
         posted = []
-        monkeypatch.setattr(post, "upsert_comment", lambda repo, pr, body, marker=None: posted.append(body))
+        monkeypatch.setattr(
+            post, "upsert_comment", lambda repo, pr, body, marker=None, bot_login=None: posted.append(body),
+        )
 
         with pytest.raises(SystemExit):
             post.main()

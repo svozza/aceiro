@@ -8,6 +8,12 @@ hidden HTML marker.
 
 Any verifier rejection or SHA mismatch: nothing is posted, exit non-zero.
 
+Comment ownership is marker AND author, and the author half is resolved at
+runtime from the write token itself (resolve_bot_login) rather than configured:
+a configured login can drift from the token actually posting, and this value
+decides which prior comments the executor may edit. Unresolvable identity is
+also fail-closed.
+
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA,
 RUN_URL, BEDROCK_INFERENCE_PROFILE (attribution stamp only).
 Arguments: --artifact-dir (review.json + context files), --policy, --prompt, and
@@ -36,9 +42,6 @@ from verify import Rejection, verify
 # exactly what it always did; a second generator overrides both.
 MARKER = "<!-- ai-pr-review-sticky-comment -->"
 TITLE = "🤖 AI Code Review"
-# Anyone can paste the marker into their own comment; only a comment that is
-# ALSO authored by the Actions bot identity is ours to update.
-BOT_LOGIN = "github-actions[bot]"
 
 # Presentation only; severity *order* comes from policy.json's enum (most
 # severe first), the single home of the severity vocabulary.
@@ -103,19 +106,53 @@ def render(
     return "\n".join(lines)
 
 
-def upsert_comment(repo: str, pr_number: int, body: str, marker: str = MARKER) -> None:
+VIEWER_LOGIN_QUERY = "query { viewer { login } }"
+
+
+def resolve_bot_login() -> str:
+    """The login the write token authenticates as, asked of the token itself.
+
+    This decides which prior comments are OURS to edit or supersede: anyone can
+    paste the marker into their own comment, so ownership is marker AND author,
+    and the author half must come from the credential in hand -- a configured
+    value can silently disagree with the token actually posting (the exact drift
+    a consumer swapping GITHUB_TOKEN for an app token would introduce).
+
+    GraphQL rather than REST GET /user because it is the one identity call every
+    token type answers: /user is 403 "Resource not accessible by integration"
+    for app installation tokens, which is what Actions' GITHUB_TOKEN is. For a
+    bot, viewer.login comes back WITH the "[bot]" suffix (github-actions[bot],
+    <app-slug>[bot]) -- byte-identical to the user.login on comments the token
+    creates, so no mapping sits between resolution and the ownership check.
+
+    Fail-closed: anything but a non-empty login exits without posting. Guessing
+    here means the executor may edit comments it does not own.
+    """
+    response = api_json("/graphql", method="POST", payload={"query": VIEWER_LOGIN_QUERY})
+    login = None
+    if isinstance(response, dict):
+        login = (((response.get("data") or {}).get("viewer")) or {}).get("login")
+    if not isinstance(login, str) or not login:
+        fail(f"could not resolve the token's own login, nothing posted (response: {json.dumps(response)[:300]})")
+    return login
+
+
+def upsert_comment(repo: str, pr_number: int, body: str, marker: str = MARKER, *, bot_login: str) -> None:
     """Update this generator's own sticky comment, or create it.
 
     Matched on `marker` AND author. The marker must be the SAME one render() wrote,
     or a reviewer would search for a comment it never posts and create a new one
-    every run -- so callers pass one value to both.
+    every run -- so callers pass one value to both. `bot_login` is keyword-only
+    and has no default because it is the security half of the match: the one
+    valid source is resolve_bot_login(), and a hardcoded fallback would be the
+    coupling this parameter replaced.
     """
     existing_id = next(
         (
             comment["id"]
             for page in paginate(f"/repos/{repo}/issues/{pr_number}/comments?")
             for comment in page
-            if marker in (comment.get("body") or "") and (comment.get("user") or {}).get("login") == BOT_LOGIN
+            if marker in (comment.get("body") or "") and (comment.get("user") or {}).get("login") == bot_login
         ),
         None,
     )
@@ -185,6 +222,11 @@ def main() -> None:
     if moved := check_pr_unmoved(repo, pr_number, reviewed_sha, reviewed_base):
         fail(f"{moved}; nothing posted")
 
+    # Resolved before the first write and reused for the withdrawal: the two
+    # upserts must agree on identity, or a stale notice could land in a new
+    # comment while the outdated review stays up.
+    bot_login = resolve_bot_login()
+
     metadata = {
         "model": os.environ["BEDROCK_INFERENCE_PROFILE"],
         "prompt": hashlib.sha256(args.prompt.read_bytes()).hexdigest()[:12],
@@ -195,7 +237,7 @@ def main() -> None:
     severities = policy["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]
     severity_order = {name: rank for rank, name in enumerate(severities)}
     body = render(artifact, metadata, severity_order, args.marker, args.title)
-    upsert_comment(repo, pr_number, body, args.marker)
+    upsert_comment(repo, pr_number, body, args.marker, bot_login=bot_login)
 
     # TOCTOU guard, second half: the pre-check and the write are not atomic —
     # a push (or base retarget) landing between them leaves a review describing
@@ -203,7 +245,7 @@ def main() -> None:
     # attacker cancels the new revision's workflow. Recheck after the write;
     # if the PR moved, overwrite our comment with a stale notice and fail.
     if moved := check_pr_unmoved(repo, pr_number, reviewed_sha, reviewed_base):
-        upsert_comment(repo, pr_number, f"{args.marker}\n{STALE_NOTICE}", args.marker)
+        upsert_comment(repo, pr_number, f"{args.marker}\n{STALE_NOTICE}", args.marker, bot_login=bot_login)
         fail(f"{moved} while posting; review withdrawn")
 
 

@@ -218,12 +218,14 @@ is somewhere a compromised generator is permitted to point a maintainer.
 
 Tracked in ADR-0002. Both of the original dependency/policy items are resolved —
 the Powertools hosts are out of the shipped policy (`tests/test_policy_defaults.py`
-holds that line), and `boto3` is gone. What is left arrives with the code that
-carries it:
+holds that line), and `boto3` is gone. `post.py`'s hardcoded `BOT_LOGIN` is
+resolved too: the executor now asks the write token who it is (GraphQL
+`viewer { login }`, the one identity call every token type answers — REST
+`/user` is 403 for the installation tokens Actions issues) and fails closed if
+it can't. It is a security property, not configuration: the comment marker is
+copyable, so ownership needs the author, and the author must come from the
+credential in hand. What is left arrives with the code that carries it:
 
-- `post.py`'s hardcoded `BOT_LOGIN`, which becomes runtime-resolved from the
-  credential in hand rather than a config input. It is a security property: the
-  comment marker is copyable, so ownership needs the author too.
 - The generator prompt's project description.
 
 The test fixtures still use Powertools hostnames and paths, deliberately. The
