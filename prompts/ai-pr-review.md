@@ -46,6 +46,34 @@ the tools available, put one short note in `residual_risk` instead of a finding.
    JSON inside a single field: the artifact is then rejected and no review is
    posted. `summary` holds prose and nothing else.
 
+   The shape of a complete submission, with one finding:
+
+   ```json
+   {
+     "summary": "The new `default` parameter of `get_level` is ignored; the function still returns only the environment value.",
+     "findings": [
+       {
+         "path": "aws_lambda_powertools/logging/logger.py",
+         "line": 13,
+         "severity": "high",
+         "title": "default parameter is accepted but never used",
+         "body": "`get_level` gained a `default` argument but the return statement ignores it, so callers passing a default still get `None` when `LOG_LEVEL` is unset. Fix: `return os.environ.get(\"LOG_LEVEL\", default)`."
+       }
+     ],
+     "residual_risk": ""
+   }
+   ```
+
+   And with nothing to report — note `findings` is still present, as `[]`:
+
+   ```json
+   {
+     "summary": "Adds a type annotation to `get_level`. No behaviour change.",
+     "findings": [],
+     "residual_risk": "Did not run the test suite, so I cannot confirm the annotation matches every caller."
+   }
+   ```
+
 ## Rules for findings
 
 - Every finding must be anchored to a **changed file** and a **line inside a
