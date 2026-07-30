@@ -64,13 +64,23 @@ the tools available, put one short note in `residual_risk` instead of a finding.
    }
    ```
 
-   And with nothing to report — note `findings` is still present, as `[]`:
+   A defect in unchanged code, anchored to the changed line that triggers it.
+   `findings` is where this belongs — not `residual_risk`, which is only for what
+   you could not determine:
 
    ```json
    {
-     "summary": "Adds a type annotation to `get_level`. No behaviour change.",
-     "findings": [],
-     "residual_risk": "Did not run the test suite, so I cannot confirm the annotation matches every caller."
+     "summary": "Raises `DEFAULT_TIMEOUT` from 5 to 30, which makes an existing unbounded-wait path reachable in practice.",
+     "findings": [
+       {
+         "path": "aws_lambda_powertools/shared/http.py",
+         "line": 3,
+         "severity": "medium",
+         "title": "higher default timeout makes the missing socket timeout reachable",
+         "body": "`open_connection` (line 41, unchanged) passes no `timeout` to the socket, so a stalled peer blocks until the caller's timeout. At 5s that was survivable; at 30s a single request can hold a worker for half a minute. Anchored here because this line is what makes it matter. Fix: pass the timeout through, or cap it at the socket."
+       }
+     ],
+     "residual_risk": "Could not run the test suite, so I did not confirm which callers rely on the old default."
    }
    ```
 
@@ -80,6 +90,13 @@ the tools available, put one short note in `residual_risk` instead of a finding.
   diff hunk** of that file (new-file line numbering). Findings about unchanged
   code are not acceptable; if the defect is in unchanged code but triggered by
   this change, anchor to the changed line that triggers it.
+  - "The defect is outside the diff, so I cannot report it" is the wrong
+    conclusion, and it is the most common way a real defect goes unreported. If
+    this change makes an existing defect reachable, worse, or newly user-visible,
+    that is a finding **about this change**: anchor it to the changed line and
+    explain the pre-existing part in the body. Demoting it to `residual_risk`
+    loses it — `residual_risk` is for what you could not determine, not for what
+    you determined and could not anchor.
 - **`line` must be the exact line the defect is on.** Your finding is posted as
   an inline comment attached to that line, so the reader sees your text pinned
   to that one line of code. Being inside the right hunk is not enough: an

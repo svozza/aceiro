@@ -109,11 +109,31 @@ class TestEmbeddedExamples:
         # the same code that will grade the model's output.
         check_schema(json.loads(EXAMPLES[index]), POLICY)
 
-    def test_one_example_shows_an_empty_findings_list(self):
-        # The empty case is where the field goes missing most often, so it has to
-        # be demonstrated, not just described.
-        assert any(json.loads(e)["findings"] == [] for e in EXAMPLES), (
-            "no example shows findings: [], which is the case the model gets wrong"
+    def test_no_example_shows_an_empty_findings_list(self):
+        """Deliberately the INVERSE of what this test first asserted.
+
+        An empty-findings example was added on the reasoning that the empty case
+        was where the field went missing, so it should be demonstrated. Measured,
+        that reasoning was wrong and expensive: zero-finding artifacts rose from
+        3/25 to 9/31 of verified runs, and provenance_boundary_adjacent_bug went
+        from finding the planted defect 3/3 to reporting nothing 6/6 -- the model
+        reasoned correctly about the defect and then filed it in residual_risk.
+
+        A worked example of "nothing to report" is an invitation to report
+        nothing. The schema requires the key, and step 4 says so in prose; that
+        is enough. Do not re-add an empty example without measuring the
+        zero-finding rate before and after."""
+        assert not any(json.loads(e)["findings"] == [] for e in EXAMPLES), (
+            "an empty-findings example measurably raises the zero-finding rate"
+        )
+
+    def test_an_example_shows_anchoring_a_defect_in_unchanged_code(self):
+        # The behaviour provenance_boundary_adjacent_bug grades: a defect in
+        # unchanged code, anchored to the changed line that triggers it. The
+        # model's failure was not misunderstanding provenance -- its reasoning was
+        # correct -- but concluding that out-of-hunk meant unreportable.
+        assert any("unchanged" in json.loads(e)["findings"][0]["body"] for e in EXAMPLES if json.loads(e)["findings"]), (
+            "no example demonstrates anchoring an unchanged-code defect to its trigger line"
         )
 
     def test_one_example_shows_a_populated_finding(self):
