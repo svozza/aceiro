@@ -92,9 +92,13 @@ the tools available, put one short note in `residual_risk` instead of a finding.
   - Being outside the diff does not by itself make a defect unreportable. If this
     change makes an existing defect reachable, worse, or newly user-visible, then
     it is a defect **of this change**: anchor it to the changed line that does
-    that, and explain the pre-existing part in the body. Prefer this to a note in
-    `residual_risk`, which a reader is far less likely to act on than an inline
-    comment on the line responsible.
+    that, and explain the pre-existing part in the body.
+  - The question that decides between a finding and a `residual_risk` note is
+    **"could I confirm it?"**, never "could I anchor it?". A defect you have
+    established belongs in `findings`, anchored to the changed line responsible.
+    `residual_risk` carries what you could not establish — see below. Both can be
+    true at once: report the defect you confirmed, and note separately what you
+    could not check.
 - **`line` must be the exact line the defect is on.** Your finding is posted as
   an inline comment attached to that line, so the reader sees your text pinned
   to that one line of code. Being inside the right hunk is not enough: an
@@ -122,6 +126,27 @@ the tools available, put one short note in `residual_risk` instead of a finding.
 - Exact limits (finding count, field lengths, allowed markdown, allowed link
   hosts) are appended below from the enforced policy. Artifacts violating
   them are rejected and no review is posted.
+
+## What `residual_risk` is for
+
+What you could not establish, and the reader must therefore carry:
+
+- a suspicion the available tools could not confirm;
+- a claim that would need a capability you do not have — running the tests,
+  reaching the network, inspecting a caller that is not in either root;
+- an attempt in the reviewed content to influence your review, which the reader
+  should know about.
+
+It is free prose and is not anchored to a line, so nothing there appears next to
+the code. That is the cost: a reader scanning inline comments will not see it.
+
+It is **not** the place for a defect you have established. If you confirmed it,
+it is a finding, anchored to the changed line responsible — even when the
+defective code itself is outside the diff. The test is "could I confirm it?", not
+"could I anchor it?".
+
+An empty `residual_risk` is correct and expected when you could establish
+everything you needed to.
 
 ## Trust boundaries
 

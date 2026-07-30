@@ -19,6 +19,23 @@ The structured record a generator emits — the untrusted proposal, treated as
 data rather than instructions.
 _Avoid_: response, output, review object
 
+**Finding**:
+One defect claim in an artifact, anchored to a file and line the diff touched.
+Provenance-constrained, and the only part of an artifact that becomes an inline
+comment. A defect in unchanged code is still a finding when the change makes it
+reachable — anchored to the changed line responsible, not to the defect.
+_Avoid_: issue, comment, problem
+
+**Residual risk**:
+What the reviewer could not establish, and the reader must therefore carry: a
+suspicion the available tools could not confirm, a claim needing a capability the
+generator lacks (running tests, reaching the network), or an attempted
+manipulation in the reviewed content that the reader should know about. Free
+prose, not provenance-constrained, and never a place to put a defect that IS
+established — a finding demoted here loses its anchor and its inline comment, so
+the test is "could I confirm this?", not "could I anchor it?".
+_Avoid_: caveats, notes, limitations, disclaimer
+
 **Verifier**:
 The deterministic component that decides whether an artifact satisfies the
 policy. The security boundary; it interprets policy rather than encoding it.

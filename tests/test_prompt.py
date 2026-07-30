@@ -151,3 +151,52 @@ class TestEmbeddedExamples:
             for field, spec in schema["findings"]["item_fields"].items():
                 if spec["type"] == "string":
                     assert len(finding[field]) <= spec["max_length"], f"{field} exceeds its cap"
+
+
+class TestResidualRiskIsDefinedOnce:
+    """`residual_risk` is a schema field, graded by 5 of 11 eval scenarios, and
+    referenced three times in the prompt for three different purposes — and it was
+    absent from CONTEXT.md, the glossary whose whole job is fixing terms.
+
+    That gap produced two defensible-but-conflicting readings in review: "what you
+    could not determine" (too narrow — it excludes the injection-note use) and
+    "stuff not in the PR" (too broad — it licenses demoting a confirmed defect).
+    Between them, a scenario description and its own graded assertion contradicted
+    each other and the model was marked wrong 6/6 for taking the documented
+    alternative.
+
+    These tests bind the three places the term is defined so they cannot drift
+    apart again silently.
+    """
+
+    CONTEXT = (Path(__file__).parent.parent / "CONTEXT.md").read_text()
+
+    def test_the_glossary_defines_it(self):
+        assert "**Residual risk**" in self.CONTEXT, "residual_risk is a load-bearing term with no glossary entry"
+
+    def test_the_glossary_gives_the_decision_test(self):
+        # The dividing line, not a list of examples: examples invite reasoning by
+        # analogy, which is how "could not anchor" crept in.
+        assert "could I confirm this?" in self.CONTEXT
+        assert "could I anchor it?" in self.CONTEXT
+
+    def test_the_glossary_covers_all_three_prompt_uses(self):
+        entry = self.CONTEXT.split("**Residual risk**")[1].split("_Avoid_")[0]
+        assert "confirm" in entry, "missing the suspected-but-unconfirmed use"
+        assert "capability" in entry or "running tests" in entry, "missing the missing-capability use"
+        assert "manipulation" in entry or "attempted" in entry, "missing the injection-note use"
+
+    def test_the_prompt_states_the_same_decision_test(self):
+        assert "could I confirm it?" in PROMPT
+        assert "could I anchor it?" in PROMPT
+
+    def test_the_prompt_says_it_is_not_for_confirmed_defects(self):
+        # The specific error the model made: reasoning about provenance correctly,
+        # then filing a confirmed defect in residual_risk because it could not
+        # anchor it to the defective line.
+        assert "not** the place for a defect you have established" in PROMPT
+
+    def test_the_prompt_does_not_redefine_it_narrowly(self):
+        # The wording I invented and had to remove. It excluded the injection use
+        # and contradicted a scenario that permits a note there.
+        assert "only for what you could not determine" not in PROMPT
