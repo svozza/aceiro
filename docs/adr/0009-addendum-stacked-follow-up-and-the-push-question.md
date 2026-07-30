@@ -73,45 +73,77 @@ Pinned as policy, not convention:
   (the same context whose head SHA anchored the patches), and refuses if the
   reviewed head has moved — the TOCTOU posture post.py already takes.
 
-## Prior art: the repo this was extracted from refused inline comments
+## Prior art: the staging repo BUILT this, on `staging/inline-comments-test`
 
-The staging repository's second reviewer (agentcore_review/post.py) confronted
-inline-comment deduplication and deliberately walked away from it. Its
-docstring: findings are listed in the summary body with their `path:line`
-"rather than anchored as inline comments -- inline comments cannot be edited
-as a set, so keeping them deduplicated across pushes needs a GraphQL
-minimize-previous pass that the summary upsert does not." That refusal is why
-every reviewer here posts ONE sticky comment.
+Two generations of prior art in the extraction source, and they point in
+opposite directions. The agentcore reviewer refused inline comments outright
+(its post.py: "inline comments cannot be edited as a set, so keeping them
+deduplicated across pushes needs a GraphQL minimize-previous pass that the
+summary upsert does not") — that refusal is why every reviewer posts one
+sticky comment. But the incumbent reviewer then built the full solution on
+the `staging/inline-comments-test` branch (~620-line post.py reconciler,
+`diff_map.anchor_signatures`, 1.5k lines of tests; tip 70bebcd4), and its
+commit history is a catalogue of live-measured failures that any fresh
+design here would re-run. A suggestion IS an inline comment, so the
+suggestion executor ports that reconciler rather than re-deriving it. Its
+load-bearing lessons, each verified on a real PR there:
 
-Suggestion blocks have no such escape hatch: a suggestion IS an inline
-comment, so ADR-0009 knowingly takes on what agentcore declined. The naive
-failure is real — a PR updated while the fix stays applicable would repost an
-identical suggestion on every push — and ADR-0007's `(pr, head_sha, finding)`
-dedup key makes it WORSE for suggestions, because the head SHA churns on
-every push while the suggestion does not. So the suggestion path commits to:
+- **Identity comes from the anchored CODE, never the model's prose and never
+  the line number.** The branch's first key hashed title+body: measured
+  live, the model reworded every finding on every run over a byte-identical
+  diff, so the key never matched twice and every run deleted and reposted
+  everything. `(path, line)` is also out: GitHub re-anchors live comments
+  when the diff shifts (verified: line 2→4 across a push, comment stayed
+  live). The surviving key is `finding_fingerprint`: path + a whitespace-
+  normalized, NFC'd signature of the anchored line and its neighbours
+  (`anchor_signatures`, window=1 so two identical `return True` lines stay
+  distinct). For a suggestion this maps directly: `old` IS the anchored
+  code, so the fingerprint is the anchor signature, not a hash of prose.
+  Severity and wording deliberately excluded — a re-graded finding keeps its
+  comment and its thread.
+- **Group by anchor; never an ordinal suffix.** A `#2` suffix is "the 2nd
+  finding on this anchor", stable only while the set is: observed on PR
+  #514, one finding split into two produced a matched comment plus a
+  "new" one about the same defect. Findings sharing an anchor merge into ONE
+  comment — and never key a dict by fingerprint alone, which silently drops
+  all but one (the original defect: sticky comment counted more findings
+  than the PR showed).
+- **Retraction is reply-aware, and never "resolves".** A finding absent from
+  the current artifact: DELETE its comment if no human replied; if a human
+  replied, PATCH — plain-text notice ABOVE the struck-through body (below,
+  an unclosed model fence captures the notice), fences left unstruck, the
+  struck marker joining the fingerprint on the first line, which is the only
+  line model text cannot reach (markers are read from line 1 only, because a
+  fenced code block may legally CONTAIN the marker text). "Resolve" asserts
+  the defect was addressed, which the harness cannot know.
+- **Post before retracting.** The review POST is atomic (a 422 creates
+  nothing), so new comments go up before stale ones come down — failing
+  mid-run must leave the existing comments standing, never already-deleted.
+- **Review wrappers accumulate and must be superseded.** Every run that
+  posts inline comments must CREATE a review (no upsert exists for
+  creation; submitted reviews cannot be deleted). Spent wrappers get their
+  body rewritten to "superseded" and are minimized via GraphQL — best
+  effort, never run-failing (observed on PR #512: 9 wrappers, 3 still
+  pointing at any live comment).
+- **Compare content, not bodies.** The per-run `[run]` URL in the footer
+  differs every run; comparing whole bodies rewrites every comment every
+  time. Strip the executor-authored first and last lines by POSITION and
+  compare what remains.
 
-- **A content-anchored identity, not a SHA-anchored one.** Each suggestion
-  comment carries a hidden marker keyed on the finding id plus a hash of
-  `(path, old, new)`. Marker AND authenticated author (the runtime-resolved
-  bot login), same ownership rule as the sticky comment. Unchanged fix on a
-  new head → same key → found → nothing posted. `(pr, head_sha, finding)`
-  remains correct for the stacked follow-up PR, whose premise dies with the
-  head.
-- **Anchoring is the freshness check, and it self-extinguishes.** Before any
-  post or repost, `old` must byte-match at the CURRENT head. A contributor
-  who applied the suggestion made `old` no longer match, so the applied state
-  reposts nothing, for free. A head that moved under the fix fails anchoring
-  and posts nothing; the retriggered review owns the new state.
-- **Stale comments are GitHub's problem until proven otherwise.** When a
-  moved head invalidates a posted suggestion's position, GitHub collapses it
-  as outdated. That is accepted as the cleanup mechanism; the GraphQL
-  minimizeComment pass agentcore declined stays unbuilt unless real usage
-  shows outdated-but-expanded suggestions misleading contributors. Named
-  revisit trigger, same discipline as the push question above.
-- **`suggest.line` gets the same provenance check as `finding.line`** (in
-  the hunk, on the new side, from the same SHA-anchored diff the verifier
-  holds) — GitHub rejects out-of-diff comment placements, and discovering
-  that at post time in the executor is the wrong place to learn it.
+What transfers unchanged from the earlier sketch: marker AND authenticated
+author (the runtime-resolved bot login) gate every PATCH and DELETE;
+anchoring at the current head is the freshness check and self-extinguishes
+once a contributor applies the suggestion (`old` stops matching);
+`suggest.line` gets the same in-hunk provenance check as `finding.line`, in
+the verifier, not as a GitHub 422 in the executor. ADR-0007's
+`(pr, head_sha, finding)` key remains correct for the stacked follow-up PR,
+whose premise dies with the head — it is only wrong for suggestions, where
+the head churns exactly when the suggestion does not.
+
+The port is not yet scheduled; it lands with the remediation executor. The
+branch is the reference implementation, and its test suite (test_post.py's
+reconciler half, test_post_properties.py, test_diff_map.py) is the
+port's acceptance bar.
 
 ## The fork asymmetry, and what it does to ADR-0009's ordering
 
