@@ -57,9 +57,22 @@ property above:
 - Suggestions are the default delivery. A remediation whose every patch fits
   suggestion constraints (single hunk per file, inside the diff, within
   bounds) is delivered as suggestion comments; the follow-up pull request is
-  the fallback for what suggestions cannot express (multi-hunk edits or
-  larger rewrites — still bounded by ADR-0005's caps and still within
-  `changed_files`).
+  the fallback for what suggestions cannot express — still bounded by
+  ADR-0005's caps and still within `changed_files`.
+- The boundary is STRUCTURAL, not a size judgment, and atomicity is the
+  reason. Suggestions are independently applicable: each is its own
+  one-click commit, appliable in any subset and any order. A single
+  finding whose fix spans multiple files (rename plus its call sites, a
+  signature change plus its callers) is only correct as a whole — delivered
+  as per-file suggestions it can be HALF-applied, leaving the branch broken
+  in a way neither the reviewer nor the contributor intended. So a
+  coordinated fix must never be delivered as independently applicable
+  pieces, even where each piece would be mechanically postable. One path,
+  one hunk → suggestion; a fix whose patch steps span paths (or multiple
+  coordinated hunks in one file) → the stacked follow-up pull request,
+  whose merge is atomic. Both sides of the rule are checkable from the
+  verified plan's step list, which is what keeps the delivery decision the
+  executor's.
 - The choice between the two is the EXECUTOR's, made from checkable
   properties of the verified plan, never the model's. A model-selected
   delivery mode would be a model-selected policy, v2 §2.1's banned move —

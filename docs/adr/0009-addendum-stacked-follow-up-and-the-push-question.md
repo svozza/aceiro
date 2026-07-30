@@ -159,7 +159,10 @@ suggestion into their own fork branch with one click; no cross-repo
 credential, no stacked base. This strengthens ADR-0009's decision beyond its
 original argument: suggestions-first is not merely the better default, it is
 the only universal mechanism, and the stacked follow-up pull request is a
-same-repo-only fallback for fixes too large to express as suggestions. A
-large fix on a FORK pull request has no automated delivery; the finding and
+same-repo-only fallback for what suggestions structurally cannot deliver —
+above all the multi-file fix (see the atomicity rule in the main ADR: a
+coordinated fix must never ship as independently applicable pieces, and a
+PR's merge is atomic where per-file suggestions are not). A multi-file fix
+on a FORK pull request therefore has no automated delivery; the finding and
 its suggested direction are stated in the review, and a human does the rest.
 That limitation is accepted and this addendum is where it is recorded.
