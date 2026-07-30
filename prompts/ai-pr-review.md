@@ -45,7 +45,10 @@ the tools available, put one short note in `residual_risk` instead of a finding.
 5. Pass each of the three as its own separate argument. Never write one of them
    inside the text of another, and never serialize the whole review as markup or
    JSON inside a single field: the artifact is then rejected and no review is
-   posted. `summary` holds prose and nothing else.
+   posted. `summary` holds prose and nothing else — one to three sentences
+   naming what the change does and your overall verdict. The detail lives in
+   each finding's `body`; do not restate it in `summary`. Pass `findings`
+   first, then `residual_risk`, with `summary` as the final argument.
 6. If `submit_review` rejects your submission, it tells you why. Fix exactly
    what the rejection names and resubmit the complete artifact — the rejection
    discards everything, so a partial resubmission is a new, incomplete review.

@@ -1,11 +1,13 @@
 # The generator leaks tool-call XML into a parameter value
 
 Measured 2026-07-30 against `global.anthropic.claude-opus-4-8` via Bedrock,
-Claude Code CLI 2.1.220. **Status: contained, not eliminated** — attempt 3
-(bed9fd8) rehoused the submission in a named tool with verifier feedback, which
-took hard failures from 18–27% to 5% of scenario-runs and bounds the residue
-with the rejection breaker. The leak itself still occurs; see attempt 3's
-"stubborn tail" below.
+Claude Code CLI 2.1.220. **Status: root cause identified, mitigated to zero
+observed** — attempt 3 (bed9fd8) rehoused the submission in a named tool with
+verifier feedback (hard failures 18–27% → 5%, residue bounded by the breaker);
+attempt 4 isolated the tail's driver — summary length, with argument order as
+an independent second lever — and the combined prompt measured 33/33 with zero
+leak-shaped calls. The attractor is a property of the model, not abolished;
+the breaker and the diagnosis both stay.
 
 ## What actually happens
 
@@ -231,9 +233,64 @@ Two traps found on the way, both now pinned by tests:
 **The stubborn tail:** one run in the final suite resubmitted the nested shape
 three times against feedback that named it explicitly — its third attempt
 ended in literal `</parameter></invoke>`. The breaker aborted it, fail-closed,
-shape visible in the transcript. So the attractor survives contact with every
-mitigation tried; the harness now converts it from a lost review into a
-bounded, diagnosable failure at ~5%.
+shape visible in the transcript. Attempt 4 found what drives this tail.
+
+## The tail's root cause: summary length, and where summary sits (attempt 4)
+
+Forensics over all 139 submit_review calls from attempt 3's three suites split
+the leak into two regimes:
+
+    FIRST submission of a session:   5 leaks / 93   (5%)
+    AFTER a rejection:              27 leaks / 46  (59%)
+
+and the first-submission leaks sort perfectly by summary length:
+
+    summary <1200 chars:  0/83 leaked
+    summary ≥1200 chars:  5/10 leaked
+
+Every leaked call had written `summary` FIRST and died before or during
+`findings`; the retry regime is so much worse because a rejected artifact gets
+resubmitted with its long summary intact, re-rolling the same dice. The
+mechanism: the serializer survives short strings and drifts mid-way through
+long ones — after ~1.2k characters of prose the model has stopped "filling a
+parameter" and started "writing a document", and when it reaches for the next
+field it reaches for markup.
+
+Both halves were then isolated on a 21-run probe (the three leak-prone
+scenarios x 7, first-submission rate):
+
+    baseline (attempt-3 prompt)                 4/21 leaked, 8/15 retries leaked
+    summary guidance: "one to three sentences"  0/21, 0/7 retries   (replicated: 0/21, 0/9)
+    FALSIFICATION: "several paragraphs"         4/21, 9/15 retries  — median summary
+                                                2272 chars, dose-response confirmed
+    "several paragraphs" + findings FIRST       0/21, 0/7 retries   — model complied
+                                                27/28 calls, median summary 1742
+    short summary + findings first (candidate)  0/21, 0/7 retries
+
+The falsification arm is the load-bearing one: demanding long summaries
+restored the baseline leak rate exactly, and ordering `findings` before
+`summary` then eliminated it AGAIN at the same long lengths. Two independent
+levers, each sufficient alone at n=21: keep the prose short, or spend the
+rigid array before the prose begins so there is no "next field" to reach for
+markup-wise. The candidate prompt does both — "one to three sentences naming
+what the change does and your overall verdict", and "pass `findings` first,
+then `residual_risk`, with `summary` as the final argument".
+
+Validated on the full suite, 11 scenarios x 3 runs: **33/33 — the first fully
+clean triple suite recorded on this harness** — zero leak-shaped calls in any
+stream, 4 submit_rejected (all injected or substantive, none serialization),
+artifact summaries median 244 chars. Review substance moved into the finding
+bodies, where the inline comment wants it anyway; spot-checks confirmed the
+diagnosis, callers and fix survive intact.
+
+Retrospective: attempt 2's JSON example most likely worked through the same
+variable. Its examples show one-line summaries, and the "trim" that regressed
+6%→18% (e54053e) shortened the prompt but not the summaries the model wrote.
+Length was the confound all along; the examples were teaching brevity, not
+syntax. One inconsistency is carried knowingly: the prompt's JSON examples
+still show `summary` first while the instruction orders `findings` first — the
+measured arms all had this mismatch and the model obeyed the instruction
+27/28, so it ships as measured rather than tidied into an unmeasured variant.
 
 ## What is still untested
 
