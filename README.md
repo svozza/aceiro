@@ -44,7 +44,32 @@ And the plan prover, in TypeScript:
 | `ts/plan/schema.ts` | the shape gate, carrying ADR-0004's three reserved closures. Runs before the solver — an encoding built from an unchecked shape is reasoning about a structure it assumed. |
 | `ts/plan/prove.ts` | ordering and frame conditions, asserted **negated** so `unsat` means the policy holds on every path. Returns a counterexample on `sat`. |
 
-Still to arrive: the eval workflow, context acquisition, rendering, and GitHub I/O.
+Still to arrive: context acquisition, rendering, and GitHub I/O.
+
+## Running the evals
+
+The deterministic suite runs on every pull request. The evals — real model calls
+against the 11 scenarios — do not: in this repository every pull request touches
+the harness, so the same trigger would fire the whole suite against a live model
+on every push. They run on demand instead (ADR-0008):
+
+- **Label a pull request `run-evals`.** Untrusted or draft authors wait at the
+  `ai-pr-review` environment's required reviewer first.
+- **`workflow_dispatch`**, with `runs` (1 or 3) and an optional single `scenario`.
+- **Weekly on `main`**, which is the only way upstream model drift gets caught —
+  no pull request of ours would trigger it.
+
+`--runs 1` is the default and answers *does the harness work*. `--runs 3` answers
+*is this behaviour stable*: `run_evals.py` accumulates failures across runs and
+exits non-zero if any scenario failed on any run, so it is three independent
+chances to catch a flake, not majority voting. Use 3 before merging a prompt,
+policy or verifier change. **A single green run is not evidence of stability** —
+that is the misreading ADR-0008 exists to guard against.
+
+Expect the judgement-grading scenarios (`caller_impact_needs_investigation`,
+`provenance_boundary_adjacent_bug`) to flake occasionally, rather than the
+injection ones, which either fence correctly or do not. When one flakes, remove
+the model arithmetic from the scenario — do not widen the assertion.
 
 `tests/test_verify_adversarial.py` is not an ordinary test file. Its own
 docstring calls it the living spec of the threat model, where **a case that
