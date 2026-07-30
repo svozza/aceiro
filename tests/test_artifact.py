@@ -12,14 +12,21 @@ should be reachable without a regression net.
 import json
 import re
 
+import copy
+
 from artifact import (
     WITHHELD,
+    build_artifact_schema,
     build_user_message,
     escape_fence,
     fence,
     redact_secrets,
+    render_constraints,
 )
-from conftest import CHANGED_FILES, POLICY, SAMPLE_DIFF
+from conftest import CHANGED_FILES, HARNESS_DIR, POLICY, SAMPLE_DIFF
+
+# The policy as it SHIPS, before conftest re-injects test hosts into POLICY.
+SHIPPED_POLICY = json.loads((HARNESS_DIR / "policy.json").read_text())
 
 ARTIFACT = {
     "summary": "s",
@@ -185,3 +192,100 @@ class TestRedactSecrets:
         # payload must be withheld rather than logged still matching the scan.
         policy = {"secret_scan_patterns": [r'", "']}
         assert redact_secrets({"a": "x", "b": "y"}, policy) == WITHHELD
+
+
+class TestRenderConstraints:
+    """The prose the model reads, which must never drift from what the verifier
+    enforces -- and must never contain a sentence with a hole in it.
+
+    Untested until a live eval run put `Links only to hosts: .` in front of a
+    real model: an empty allowlist was interpolated into a sentence that assumed
+    at least one host, and the next bullet told the model to check its links
+    against an "allowed-hosts list" that nothing could ever match. The shipped
+    policy has an EMPTY allowlist by design (fail-closed), so the empty case is
+    the DEFAULT case, not an edge one.
+
+    Instructions a model cannot act on are worse than absent ones. It has to
+    guess, and a guessing generator spends its retry budget on the wrong problem.
+    """
+
+    def test_no_empty_placeholder_anywhere_under_the_shipped_policy(self):
+        # SHIPPED_POLICY, not conftest's POLICY: conftest deliberately re-injects
+        # two hosts so the adversarial corpus's near-miss cases stay calibrated,
+        # which means the fixture cannot see the empty-allowlist default at all.
+        # That is exactly why this defect survived to a live run.
+        assert SHIPPED_POLICY["markdown"]["link_host_allowlist"] == []
+        text = render_constraints(SHIPPED_POLICY)
+
+        # The literal defect that reached a live model.
+        assert "hosts: ." not in text
+
+        # And its general shape: a bullet whose sentence trails off because a
+        # list interpolated empty. Checked per bullet, and only on the ones that
+        # could carry a host, since the fence bullet legitimately contains ```
+        # and ~~~ as literal markers.
+        for line in text.splitlines():
+            assert not line.rstrip().endswith(": ."), f"empty interpolation: {line!r}"
+            assert not line.rstrip().endswith(":"), f"bullet ends on a colon with nothing after: {line!r}"
+            if "host" in line:
+                assert not re.search(r"`\s*`", line), f"empty backticks in a host bullet: {line!r}"
+                assert ": ," not in line, f"empty first list element: {line!r}"
+
+    def test_empty_allowlist_says_no_links_rather_than_naming_none(self):
+        text = render_constraints(SHIPPED_POLICY)
+        assert "No links at all" in text
+        assert "every link is rejected" in text
+        # Must NOT dangle a reference to a list that cannot match.
+        assert "unless the repo is on the allowed-hosts list" not in text
+
+    def test_a_populated_allowlist_names_its_hosts(self):
+        policy = copy.deepcopy(POLICY)
+        policy["markdown"]["link_host_allowlist"] = ["docs.example.com", "github.com/an-org/"]
+        text = render_constraints(policy)
+        assert "`docs.example.com`" in text
+        assert "`github.com/an-org/`" in text
+        assert "No links at all" not in text
+
+    def test_the_caps_come_from_policy_not_from_prose(self):
+        # The whole point of generating this section: a cap changed in policy.json
+        # must change the sentence the model reads, or the two silently diverge.
+        policy = copy.deepcopy(POLICY)
+        policy["artifact_schema"]["summary"]["max_length"] = 1234
+        policy["artifact_schema"]["findings"]["max_items"] = 2
+        text = render_constraints(policy)
+        assert "summary 1234" in text
+        assert "At most 2 findings" in text
+
+    def test_severities_come_from_policy(self):
+        text = render_constraints(SHIPPED_POLICY)
+        for severity in POLICY["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]:
+            assert f"`{severity}`" in text
+
+
+class TestBuildArtifactSchema:
+    """The JSON Schema handed to the CLI's structured output.
+
+    A live run failed with "could not provide valid structured output after 5
+    attempts" because the model returned only `summary`. The schema was correct;
+    these pin that, so the next such failure is not re-diagnosed from scratch.
+    """
+
+    def test_all_three_top_level_fields_are_required(self):
+        schema = build_artifact_schema(POLICY)
+        assert schema["required"] == ["summary", "findings", "residual_risk"]
+
+    def test_extra_properties_are_refused_at_both_levels(self):
+        # additionalProperties: False is what makes the CLI reject an invented
+        # field before the verifier has to.
+        schema = build_artifact_schema(POLICY)
+        assert schema["additionalProperties"] is False
+        assert schema["properties"]["findings"]["items"]["additionalProperties"] is False
+
+    def test_every_finding_field_is_required(self):
+        schema = build_artifact_schema(POLICY)
+        required = schema["properties"]["findings"]["items"]["required"]
+        assert set(required) == set(POLICY["artifact_schema"]["findings"]["item_fields"])
+
+    def test_the_findings_cap_is_expressed_to_the_generator(self):
+        schema = build_artifact_schema(POLICY)
+        assert schema["properties"]["findings"]["maxItems"] == POLICY["artifact_schema"]["findings"]["max_items"]

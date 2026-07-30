@@ -260,7 +260,31 @@ def render_constraints(policy: dict) -> str:
     the verifier enforces."""
     schema = policy["artifact_schema"]
     fields = schema["findings"]["item_fields"]
-    hosts = ", ".join(f"`{h}`" for h in policy["markdown"]["link_host_allowlist"])
+    allowlist = policy["markdown"]["link_host_allowlist"]
+
+    # The allowlist ships EMPTY (fail-closed: a consumer names the hosts it
+    # trusts), so both link clauses have to read correctly with nothing on the
+    # list. Interpolating an empty join produced "Links only to hosts: ." — a
+    # sentence with a hole in it — and told the model to check its links against
+    # "the allowed-hosts list" that no link can ever match. Instructions the
+    # model cannot act on are worse than absent ones: it has to guess, and a
+    # guessing generator burns its retry budget on the wrong problem.
+    if allowlist:
+        hosts = ", ".join(f"`{h}`" for h in allowlist)
+        link_rule = f"- Links only to hosts: {hosts}. No images, no raw HTML, no @-mentions.\n"
+        autolink_rule = (
+            "- Bare email addresses and cross-repo references (owner/repo#123, "
+            "owner/repo@sha) auto-link on GitHub: put them in backticks unless "
+            "the repo is on the allowed-hosts list.\n"
+        )
+    else:
+        link_rule = "- No links at all: every link is rejected. No images, no raw HTML, no @-mentions.\n"
+        autolink_rule = (
+            "- Bare email addresses and cross-repo references (owner/repo#123, "
+            "owner/repo@sha) auto-link on GitHub, and every link is rejected, so "
+            "put them in backticks.\n"
+        )
+
     return (
         "\n\n## Enforced artifact constraints (verifier-rejected if violated)\n\n"
         f"- At most {schema['findings']['max_items']} findings; severity is one of "
@@ -268,10 +292,8 @@ def render_constraints(policy: dict) -> str:
         f"- Length caps: summary {schema['summary']['max_length']}, title "
         f"{fields['title']['max_length']}, body {fields['body']['max_length']}, "
         f"residual_risk {schema['residual_risk']['max_length']} characters.\n"
-        f"- Links only to hosts: {hosts}. No images, no raw HTML, no @-mentions.\n"
-        "- Bare email addresses and cross-repo references (owner/repo#123, "
-        "owner/repo@sha) auto-link on GitHub: put them in backticks unless "
-        "the repo is on the allowed-hosts list.\n"
+        f"{link_rule}"
+        f"{autolink_rule}"
         "- Markdown in text fields is limited to: plain text, emphasis, inline "
         "code, fenced code blocks, lists. No headings or blockquotes — the "
         "posted comment's structure is fixed; your text is body prose only. "
