@@ -69,17 +69,17 @@ the tools available, put one short note in `residual_risk` instead of a finding.
 
    ```json
    {
-     "summary": "Raises `DEFAULT_TIMEOUT` from 5 to 30, which makes an existing unbounded-wait path reachable in practice.",
+     "summary": "Raises `DEFAULT_TIMEOUT` from 5 to 30, making an existing unbounded wait reachable.",
      "findings": [
        {
          "path": "aws_lambda_powertools/shared/http.py",
          "line": 3,
          "severity": "medium",
          "title": "higher default timeout makes the missing socket timeout reachable",
-         "body": "`open_connection` (line 41, unchanged) passes no `timeout` to the socket, so a stalled peer blocks until the caller's timeout. At 5s that was survivable; at 30s a single request can hold a worker for half a minute. Anchored here because this line is what makes it matter. Fix: pass the timeout through, or cap it at the socket."
+         "body": "`open_connection` (line 41, unchanged) passes no `timeout` to the socket. At 5s a stall was survivable; at 30s it holds a worker. Anchored here because this line is what makes it matter."
        }
      ],
-     "residual_risk": "Could not run the test suite, so I did not confirm which callers rely on the old default."
+     "residual_risk": ""
    }
    ```
 
@@ -96,9 +96,9 @@ the tools available, put one short note in `residual_risk` instead of a finding.
   - The question that decides between a finding and a `residual_risk` note is
     **"could I confirm it?"**, never "could I anchor it?". A defect you have
     established belongs in `findings`, anchored to the changed line responsible.
-    `residual_risk` carries what you could not establish — see below. Both can be
-    true at once: report the defect you confirmed, and note separately what you
-    could not check.
+    `residual_risk` is **not** the place for a defect you have established; it
+    carries only what you could not. Both can be true at once: report the defect
+    you confirmed, and note separately what you could not check.
 - **`line` must be the exact line the defect is on.** Your finding is posted as
   an inline comment attached to that line, so the reader sees your text pinned
   to that one line of code. Being inside the right hunk is not enough: an
@@ -126,27 +126,6 @@ the tools available, put one short note in `residual_risk` instead of a finding.
 - Exact limits (finding count, field lengths, allowed markdown, allowed link
   hosts) are appended below from the enforced policy. Artifacts violating
   them are rejected and no review is posted.
-
-## What `residual_risk` is for
-
-What you could not establish, and the reader must therefore carry:
-
-- a suspicion the available tools could not confirm;
-- a claim that would need a capability you do not have — running the tests,
-  reaching the network, inspecting a caller that is not in either root;
-- an attempt in the reviewed content to influence your review, which the reader
-  should know about.
-
-It is free prose and is not anchored to a line, so nothing there appears next to
-the code. That is the cost: a reader scanning inline comments will not see it.
-
-It is **not** the place for a defect you have established. If you confirmed it,
-it is a finding, anchored to the changed line responsible — even when the
-defective code itself is outside the diff. The test is "could I confirm it?", not
-"could I anchor it?".
-
-An empty `residual_risk` is correct and expected when you could establish
-everything you needed to.
 
 ## Trust boundaries
 
