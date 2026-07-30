@@ -57,18 +57,40 @@ honest options: make the repository public, or run no credential-bearing job.
 
 ## Status
 
-smtithy is private and has **no** environment at this point, deliberately. The
-`ai-pr-review-runtime` environment was created, observed to lose its protection
-on the visibility change, and then deleted rather than left in place — an
-unprotected environment with the right name is worse than none, because the
-in-code assertion is the only thing standing between it and a live credential,
-and a future refactor could plausibly treat "environment exists" as sufficient.
+smtithy is **public**, and `ai-pr-review-runtime` exists with a real
+`required_reviewers` rule. Verified by reading the protection back from the API
+rather than by trusting the create call to have worked — which is the practical
+lesson of failure 1, where the create call returned 422 and produced an
+environment anyway.
 
-The `BEDROCK_ROLE_ARN` secret remains set. It is inert: the role's trust policy
-requires the subject claim
-`repo:svozza/smtithy:environment:ai-pr-review-runtime`, and with no such
-environment GitHub mints no token that matches, so the ARN is unusable by anyone
-who holds it.
+The sequence this repository actually went through, since it is the sequence any
+consumer might:
 
-The environment gets recreated — with protection verified by API rather than
-assumed — when the first credential-bearing job lands.
+    private  -> create gate  -> 422, environment exists with NO protection
+             -> deleted
+    public   -> create gate  -> protection_rules: ["required_reviewers"]
+
+In between, the repository was public with a working gate, then private again for
+unrelated reasons (git-defender blocks pushes to unapproved public repos), and
+that transition silently stripped the rule — failure 2, observed rather than
+reasoned about.
+
+Public is therefore not incidental here: on a free plan it is a *precondition*
+for the gate existing at all. It also has a cost that pushed the other way for a
+while — Actions minutes are free on public repositories and metered on private
+ones, so CI only runs while public on this account.
+
+The `BEDROCK_ROLE_ARN` secret has been set throughout, including while no
+environment existed. That was safe, and checking why is worth the two commands:
+the role's trust policy requires the subject claim
+
+    repo:svozza/smtithy:environment:ai-pr-review-runtime
+
+so with no such environment GitHub mints no matching token and the ARN is
+unusable by whoever holds it. The claim and the environment name must stay
+character-identical; a rename on either side silently breaks federation, and the
+symptom is an OIDC error rather than anything mentioning environments.
+
+Still true, and the reason this addendum exists: none of the above is a substitute
+for the in-code assertion. Every state above was reached without a single run
+failing, so nothing here would have been noticed by CI.

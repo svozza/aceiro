@@ -19,15 +19,13 @@ is the one that explains the shape of the codebase.
 
 ## Status
 
-**Private, and Actions is currently blocked.** Private-repo minutes are metered
-and this account's billing is not configured for them, so CI does not run — the
-suite has to be run locally for now. The repo was briefly public (where minutes
-are free and CI was green at 253 passed), and goes public again when the approval
-gate becomes load-bearing; see
-[the ADR-0006 addendum](docs/adr/0006-addendum-observed-gate-failures.md) for why
-those two facts are connected.
+Being extracted from a consuming repository, in sequence.
 
-Being extracted from a consuming repository, in sequence. What is here now is
+Public deliberately: on a free plan, Actions environment protection rules — the
+approval gate ADR-0006 is about — only work on public repositories, and Actions
+minutes are only free there. Going private silently strips the gate's protection
+rule, which is one of three fail-open modes observed for real and recorded in
+[the ADR-0006 addendum](docs/adr/0006-addendum-observed-gate-failures.md). What is here now is
 the artifact verifier and its tests, moved behaviour-preserving:
 
 | | |
