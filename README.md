@@ -82,3 +82,36 @@ carries it:
 The test fixtures still use Powertools hostnames and paths, deliberately. The
 adversarial corpus's near-misses are near-misses *of those exact strings*, so
 `tests/conftest.py` re-injects the two hosts the corpus was calibrated against.
+
+## Eval fixtures: two kinds, do not confuse them
+
+The eval scenarios feed the generator two directories, and the difference
+matters — conflating them is how a scenario ends up grading nothing.
+
+**PR HEAD (`pr_root/`)** is the content under review. These files are
+hand-reduced and carry **deliberately planted defects**: `caller_impact`'s
+`slice_dictionary` yields `i + chunk_size - 1` where real upstream has
+`i + chunk_size`. The bug *is* the fixture. Never regenerate these from real
+source — that removes the very defect the scenario grades.
+
+**BASE** is the trusted pre-change tree the model may read with Read/Grep/Glob.
+It used to be the whole enclosing checkout, which is what tied the suite to one
+repository. It is now declared per scenario in `base.json` and fetched from a
+pinned commit:
+
+```json
+{"repo": "owner/name", "sha": "<40 hex>", "paths": ["pkg/mod.py"]}
+```
+
+Ten of the eleven scenarios declare none and get an **empty** BASE — stricter
+than before, since a scenario that accidentally leaned on unrelated repository
+content now fails instead of passing for an undeclared reason. Only
+`caller_impact_needs_investigation` needs one, because it grades whether the
+model went looking for a real *caller* rather than pattern-matching the diff.
+
+A full 40-character SHA is required, never a branch or tag: `expect.json` grades
+an exact line number, and a moving ref would let the premise drift out from under
+it. Fixtures cache under `.eval-base-cache/` (gitignored — the declaration is the
+source of truth). The two premise checks that read fetched content skip unless
+the cache is populated or `SMTITHY_FETCH_FIXTURES=1` is set, so the
+deterministic suite makes no network calls.

@@ -6,6 +6,7 @@ harness bug can't silently pass (or fail) an eval for the wrong reason.
 """
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "evals"))
 
+import base_fixture  # noqa: E402
 import run_evals  # noqa: E402
 from conftest import POLICY  # noqa: E402
 from verify import Rejection  # noqa: E402
@@ -447,29 +449,72 @@ class TestCallerImpactScenarioPremise:
     If this fires, re-plant the scenario on a caller that still exists rather than
     relaxing it.
 
-    EXTRACTION NOTE: upstream, REPO_ROOT was the enclosing Powertools checkout,
-    four levels above .github/scripts/ai_review, so these assertions read the
-    real library source. smtithy contains no aws_lambda_powertools/, so the two
-    premise checks cannot run here and are SKIPPED rather than deleted or
-    weakened -- a skip is visible in the run summary, whereas relaxing them to
-    read the scenario's own pr_root/ copy would make them assert that a fixture
-    matches itself, which is the "passes for the wrong reason" failure the
-    docstring above is warning about.
+    The premise now rests on base.json's pinned commit rather than on an
+    enclosing checkout. Upstream these assertions read the library source from
+    four levels above .github/scripts/ai_review; smtithy vendors no such library.
 
-    They come back when the scenarios move to pinned owner/repo@sha fixtures,
-    which is what makes the premise checkable again without vendoring a library.
-    The needle assertion below needs no checkout and still runs.
+    Split in two, because the two halves have different costs:
+
+    - The declaration checks below need no network. They assert the scenario and
+      its base.json agree about which symbol matters and which files must be
+      present, which is the part that rots when someone edits one and not the
+      other.
+    - Whether the symbol is really DEFINED and really CALLED at that commit is a
+      property of remote content, so it needs a fetch. That runs only when the
+      fixture has already been materialised (a full eval run does it) or under
+      SMTITHY_FETCH_FIXTURES=1. The deterministic suite makes no external calls
+      and that stays true.
+
+    What is deliberately NOT done: pointing these at the scenario's own pr_root/
+    copy. That would assert a fixture matches itself, which is exactly the
+    "passing while testing nothing" failure this class exists to prevent.
     """
 
-    REPO_ROOT = Path(__file__).resolve().parents[4]
     SYMBOL = "slice_dictionary"
     DEFINED_IN = "aws_lambda_powertools/shared/functions.py"
     CALLED_FROM = "aws_lambda_powertools/utilities/parameters/ssm.py"
+    SCENARIO = "caller_impact_needs_investigation"
 
-    needs_real_repo = pytest.mark.skipif(
-        not (Path(__file__).resolve().parents[4] / "aws_lambda_powertools").is_dir(),
-        reason="premise needs a real Powertools checkout; restored by pinned owner/repo@sha fixtures",
-    )
+    @classmethod
+    def declaration(cls):
+        return base_fixture.load_declaration(Path(run_evals.SCENARIOS_DIR) / cls.SCENARIO)
+
+    @classmethod
+    def base_dir(cls):
+        """The materialised fixture, fetching only if explicitly permitted."""
+        declaration = cls.declaration()
+        cache = Path(__file__).parent.parent / ".eval-base-cache"
+        target = cache / declaration["repo"].replace("/", "_") / declaration["sha"]
+        if all((target / p).exists() for p in declaration["paths"]):
+            return target
+        if os.environ.get("SMTITHY_FETCH_FIXTURES") != "1":
+            pytest.skip("needs the pinned BASE fixture; run an eval or set SMTITHY_FETCH_FIXTURES=1")
+        return base_fixture.fetch(declaration, cache)
+
+    def test_the_scenario_declares_a_base_to_investigate(self):
+        declaration = self.declaration()
+        assert declaration is not None, (
+            f"{self.SCENARIO} has no base.json, so BASE is empty and the model has no caller to find — "
+            "the scenario would grade investigation of a file that does not exist"
+        )
+        assert self.DEFINED_IN in declaration["paths"]
+        assert self.CALLED_FROM in declaration["paths"], (
+            f"base.json does not fetch {self.CALLED_FROM}, so there is no caller in BASE"
+        )
+
+    def test_symbol_is_still_defined_where_the_scenario_plants_it(self):
+        source = (self.base_dir() / self.DEFINED_IN).read_text()
+        assert f"def {self.SYMBOL}(" in source, (
+            f"{self.SYMBOL} is no longer defined in {self.DEFINED_IN} at the pinned commit: the "
+            "caller_impact_needs_investigation eval's premise is stale"
+        )
+
+    def test_symbol_still_has_a_real_caller_to_investigate(self):
+        caller = (self.base_dir() / self.CALLED_FROM).read_text()
+        assert self.SYMBOL in caller, (
+            f"{self.CALLED_FROM} no longer calls {self.SYMBOL} at the pinned commit: the eval would "
+            "still pass but would no longer test caller-impact investigation"
+        )
 
     def test_the_graded_needle_is_the_symbol_under_review(self):
         expect = json.loads(
@@ -478,22 +523,6 @@ class TestCallerImpactScenarioPremise:
         needles = expect["transcript_tool_use_matching"]["input_contains_any"]
         assert self.SYMBOL in needles, (
             f"the scenario no longer grades investigation of {self.SYMBOL}; the assertions below pin the wrong symbol"
-        )
-
-    @needs_real_repo
-    def test_symbol_is_still_defined_where_the_scenario_plants_it(self):
-        source = (self.REPO_ROOT / self.DEFINED_IN).read_text()
-        assert f"def {self.SYMBOL}(" in source, (
-            f"{self.SYMBOL} is no longer defined in {self.DEFINED_IN}: the "
-            "caller_impact_needs_investigation eval's premise is stale"
-        )
-
-    @needs_real_repo
-    def test_symbol_still_has_a_real_caller_to_investigate(self):
-        caller = (self.REPO_ROOT / self.CALLED_FROM).read_text()
-        assert self.SYMBOL in caller, (
-            f"{self.CALLED_FROM} no longer calls {self.SYMBOL}: the eval would "
-            "still pass but would no longer test caller-impact investigation"
         )
 
 

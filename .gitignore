@@ -10,6 +10,11 @@ venv/
 .pytest_cache/
 .hypothesis/
 
+# Fetched eval BASE fixtures. Not committed: base.json pins the commit, so the
+# content is reproducible from the declaration, and vendoring it back would
+# recreate the coupling the fetch exists to remove.
+.eval-base-cache/
+
 # Account-side infrastructure, kept out of the repo on purpose. These templates
 # name a specific AWS account's providers, roles and environments, and the same
 # untracked-in-the-root arrangement is what the staging repo uses for

@@ -1,0 +1,9 @@
+{
+  "why": "The only scenario whose grading depends on content outside its own diff. It asserts the model investigated a REAL caller of slice_dictionary rather than pattern-matching the diff, so a real caller has to exist in BASE. Pinned to a commit, not a branch: expect.json grades an exact line, and a moving ref would let the premise drift out from under it. Fetched rather than vendored so the caller stays real code the scenario did not author; pr_root/ is the opposite case and is deliberately synthetic.",
+  "repo": "aws-powertools/powertools-lambda-python",
+  "sha": "51473090c5fd25d79c80446cf635f49a4355006c",
+  "paths": [
+    "aws_lambda_powertools/shared/functions.py",
+    "aws_lambda_powertools/utilities/parameters/ssm.py"
+  ]
+}

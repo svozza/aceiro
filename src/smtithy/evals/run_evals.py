@@ -10,11 +10,22 @@ Each scenario under scenarios/<name>/ has:
     context/{pr.json, diff.patch, changed_files.json}  -- cc_loop.py's input
     pr_root/                                           -- synthetic PR-head
                                                            files the model
-                                                           may read
+                                                           may read. Hand-reduced
+                                                           and carrying planted
+                                                           defects: this is the
+                                                           content under review,
+                                                           never fetched.
+    base.json                                          -- OPTIONAL. The pinned
+                                                           commit whose files
+                                                           form BASE, for the one
+                                                           scenario that grades
+                                                           investigation outside
+                                                           the diff. Absent means
+                                                           an empty BASE.
     expect.json                                        -- structural grading
 
 Usage:
-    python run_evals.py --base-root "$GITHUB_WORKSPACE" --output-dir "$OUT" [--runs 3]
+    python run_evals.py --output-dir "$OUT" [--runs 3] [--cache-dir DIR]
 """
 
 from __future__ import annotations
@@ -28,6 +39,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from artifact import POLICY_PATH  # noqa: E402
+from base_fixture import materialise as materialise_base  # noqa: E402
 from cc_loop import run as run_loop  # noqa: E402
 from verify import Rejection, verify  # noqa: E402
 
@@ -244,7 +257,7 @@ def api_error_stats(events: list[dict]) -> dict:
     }
 
 
-def run_scenario(base_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
+def run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
     name = scenario_dir.name
     expect = json.loads((scenario_dir / "expect.json").read_text())
     # A scenario may borrow another's fixtures (context/ and pr_root/) via
@@ -254,6 +267,12 @@ def run_scenario(base_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
     context_dir = fixture_dir / "context"
     pr_root = fixture_dir / "pr_root"
     scenario_output = output_dir / name
+
+    # BASE is per-scenario now, not one checkout shared by all: fetched from the
+    # pinned commit in base.json, or an empty directory for the ten scenarios
+    # that declare none. Borrowed via context_from too, so a variant inherits
+    # the BASE of the fixtures it reuses.
+    base_root = materialise_base(fixture_dir, cache_root)
 
     verify_fn = make_injected_verify(expect.get("inject_rejections", 0))
     exit_code = run_loop(base_root, pr_root, context_dir, scenario_output, verify_fn=verify_fn)
@@ -274,7 +293,12 @@ def run_scenario(base_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
     review = json.loads(review_path.read_text())
     diff_text = (context_dir / "diff.patch").read_text()
     changed_files = json.loads((context_dir / "changed_files.json").read_text())
-    policy = json.loads((base_root / ".github/scripts/ai_review/policy.json").read_text())
+    # The harness's own policy, not one read out of the tree under review. Same
+    # correction as cc_loop.py: base_root is the CONSUMER's content, so sourcing
+    # the policy from it lets the reviewed repository supply the rules it is
+    # graded against — and here it would also mean the empty BASE has no policy
+    # at all.
+    policy = json.loads(POLICY_PATH.read_text())
 
     try:
         grade(review, expect, diff_text, changed_files, policy, events)
@@ -286,7 +310,16 @@ def run_scenario(base_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base-root", required=True, type=Path)
+    # Replaces --base-root. That flag took the enclosing checkout and handed the
+    # same tree to every scenario as BASE, which is what tied the suite to one
+    # repository. BASE is now per-scenario (base.json) and this is only where
+    # fetched fixtures are cached, keyed by repo and commit so runs share them.
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path(".eval-base-cache"),
+        help="Where pinned BASE fixtures are cached (default: .eval-base-cache).",
+    )
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--scenario", help="Run only this scenario (default: all)")
     parser.add_argument(
@@ -320,7 +353,7 @@ def main() -> int:
 
         with ThreadPoolExecutor(max_workers=min(args.workers, len(scenario_dirs) or 1)) as pool:
             results = list(
-                pool.map(lambda d, out=run_dir: run_scenario(args.base_root, d, out), scenario_dirs),
+                pool.map(lambda d, out=run_dir: run_scenario(args.cache_dir, d, out), scenario_dirs),
             )
 
         (run_dir / "results.json").write_text(json.dumps(results, indent=2))
