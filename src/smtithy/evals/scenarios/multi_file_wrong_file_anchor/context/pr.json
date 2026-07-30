@@ -1,0 +1,7 @@
+{
+  "number": 9011,
+  "title": "chore(parameters): readability tweak in cache + tolerate unknown transforms",
+  "body": "Two small changes in the parameters utility:\n\n- `cache.py`: pull the age computation onto its own line in `is_expired` for readability.\n- `transform.py`: stop hard-failing on transform names this client version does not recognise, so server-side rollout of a new transform does not break older deployments.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

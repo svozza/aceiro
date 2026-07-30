@@ -1,0 +1,7 @@
+{
+  "number": 9010,
+  "title": "refactor(batch): tidy SqsFifoProcessor typing and group-state docs",
+  "body": "Small clean-up pass on the SQS FIFO processor: annotate the `process` handler parameter, import Callable, and document that halt state is tracked per message group. Also simplifies the `should_skip` membership check.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

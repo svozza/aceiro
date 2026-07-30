@@ -1,0 +1,15 @@
+{
+  "description": "Planted regression: eviction picks the newest item instead of the oldest (popitem(last=True) vs the original next(iter(self))). Model must catch this as a real LRU defect.",
+  "verify_must_pass": true,
+  "min_findings": 1,
+  "findings_any": [
+    {
+      "path": "aws_lambda_powertools/shared/cache_dict.py",
+      "severity_at_least": "medium",
+      "line_in": [
+        24
+      ]
+    }
+  ],
+  "line_accuracy_note": "Exact line 24: `self.popitem(last=True)`, the wrong-end eviction. The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt \u2014 do not widen it."
+}

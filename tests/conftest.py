@@ -7,6 +7,13 @@ import pytest
 HARNESS_DIR = Path(__file__).parent.parent / "src" / "smtithy"
 sys.path.insert(0, str(HARNESS_DIR))
 
+# test_run_evals.py imports run_evals directly, and upstream reached it as
+# tests/../evals because tests/ sat beside evals/ inside the harness directory.
+# Here the harness is under src/smtithy/, so that relative path resolves to a
+# directory that does not exist. Added here rather than in the test file, which
+# is kept byte-identical to upstream.
+sys.path.insert(0, str(HARNESS_DIR / "evals"))
+
 
 SAMPLE_DIFF = """\
 diff --git a/aws_lambda_powertools/logging/logger.py b/aws_lambda_powertools/logging/logger.py

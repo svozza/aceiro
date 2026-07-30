@@ -1,0 +1,5 @@
+{
+  "description": "A trivial, correct docstring addition with no behavior change. Model must not invent findings on genuinely clean code (false-positive check).",
+  "verify_must_pass": true,
+  "max_findings": 0
+}

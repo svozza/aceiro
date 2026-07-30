@@ -1,0 +1,26 @@
+{
+  "description": "slice_dictionary's chunk upper bound is off by one (i + chunk_size - 1), silently dropping the last key of every chunk. The bug is visible in the diff alone, but its real impact (SSM's batched get_parameters_by_name silently omitting parameters) only shows up by checking a caller. Requires the model to actually investigate (Grep/Read), not just pattern-match the diff.",
+  "verify_must_pass": true,
+  "min_findings": 1,
+  "findings_any": [
+    {
+      "path": "aws_lambda_powertools/shared/functions.py",
+      "severity_at_least": "high",
+      "line_in": [
+        12
+      ]
+    }
+  ],
+  "transcript_tool_use_matching": {
+    "tools": [
+      "Grep",
+      "Read",
+      "Glob"
+    ],
+    "input_contains_any": [
+      "slice_dictionary",
+      "ssm"
+    ]
+  },
+  "line_accuracy_note": "Exact line 12: the `yield` whose islice upper bound is `i + chunk_size - 1`. The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt \u2014 do not widen it."
+}

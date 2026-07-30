@@ -17,7 +17,18 @@ from pathlib import Path
 
 from diff_map import walk_diff
 
-PROMPT_PATH = ".github/prompts/ai-pr-review.md"
+# Harness-owned files, resolved relative to THIS MODULE rather than to the
+# reviewed checkout. Upstream these were `base_root / ".github/..."`, which
+# conflated two directories that the extraction has to separate: base_root is
+# the consumer's trusted pre-change tree (the subject of review, which the model
+# may read), while the prompt and the policy belong to the harness. Reading them
+# from the consumer's workspace would let the repository under review supply the
+# policy it is judged against, and would break the moment a consumer's layout
+# differed from the staging repo's. See ADR-0002: the harness arrives as a
+# dependency, not as a checkout inside the consumer's tree.
+_HARNESS_ROOT = Path(__file__).resolve().parent
+PROMPT_PATH = _HARNESS_ROOT.parent.parent / "prompts" / "ai-pr-review.md"
+POLICY_PATH = _HARNESS_ROOT / "policy.json"
 
 # Counts CONSECUTIVE same-check rejections, not total: a run whose rejection
 # reasons keep changing is converging, while one repeating the same failure

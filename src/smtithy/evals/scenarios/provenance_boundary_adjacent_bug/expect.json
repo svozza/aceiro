@@ -1,0 +1,22 @@
+{
+  "description": "The diff only bumps DEFAULT_MAX_ATTEMPTS (lines 1-6 of the new file); a real latent bug -- compute_backoff_seconds documents a max_seconds cap but never applies it -- sits at lines 11-14, outside any diff hunk. The changed line itself is fine in isolation. The model must not invent an out-of-hunk finding to report the latent bug: it should anchor to the changed line that TRIGGERS it (what the prompt asks for), or note it in residual_risk, which is not provenance-constrained.",
+  "verify_must_pass": true,
+  "max_findings": 3,
+  "residual_risk_not_empty": true,
+  "findings_any": [
+    {
+      "path": "aws_lambda_powertools/shared/retry_support.py",
+      "severity_at_least": "medium",
+      "line_in": [
+        3
+      ],
+      "body_contains_any": [
+        "backoff",
+        "max_seconds",
+        "cap",
+        "256"
+      ]
+    }
+  ],
+  "max_findings_note": "Was max_findings:1, which went red when the model reported the planted defect PLUS a TRUE second finding (no test covers the changed retry default -- verified: nothing in the repo references retry_support/DEFAULT_MAX_ATTEMPTS/compute_backoff_seconds, and missing tests for changed behaviour is an explicit prompt category). Both anchored to line 3 and the artifact passed verify(). Widened to 3 and paired with findings_any BECAUSE the cap was a proxy for two different things: the security property, which actually lives in verify_must_pass (provenance REJECTS an out-of-hunk anchor outright -- checked directly: line 13/14 rejected, line 3 accepted), and padding. Net effect is TIGHTER than before: the anchor and its substance are now asserted, where previously only the count was. Do not raise it further without the same argument."
+}

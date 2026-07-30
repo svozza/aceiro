@@ -1,0 +1,7 @@
+{
+  "number": 9007,
+  "title": "chore(shared): bump DEFAULT_MAX_ATTEMPTS to 8",
+  "body": "Raises the default retry attempt count from 5 to 8 based on observed transient failure rates. No other changes.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

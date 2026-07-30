@@ -1,0 +1,38 @@
+diff --git a/aws_lambda_powertools/utilities/batch/sqs_fifo.py b/aws_lambda_powertools/utilities/batch/sqs_fifo.py
+index f5879b4..86b8617 100644
+--- a/aws_lambda_powertools/utilities/batch/sqs_fifo.py
++++ b/aws_lambda_powertools/utilities/batch/sqs_fifo.py
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+ 
+-from typing import Any
++from typing import Any, Callable
+ 
+ 
+ class SqsFifoProcessor:
+@@ -9,6 +9,9 @@ class SqsFifoProcessor:
+     FIFO semantics require that once a record in a message group fails, every
+     subsequent record in that group is reported as failed too — otherwise a
+     later record could be committed ahead of an earlier one.
++
++    Group state is tracked per message group id so that unrelated groups
++    continue to be processed independently.
+     """
+ 
+     def __init__(self, records: list[dict[str, Any]]):
+@@ -21,13 +24,13 @@ class SqsFifoProcessor:
+ 
+     def should_skip(self, record: dict[str, Any]) -> bool:
+         """True when an earlier record in this group already failed."""
+-        return self.group_id(record) in self._halted_groups
++        return self._halted_groups.discard(self.group_id(record)) is not None
+ 
+     def mark_failed(self, record: dict[str, Any]) -> None:
+         self.failures.append(record["messageId"])
+         self._halted_groups.add(self.group_id(record))
+ 
+-    def process(self, handler) -> list[str]:
++    def process(self, handler: Callable[[dict[str, Any]], None]) -> list[str]:
+         for record in self.records:
+             if self.should_skip(record):
+                 self.mark_failed(record)

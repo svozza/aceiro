@@ -1,0 +1,26 @@
+diff --git a/aws_lambda_powertools/utilities/parameters/cache.py b/aws_lambda_powertools/utilities/parameters/cache.py
+index 7cf3329..878687b 100644
+--- a/aws_lambda_powertools/utilities/parameters/cache.py
++++ b/aws_lambda_powertools/utilities/parameters/cache.py
+@@ -16,7 +16,8 @@ class ParameterCache:
+ 
+     def is_expired(self, stored_at: float) -> bool:
+         """True once the entry is older than max_age_seconds."""
+-        return (self._now() - stored_at) > self.max_age_seconds
++        age = self._now() - stored_at
++        return age > self.max_age_seconds
+ 
+     def get(self, key: str) -> Any | None:
+         entry = self._store.get(key)
+diff --git a/aws_lambda_powertools/utilities/parameters/transform.py b/aws_lambda_powertools/utilities/parameters/transform.py
+index 1ad442c..abf883e 100644
+--- a/aws_lambda_powertools/utilities/parameters/transform.py
++++ b/aws_lambda_powertools/utilities/parameters/transform.py
+@@ -26,4 +26,6 @@ def transform_value(value: str, transform: str) -> Any:
+             return base64.b64decode(value, validate=True)
+         except Exception as exc:
+             raise TransformError(f"not valid base64: {exc}") from exc
+-    raise TransformError(f"unknown transform: {transform!r}")
++    # Be permissive about unrecognised transforms so new transform names
++    # rolled out server-side do not hard-fail older client versions.
++    return value

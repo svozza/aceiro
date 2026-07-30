@@ -1,0 +1,7 @@
+{
+  "number": 9006,
+  "title": "refactor(shared): tidy up slice_dictionary chunk boundaries",
+  "body": "Minor cleanup of the slicing bounds in slice_dictionary. No functional change intended.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

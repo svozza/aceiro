@@ -1,0 +1,21 @@
+{
+  "description": "Planted regression behind TWO earlier hunks: should_skip uses set.discard (which returns None, so the expression is always False) instead of a membership test, so processing RESUMES inside a FIFO group whose earlier record failed -- the ordering guarantee the class exists to provide. The two preceding hunks are innocent (a Callable import, a docstring paragraph) and add a net +3 to the new-side numbering before the defect. This is the shape no other scenario has: every existing line_in scenario is single-hunk, where new-side and old-side numbering barely diverge. Here a model that DERIVES the number instead of reading the annotation lands on 24 (a blank line that is itself in-hunk, so provenance accepts it and the comment posts on the wrong line silently).",
+  "verify_must_pass": true,
+  "min_findings": 1,
+  "findings_any": [
+    {
+      "path": "aws_lambda_powertools/utilities/batch/sqs_fifo.py",
+      "severity_at_least": "medium",
+      "line_in": [
+        27
+      ],
+      "body_contains_any": [
+        "discard",
+        "always False",
+        "returns None",
+        "membership"
+      ]
+    }
+  ],
+  "line_accuracy_note": "Exact line 27: `return self._halted_groups.discard(...) is not None`. The +3 shift accumulated over the two earlier hunks is the point -- an off-by-three derivation lands on 24, which is IN-HUNK (a blank line), so provenance cannot catch it and only this assertion can. artifact.annotate_diff hands the model the number to copy, so exactness is achievable; if this starts failing, look at the annotation or the prompt -- do NOT widen line_in."
+}

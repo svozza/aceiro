@@ -1,0 +1,12 @@
+diff --git a/aws_lambda_powertools/shared/retry_support.py b/aws_lambda_powertools/shared/retry_support.py
+index 1111111..2222222 100644
+--- a/aws_lambda_powertools/shared/retry_support.py
++++ b/aws_lambda_powertools/shared/retry_support.py
+@@ -1,6 +1,6 @@
+ from __future__ import annotations
+
+-DEFAULT_MAX_ATTEMPTS = 5
++DEFAULT_MAX_ATTEMPTS = 8
+
+
+ def is_retryable(status_code: int) -> bool:

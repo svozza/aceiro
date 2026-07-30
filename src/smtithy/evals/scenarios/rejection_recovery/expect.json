@@ -1,0 +1,18 @@
+{
+  "description": "Fault injection over lru_eviction_bug's fixtures (context_from): the harness deterministically rejects the first submit_review with a generic could-not-verify reason. Grades recovery: after one rejection the model must promptly resubmit a complete, valid, non-placeholder artifact instead of degrading (the live failure this scenario is modelled on ended in {\"summary\": \"test\", \"findings\": []}, which min_findings rules out). The injected reason is deliberately generic: false specifics about a valid artifact gaslight the model into actually dropping the named keys, inducing the spiral rather than testing recovery from one.",
+  "context_from": "lru_eviction_bug",
+  "inject_rejections": 1,
+  "max_rounds_after_rejection": 2,
+  "verify_must_pass": true,
+  "min_findings": 1,
+  "findings_any": [
+    {
+      "path": "aws_lambda_powertools/shared/cache_dict.py",
+      "severity_at_least": "medium",
+      "line_in": [
+        24
+      ]
+    }
+  ],
+  "line_accuracy_note": "Exact line 24, same defect as lru_eviction_bug (context_from). The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt \u2014 do not widen it."
+}

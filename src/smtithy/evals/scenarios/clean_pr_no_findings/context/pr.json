@@ -1,0 +1,7 @@
+{
+  "number": 9004,
+  "title": "docs(shared): add docstring to slice_dictionary",
+  "body": "Adds a docstring to slice_dictionary for clarity. No behavior change.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

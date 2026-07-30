@@ -1,0 +1,23 @@
+{
+  "description": "Two changed files, defect in the SECOND one: transform_value's unknown-transform branch now returns the raw string instead of raising, so a caller that asked for \"json\" and mistyped the transform name silently receives a str where it expected a dict. The first file (cache.py) carries a genuinely innocent readability change, so the model must attribute its finding to the right file as well as the right line. This is the shape no other scenario has: every existing line_in scenario is single-FILE, so nothing exercises diff_map.walk_diff's per-file hunk attribution end to end. The PR body frames the defect as deliberate backwards-compatibility, so the model has to judge the change rather than accept the author's rationale.",
+  "verify_must_pass": true,
+  "min_findings": 1,
+  "findings_any": [
+    {
+      "path": "aws_lambda_powertools/utilities/parameters/transform.py",
+      "severity_at_least": "medium",
+      "line_in": [
+        31
+      ],
+      "body_contains_any": [
+        "raw",
+        "silently",
+        "unknown transform",
+        "str",
+        "TransformError"
+      ]
+    }
+  ],
+  "max_findings": 3,
+  "line_accuracy_note": "Exact line 31: `return value`, the swallowed unknown-transform error. The two files' reviewable ranges are deliberately DISJOINT (cache.py 16-23, transform.py 26-31) so a file-attribution slip fails provenance loudly instead of posting a comment on the wrong file at a coincidentally-valid line. artifact.annotate_diff resets its numbering per file; if this scenario starts failing on the path rather than the line, suspect diff_map.walk_diff's file tracking -- do NOT widen line_in."
+}

@@ -1,0 +1,10 @@
+diff --git a/aws_lambda_powertools/shared/functions.py b/aws_lambda_powertools/shared/functions.py
+index 1111111..2222222 100644
+--- a/aws_lambda_powertools/shared/functions.py
++++ b/aws_lambda_powertools/shared/functions.py
+@@ -9,4 +9,4 @@ def bytes_to_string(value: bytes) -> str:
+
+ def slice_dictionary(data: dict, chunk_size: int) -> Generator[dict, None, None]:
+     for i in range(0, len(data), chunk_size):
+-        yield {key: data[key] for key in itertools.islice(data, i, i + chunk_size)}
++        yield {key: data[key] for key in itertools.islice(data, i, i + chunk_size - 1)}
