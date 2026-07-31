@@ -131,3 +131,7 @@ set of things that decline.
   discipline), executable modes or any file metadata (a created file is
   `0644` content, full stop), and widening `suggest` to deliver creations
   (GitHub has no mechanism; if one appears it gets its own ADR).
+- **Before implementation: run a `/grill-with-docs` session on this ADR.**
+  It was written ahead of any code, so its claims — the objection
+  inversions, the parent-containment check's sufficiency, the one-cap
+  bounding — have been argued once and stress-tested never.
