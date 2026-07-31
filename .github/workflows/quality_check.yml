@@ -7,12 +7,11 @@ name: Quality check
 # secrets, no credential of any kind — so it runs on every pull request from
 # any branch and any fork, and blocks on any failure.
 #
-# This is deliberately the only CREDENTIALED-adjacent decision in the repo:
-# there is none. The eval suites (real model calls against fixed scenarios)
-# run locally only — the gated evals.yml was removed because its human-gate
-# configuration had four recorded ways of failing open (docs/adr/0006-addendum)
-# and the local loop was where eval work happened anyway. No job in this
-# repository holds a secret of any kind.
+# This is deliberately the ONLY job in the repo right now. The eval suite
+# (real model calls against fixed scenarios) is step 2 of the extraction and
+# arrives with its own workflow: it executes the PR's own harness code against
+# a live credential, so it needs the human gate that ADR-0006 describes, and
+# mixing it in here would put a secret behind a job that currently needs none.
 #
 # TWO RUNNERS, deliberately (ADR-0003). pytest covers the artifact verifier,
 # which stays Python because its risk is markdown-it rendering behaviour and a

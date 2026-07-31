@@ -48,31 +48,34 @@ Still to arrive: context acquisition, rendering, and GitHub I/O.
 
 ## Running the evals
 
-The deterministic suite runs on every pull request. The evals — real model
-calls against fixed scenarios — run **locally only**. They used to have a
-gated workflow (`evals.yml`), removed deliberately: this repository has one
-developer, the local loop is where eval work actually happened anyway, and
-the workflow's cost was real — it was the only job holding a credential, and
-its environment-gate configuration had four recorded ways of failing open
-(docs/adr/0006-addendum). Deleting it removed the entire "PR code runs with
-a live secret" problem class from CI; the credential now exists only in a
-developer's own AWS profile. If a schedule is ever wanted again for model
-drift (ADR-0008's weekly argument), restore it from git history rather than
-rebuilding by memory.
+The deterministic suite runs on every pull request. The evals — real model calls
+against the 11 scenarios — do not: in this repository every pull request touches
+the harness, so the same trigger would fire the whole suite against a live model
+on every push. They run on demand instead (ADR-0008):
 
-`--runs 1` answers *does the harness work*. `--runs 3` answers *is this
-behaviour stable*: the runner accumulates failures across runs and exits
-non-zero if any scenario failed on any run, so it is three independent
-chances to catch a flake, not majority voting. Use 3 before believing a
-prompt, policy or verifier change. **A single green run is not evidence of
-stability** — that is the misreading ADR-0008 exists to guard against.
+- **Label a pull request `run-evals`.** Untrusted or draft authors wait at the
+  `ai-pr-review` environment's required reviewer first.
+- **`workflow_dispatch`**, with `runs` (1 or 3) and an optional single `scenario`.
+- **Weekly on `main`**, which is the only way upstream model drift gets caught —
+  no pull request of ours would trigger it.
+
+`--runs 1` is the default and answers *does the harness work*. `--runs 3` answers
+*is this behaviour stable*: `run_evals.py` accumulates failures across runs and
+exits non-zero if any scenario failed on any run, so it is three independent
+chances to catch a flake, not majority voting. Use 3 before merging a prompt,
+policy or verifier change. **A single green run is not evidence of stability** —
+that is the misreading ADR-0008 exists to guard against.
 
 Expect the judgement-grading scenarios (`caller_impact_needs_investigation`,
 `provenance_boundary_adjacent_bug`) to flake occasionally, rather than the
 injection ones, which either fence correctly or do not. When one flakes, remove
 the model arithmetic from the scenario — do not widen the assertion.
 
-The suite runs from the working tree, so an uncommitted prompt or
+### Running the evals locally
+
+The local loop is how eval work actually happens — CI is the gate, not the
+development environment, and pushing to re-run costs a round trip per data
+point. The suite runs from the working tree, so an uncommitted prompt or
 verifier change is measurable immediately:
 
 ```bash
@@ -86,23 +89,14 @@ python src/smtithy/evals/run_evals.py \
 
 Any Python 3.13 venv with `pip install --require-hashes -r requirements.txt`
 works, and any AWS profile whose credentials can `bedrock:InvokeModel` on the
-inference profile named in `ANTHROPIC_MODEL`. `CLAUDE_CONFIG_DIR` points
-somewhere disposable so the run can't pick up a developer's own Claude Code
-settings. Expect a `--runs 3` suite to take on the order of fifteen minutes
-at the default `--workers 4`.
+inference profile named in `ANTHROPIC_MODEL` (the same pair CI's scoped session
+policy allows). `CLAUDE_CONFIG_DIR` points somewhere disposable so the run
+can't pick up a developer's own Claude Code settings. Expect a `--runs 3`
+suite to take on the order of fifteen minutes at the default `--workers 4`.
 
 `--scenario NAME` runs a single scenario while iterating on it — then finish
 with the full `--runs 3` before believing the change, since a fix measured on
 one scenario has been observed to move the failure to another.
-
-The plan generator has its own suite over the same layout plus a
-`context/finding.json` (the commanded finding, ADR-0007), graded on the
-ADR-0009 shape invariants rather than step inventories:
-
-```bash
-# same environment as above; no --cache-dir, plan scenarios need no BASE
-python src/smtithy/evals/run_plan_evals.py --output-dir /tmp/plan-eval-out --runs 3
-```
 
 Each scenario's output directory holds the forensics when something fails:
 `transcript.jsonl` carries the harness's own events (`run_failed`,
