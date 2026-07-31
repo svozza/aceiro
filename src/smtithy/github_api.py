@@ -1,4 +1,5 @@
-"""Shared GitHub REST client for the harness scripts (prepare_context, post).
+"""Shared GitHub REST client for the harness scripts (prepare_context, post,
+execute_plan).
 
 One retry core: bounded exponential backoff honouring Retry-After, applied
 only to methods that are safe to repeat (a failed POST has an uncertain
@@ -78,3 +79,103 @@ def paginate(path_with_query: str):
 def fail(message: str) -> None:
     print(f"::error::{message}", file=sys.stderr)
     sys.exit(1)
+
+
+# ------------------------------------------------------- pull request reviews --
+
+# The reviews API is the one endpoint family in this client that can gate a
+# merge (APPROVE / REQUEST_CHANGES). This harness only ever comments: the event
+# is a module constant spliced in below, and `submit_review` takes NO event
+# parameter, so no caller — and no artifact field — can reach the other verbs.
+# APPROVE is not derivable from anything the harness knows: the only signal it
+# has is "the model reported no findings", which is not "the PR is correct".
+REVIEW_EVENT = "COMMENT"
+
+
+def submit_review(repo: str, pr_number: int, body: str, comments: list[dict]) -> dict | list:
+    """Create one review carrying every inline comment in a single request.
+
+    The batch is atomic: if any comment's line cannot be resolved against the
+    diff, GitHub 422s the whole call and creates ZERO comments (verified live
+    in the extraction source). That is what makes "post everything or nothing"
+    cheap here — the caller never has to unwind a half-posted review.
+    """
+    return api_json(
+        f"/repos/{repo}/pulls/{pr_number}/reviews",
+        method="POST",
+        payload={"event": REVIEW_EVENT, "body": body, "comments": comments},
+    )
+
+
+def pull_reviews(repo: str, pr_number: int):
+    """Yield every review on the PR (all pages, flattened)."""
+    for page in paginate(f"/repos/{repo}/pulls/{pr_number}/reviews?"):
+        yield from page
+
+
+def update_review_body(repo: str, pr_number: int, review_id: int, body: str) -> None:
+    """Rewrite a SUBMITTED review's summary body.
+
+    The docs describe this endpoint without stating a state restriction and are
+    silent on submitted reviews; probed live on a submitted COMMENTED review, it
+    succeeds and the state is unchanged. (Deleting one is genuinely impossible —
+    "Submitted reviews cannot be deleted" — so this is the only way to correct
+    what a spent review wrapper says.)
+    """
+    api_json(
+        f"/repos/{repo}/pulls/{pr_number}/reviews/{review_id}",
+        method="PUT",
+        payload={"body": body},
+    )
+
+
+def graphql(query: str, variables: dict) -> dict:
+    """One GraphQL POST. Raises on a GraphQL-level error.
+
+    GraphQL is used for exactly one thing here — minimizing a spent review
+    wrapper, which has no REST equivalent. It returns HTTP 200 with an `errors`
+    array rather than an HTTP error status, so the failure has to be raised
+    explicitly or a denied mutation would look like a success.
+    """
+    response = json.loads(api_request("/graphql", method="POST", payload={"query": query, "variables": variables}))
+    if errors := response.get("errors"):
+        raise RuntimeError("; ".join(error.get("message", str(error)) for error in errors))
+    return response.get("data") or {}
+
+
+MINIMIZE_MUTATION = """
+mutation($subjectId: ID!) {
+  minimizeComment(input: {subjectId: $subjectId, classifier: OUTDATED}) {
+    minimizedComment { isMinimized }
+  }
+}
+"""
+
+
+def minimize_review(node_id: str) -> None:
+    """Collapse a review in the UI, classified OUTDATED.
+
+    Probed live in the extraction source: minimizing a review does NOT minimize
+    the inline comments it posted — they stay visible with live positions,
+    because minimization is per-node. That is what makes this safe to use on a
+    spent wrapper whose comments the reconciler still owns.
+
+    POST is never retried (an uncertain outcome must not be repeated), and this
+    mutation is idempotent anyway — minimizing an already-minimized review is a
+    no-op.
+    """
+    graphql(MINIMIZE_MUTATION, {"subjectId": node_id})
+
+
+def review_comments(repo: str, pr_number: int):
+    """Yield every inline review comment on the PR (all pages, flattened)."""
+    for page in paginate(f"/repos/{repo}/pulls/{pr_number}/comments?"):
+        yield from page
+
+
+def delete_review_comment(repo: str, comment_id: int) -> None:
+    api_json(f"/repos/{repo}/pulls/comments/{comment_id}", method="DELETE")
+
+
+def patch_review_comment(repo: str, comment_id: int, body: str) -> None:
+    api_json(f"/repos/{repo}/pulls/comments/{comment_id}", method="PATCH", payload={"body": body})

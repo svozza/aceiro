@@ -153,3 +153,140 @@ class TestApiRequest:
         monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
         api_json("/x")
         assert delays == [5]  # honoured Retry-After, not the backoff default
+
+
+# ------------------------------------------------------------------ reviews ---
+
+
+@pytest.fixture
+def capture(monkeypatch):
+    """Record api_json calls made by the reviews helpers."""
+    calls = []
+
+    def fake_api_json(path, method="GET", payload=None):
+        calls.append({"path": path, "method": method, "payload": payload})
+        return {}
+
+    monkeypatch.setattr(github_api, "api_json", fake_api_json)
+    return calls
+
+
+class TestSubmitReview:
+    def test_posts_one_review_with_every_comment(self, capture):
+        comments = [
+            {"path": "a.py", "line": 1, "side": "RIGHT", "body": "x"},
+            {"path": "b.py", "line": 2, "side": "RIGHT", "body": "y"},
+        ]
+        github_api.submit_review("o/r", 7, "top-level body", comments)
+
+        assert len(capture) == 1  # one atomic call, not one per comment
+        call = capture[0]
+        assert call["path"] == "/repos/o/r/pulls/7/reviews"
+        assert call["method"] == "POST"
+        assert call["payload"]["body"] == "top-level body"
+        assert call["payload"]["comments"] == comments
+
+    def test_event_is_comment(self, capture):
+        github_api.submit_review("o/r", 7, "b", [])
+        assert capture[0]["payload"]["event"] == "COMMENT"
+
+    def test_review_post_is_not_retried(self, monkeypatch, no_sleep):
+        # A retried review POST could double-post the whole batch; POST is
+        # excluded from RETRYABLE_METHODS, and this pins that for this path.
+        attempts = []
+
+        def fake_urlopen(request, timeout=None):
+            attempts.append(1)
+            raise FakeHTTPError(500)
+
+        monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(FakeHTTPError):
+            github_api.submit_review("o/r", 7, "b", [])
+        assert len(attempts) == 1
+
+
+class TestReviewCommentMutations:
+    def test_review_comments_flattens_pages(self, monkeypatch):
+        pages = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
+        monkeypatch.setattr(github_api, "paginate", lambda path: iter(pages))
+        assert [c["id"] for c in github_api.review_comments("o/r", 7)] == [1, 2, 3]
+
+    def test_review_comments_asks_for_the_pulls_endpoint(self, monkeypatch):
+        # Inline review comments live under /pulls/{n}/comments; the issue
+        # comments endpoint (the sticky comment's home) would list the wrong set.
+        seen = []
+        monkeypatch.setattr(github_api, "paginate", lambda path: seen.append(path) or iter([[]]))
+        list(github_api.review_comments("o/r", 7))
+        assert seen == ["/repos/o/r/pulls/7/comments?"]
+
+    def test_delete_targets_the_review_comment_endpoint(self, capture):
+        github_api.delete_review_comment("o/r", 42)
+        assert capture[0] == {"path": "/repos/o/r/pulls/comments/42", "method": "DELETE", "payload": None}
+
+    def test_patch_sends_the_new_body(self, capture):
+        github_api.patch_review_comment("o/r", 42, "edited")
+        assert capture[0]["path"] == "/repos/o/r/pulls/comments/42"
+        assert capture[0]["method"] == "PATCH"
+        assert capture[0]["payload"] == {"body": "edited"}
+
+
+class TestReviewMutations:
+    """The review-level helpers, used to supersede spent wrappers."""
+
+    def test_pull_reviews_flattens_pages(self, monkeypatch):
+        pages = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
+        monkeypatch.setattr(github_api, "paginate", lambda path: iter(pages))
+        assert [r["id"] for r in github_api.pull_reviews("o/r", 7)] == [1, 2, 3]
+
+    def test_pull_reviews_asks_for_the_reviews_endpoint(self, monkeypatch):
+        # /pulls/{n}/reviews lists review OBJECTS; /pulls/{n}/comments lists the
+        # inline comments inside them. Confusing the two would hand
+        # supersede_previous_reviews comments to rewrite.
+        seen = []
+        monkeypatch.setattr(github_api, "paginate", lambda path: seen.append(path) or iter([[]]))
+        list(github_api.pull_reviews("o/r", 7))
+        assert seen == ["/repos/o/r/pulls/7/reviews?"]
+
+    def test_update_review_body_puts_to_the_review(self, capture):
+        github_api.update_review_body("o/r", 7, 99, "superseded")
+        assert capture[0]["path"] == "/repos/o/r/pulls/7/reviews/99"
+        assert capture[0]["method"] == "PUT"
+        assert capture[0]["payload"] == {"body": "superseded"}
+
+    def test_minimize_sends_the_node_id_and_the_outdated_classifier(self, monkeypatch):
+        sent = {}
+        monkeypatch.setattr(
+            github_api, "api_request",
+            lambda path, method="GET", payload=None: sent.update(path=path, method=method, payload=payload)
+            or b'{"data": {"minimizeComment": {"minimizedComment": {"isMinimized": true}}}}',
+        )
+        github_api.minimize_review("PRR_abc")
+        assert sent["path"] == "/graphql"
+        assert sent["method"] == "POST"
+        assert sent["payload"]["variables"] == {"subjectId": "PRR_abc"}
+        # OUTDATED is the claim we can substantiate — a later run superseded it.
+        # SPAM/ABUSE/RESOLVED would each assert something the harness cannot know.
+        assert "OUTDATED" in sent["payload"]["query"]
+        assert "minimizeComment" in sent["payload"]["query"]
+
+    def test_a_graphql_error_raises_even_though_the_http_status_is_200(self, monkeypatch):
+        """GraphQL reports a denied mutation as HTTP 200 with an `errors` array.
+
+        Without this the caller would treat a permission failure as success. The
+        failure has to reach the fail-soft handler in the executor — which
+        decides to continue — rather than being lost here, where nothing would
+        report it.
+        """
+        monkeypatch.setattr(
+            github_api, "api_request",
+            lambda path, method="GET", payload=None: b'{"errors": [{"message": "Resource not accessible"}]}',
+        )
+        with pytest.raises(RuntimeError, match="Resource not accessible"):
+            github_api.minimize_review("PRR_abc")
+
+    def test_a_successful_graphql_call_returns_its_data(self, monkeypatch):
+        monkeypatch.setattr(
+            github_api, "api_request",
+            lambda path, method="GET", payload=None: b'{"data": {"ok": true}}',
+        )
+        assert github_api.graphql("query {}", {}) == {"ok": True}

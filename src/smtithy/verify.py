@@ -281,6 +281,37 @@ _APPEND_PROBE = "\x00aipr-probe\x00"
 _NEWLINES_RE = re.compile(r"\r\n?")
 
 
+def _source_lines(text: str) -> list[str]:
+    """The lines markdown-it will see, so token maps index into this list."""
+    return _NEWLINES_RE.sub("\n", text).split("\n")
+
+
+def code_lines(text: str) -> list[tuple[str, bool]]:
+    """Every line of *text*, paired with whether markdown-it renders it as CODE.
+
+    Code means fenced blocks (delimiters and all, since `~~` inside a fence
+    renders literally) and indented code blocks. `token.map` is the token's
+    ``[start, end)`` range over source lines, so this is the parser's own answer
+    to "is this line code" rather than a re-derivation of it — which is the point:
+    every hand-rolled version of the fence rules in this harness was wrong.
+
+    Lines come back from here rather than being re-split by the caller because
+    markdown-it normalises CR/CRLF to LF before parsing, so its line numbering
+    matches `text.split("\\n")` only when the text has no lone CR. It returns the
+    pairs so a consumer cannot index the parser's answer into the wrong list
+    (found by a property test: a lone \\r shifted every index).
+
+    Consumers that must not modify code — the reconciler's strike_through — use
+    this.
+    """
+    lines = _source_lines(text)
+    inside: set[int] = set()
+    for token in _PARSER.parse("\n".join(lines)):
+        if token.type in ("fence", "code_block") and token.map:
+            inside.update(range(token.map[0], token.map[1]))
+    return [(line, index in inside) for index, line in enumerate(lines)]
+
+
 def unterminated_fence(text: str) -> str | None:
     """The opening marker of a code fence *text* never closes, or None.
 
