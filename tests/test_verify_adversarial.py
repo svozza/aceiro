@@ -480,7 +480,39 @@ class TestSecrets:
         artifact["summary"] = "key AKIA​IOSFODNN7EXAMPLE leaked"
         rejected(artifact, sample_diff, changed_files, policy)
 
+    # Default_Ignorable code points whose general category is NOT Cf/Cc. A
+    # category-only strip lets every one of these through while GitHub renders
+    # the key as one contiguous run, so the reader sees the whole credential.
+    # The category test is not a usable proxy for "invisible" — the same reason
+    # artifact.py tabulates the property (see test_artifact.py's
+    # test_default_ignorable_non_cf_characters_are_stripped).
+    @pytest.mark.parametrize(
+        "invisible",
+        [
+            pytest.param("͏", id="U+034F-combining-grapheme-joiner"),  # Mn
+            pytest.param("️", id="U+FE0F-variation-selector-16"),  # Mn
+            pytest.param("᠋", id="U+180B-mongolian-fvs-1"),  # Mn
+            pytest.param("ㅤ", id="U+3164-hangul-filler"),  # Lo
+            pytest.param("ﾠ", id="U+FFA0-halfwidth-hangul-filler"),  # Lo
+            pytest.param("⁥", id="U+2065-reserved-default-ignorable"),  # Cn
+            pytest.param("\U000e0001", id="U+E0001-language-tag"),  # Cf, tag plane
+        ],
+    )
+    def test_default_ignorable_spliced_key_still_matches_rendered(
+        self, artifact, sample_diff, changed_files, policy, invisible
+    ):
+        artifact["summary"] = f"key AKIA{invisible}IOSFODNN7EXAMPLE leaked"
+        rejected(artifact, sample_diff, changed_files, policy)
+
     def test_bold_marker_in_prose_does_not_false_positive(self, artifact, sample_diff, changed_files, policy):
         # Two separate short runs stay separate across a real rendered break.
         artifact["summary"] = "Constants like AKIA prefixes are discussed.\n\nSee IOSFODNN7EXAMPLE docs."
+        verify(artifact, sample_diff, changed_files, policy)
+
+    def test_visible_combining_marks_do_not_fuse_separate_runs(self, artifact, sample_diff, changed_files, policy):
+        # An ordinary accent is Mn but NOT default-ignorable: it renders, so it
+        # must not be stripped into fusing two innocent runs into a false
+        # secret. The twin of test_artifact.py's
+        # test_visible_combining_marks_survive_stripping.
+        artifact["summary"] = "Prefix AKIÁ then IOSFODNN7EXAMPLE in café docs."
         verify(artifact, sample_diff, changed_files, policy)

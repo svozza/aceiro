@@ -28,6 +28,7 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
+from canonicalize import strip_invisible
 from diff_map import walk_diff
 
 # Over-approximates GitHub's mention grammar (no trailing boundary check:
@@ -211,10 +212,14 @@ def rendered_text(tokens) -> str:
                 parts.append("\n")
 
     walk(tokens)
-    text = "".join(parts)
-    # Whitespace controls stay: a tab renders as visible separation, and
+    # One spelling of "invisible", shared with the input fence. A general-
+    # category test (Cf/Cc) was not enough: U+034F CGJ, U+FE0F VS16, U+3164
+    # HANGUL FILLER and the rest of the Default_Ignorable table are Mn/Lo/Cn, so
+    # they survived it while GitHub renders the run they split as one contiguous,
+    # fully readable credential. canonicalize.strip_invisible keeps the
+    # deliberate \n\t\r retention: a tab renders as visible separation, and
     # dropping it would fuse two innocent runs into a false secret.
-    return "".join(ch for ch in text if ch in "\n\t\r" or unicodedata.category(ch) not in ("Cf", "Cc"))
+    return strip_invisible("".join(parts))
 
 
 def normalize_host(url: str) -> str | None:
@@ -449,7 +454,13 @@ def check_secrets(artifact: dict, policy: dict) -> None:
     # matches in the source — the formatting splits the run — but renders as
     # one visible, complete credential; rendered_text() sees what the reader
     # sees (inline boundaries removed, entities decoded, code included).
-    texts = [json.dumps(artifact, ensure_ascii=False)]
+    # The source is scanned twice: verbatim, and with invisible code points
+    # removed. Stripping catches a credential split by an invisible in a field
+    # that rendered_markdown never sees (a non-markdown, pattern-constrained
+    # field), and keeping the verbatim copy means stripping can only ever add
+    # matches — it cannot fuse two runs into a false negative.
+    source = json.dumps(artifact, ensure_ascii=False)
+    texts = [source, strip_invisible(source)]
     for value in _iter_markdown_values(artifact, policy):
         texts.append(rendered_markdown(value))
     for pattern in policy["secret_scan_patterns"]:

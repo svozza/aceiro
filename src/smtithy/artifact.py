@@ -15,6 +15,7 @@ import time
 import unicodedata
 from pathlib import Path
 
+from canonicalize import DEFAULT_IGNORABLE_RANGES, is_default_ignorable, strip_invisible
 from diff_map import walk_diff
 
 # Harness-owned files, resolved relative to THIS MODULE rather than to the
@@ -107,54 +108,15 @@ def render_rejection_guidance(policy: dict) -> str:
     )
 
 
-# Unicode Default_Ignorable_Code_Point ranges (DerivedCoreProperties.txt,
-# Unicode 16.0), inclusive. Tabulated explicitly because unicodedata exposes no
-# API for this property, and general category is not a usable proxy: several of
-# these are Mn/Lo/Cn rather than Cf/Cc.
-_DEFAULT_IGNORABLE_RANGES = (
-    (0x00AD, 0x00AD),  # SOFT HYPHEN
-    (0x034F, 0x034F),  # COMBINING GRAPHEME JOINER
-    (0x061C, 0x061C),  # ARABIC LETTER MARK
-    (0x115F, 0x1160),  # HANGUL CHOSEONG/JUNGSEONG FILLER
-    (0x17B4, 0x17B5),  # KHMER VOWEL INHERENT AQ/AA
-    (0x180B, 0x180F),  # MONGOLIAN FREE VARIATION SELECTORS, VOWEL SEPARATOR
-    (0x200B, 0x200F),  # ZERO WIDTH SPACE..RIGHT-TO-LEFT MARK
-    (0x202A, 0x202E),  # bidi embeddings/overrides
-    (0x2060, 0x206F),  # WORD JOINER..NOMINAL DIGIT SHAPES (incl. reserved)
-    (0x3164, 0x3164),  # HANGUL FILLER
-    (0xFE00, 0xFE0F),  # VARIATION SELECTOR-1..16
-    (0xFEFF, 0xFEFF),  # ZERO WIDTH NO-BREAK SPACE (BOM)
-    (0xFFA0, 0xFFA0),  # HALFWIDTH HANGUL FILLER
-    (0xFFF0, 0xFFF8),  # reserved, default-ignorable
-    (0x1BCA0, 0x1BCA3),  # SHORTHAND FORMAT CONTROLS
-    (0x1D173, 0x1D17A),  # MUSICAL SYMBOL BEGIN/END BEAM..END PHRASE
-    (0xE0000, 0xE0FFF),  # TAGS + VARIATION SELECTORS SUPPLEMENT (incl. reserved)
-)
-
-
-def _is_default_ignorable(ch: str) -> bool:
-    code = ord(ch)
-    return any(low <= code <= high for low, high in _DEFAULT_IGNORABLE_RANGES)
-
-
-def _strip_invisible(text: str) -> str:
-    """Drop characters that render as nothing but break exact-text matching.
-
-    A character like U+200B ZERO WIDTH SPACE spliced into a tag name (e.g.
-    ``</untrusted​_pr_content>``) renders identically to the real
-    closing tag but fails an exact-text regex match, letting it slip past
-    escaping. Two classes are stripped (keeping \\n\\r\\t):
-
-    - category Cf/Cc (zero-width/format and non-whitespace controls);
-    - Default_Ignorable_Code_Point (the table above) — invisible code points
-      whose category is Mn/Lo/Cn, e.g. U+034F CGJ or U+FE0F VS16, which a
-      category test alone lets straight through.
-    """
-    return "".join(
-        ch
-        for ch in text
-        if ch in "\n\r\t" or (unicodedata.category(ch) not in ("Cf", "Cc") and not _is_default_ignorable(ch))
-    )
+# The Default_Ignorable table moved to canonicalize.py so the input fence and
+# the secret scan share ONE spelling of "invisible": verify.py's scan used to
+# test category Cf/Cc independently, and the gap between the two spellings was a
+# confirmed bypass (a key split by U+034F reads complete to the reader). Re-
+# exported under the old private names because they are this module's tested
+# surface (tests/test_artifact.py).
+_DEFAULT_IGNORABLE_RANGES = DEFAULT_IGNORABLE_RANGES
+_is_default_ignorable = is_default_ignorable
+_strip_invisible = strip_invisible
 
 
 def escape_fence(text: str, tag: str) -> str:
