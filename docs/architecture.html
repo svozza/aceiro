@@ -1,4 +1,11 @@
 <!DOCTYPE html>
+<!--
+  LIVING DOCUMENT: keep this in step with the code. When a lane changes —
+  a pending node ships (plan executor, decline channel, ADR-0010 create),
+  a gate is added or moved, new live evidence lands — update NODES/EDGES
+  and the evidence strings in the same PR. A "planned" badge on something
+  that shipped is this file's definition of stale.
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -454,7 +461,7 @@ function playFlow(name, btn) {
     i += 1;
   };
   step();
-  flowTimer = setInterval(step, 700);
+  flowTimer = setInterval(step, 1800);
 }
 
 for (const b of document.querySelectorAll('.flow-btn')) {
