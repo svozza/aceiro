@@ -52,6 +52,42 @@ class DiffPosition(NamedTuple):
     text: str  # the physical diff line, verbatim (no trailing newline)
 
 
+def anchor_signatures(diff_text: str, window: int = 1) -> dict[tuple[str, int], str]:
+    """Map (path, new-side line) -> a signature of the CODE at that anchor.
+
+    The signature is the anchored line's text plus `window` new-side lines either
+    side of it, whitespace-normalized. It exists to give the executor an identity
+    key for a finding that does not depend on the model's prose:
+
+    - stable when the model rewords the same finding (observed: it rewords on
+      essentially every run, so a prose-derived key almost never matches);
+    - stable when the code moves, since the window moves with it;
+    - changes when the anchored code changes — at which point the finding really
+      is about something new.
+
+    The window matters: a bare line is often not unique (a file can hold two
+    identical `return True` lines, one correct and one the defect), so the
+    neighbours are what keep two findings on similar lines distinct.
+    """
+    # new-side content per path, in order, so a window can be taken around a line
+    by_path: dict[str, dict[int, str]] = {}
+    for position in walk_diff(diff_text):
+        if position.new_line is not None and position.path is not None:
+            raw = position.text
+            text = raw[1:] if raw[:1] in ("+", " ") else raw
+            by_path.setdefault(position.path, {})[position.new_line] = text
+
+    signatures: dict[tuple[str, int], str] = {}
+    for path, numbered in by_path.items():
+        for number in numbered:
+            parts = [
+                " ".join(numbered.get(number + offset, "\x00absent").split())
+                for offset in range(-window, window + 1)
+            ]
+            signatures[(path, number)] = "\x00".join(parts)
+    return signatures
+
+
 def walk_diff(diff_text: str) -> list[DiffPosition]:
     """One DiffPosition per line of `diff_text`, in order."""
     positions: list[DiffPosition] = []

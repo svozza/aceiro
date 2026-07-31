@@ -8,7 +8,7 @@ not expressible; these tests pin the walk's own rules.
 
 import pytest
 
-from diff_map import split_diff_lines, walk_diff
+from diff_map import anchor_signatures, split_diff_lines, walk_diff
 from conftest import DELETED_FILE_DIFF, SAMPLE_DIFF
 
 
@@ -125,3 +125,95 @@ class TestSplitDiffLines:
 
     def test_empty_input(self):
         assert split_diff_lines("") == []
+
+
+class TestAnchorSignatures:
+    """Signatures give the executor an identity key for a finding that does not
+    depend on the model's prose.
+
+    Motivation, measured on a live PR in the extraction source: the model
+    reworded every finding on every run over a byte-identical diff, so a
+    prose-derived key never matched twice.
+    """
+
+    SHIFT_BEFORE = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,3 @@\n+alpha\n+target()\n+omega\n"
+    SHIFT_AFTER = (
+        "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+        "@@ -1,5 +1,5 @@\n+inserted\n+inserted2\n+alpha\n+target()\n+omega\n"
+    )
+
+    def test_one_signature_per_anchorable_line(self):
+        signatures = anchor_signatures(SAMPLE_DIFF)
+        assert set(signatures) == {
+            (path, line) for path, lines in _hunk_lines(SAMPLE_DIFF).items() for line in lines
+        }
+
+    def test_signature_survives_a_pure_line_shift(self):
+        # The code moved down two lines; its signature must not change, or a
+        # re-anchored comment gets deleted and reposted.
+        assert anchor_signatures(self.SHIFT_BEFORE)[("x.py", 2)] == anchor_signatures(self.SHIFT_AFTER)[("x.py", 4)]
+
+    def test_signature_changes_when_the_anchored_line_changes(self):
+        edited = self.SHIFT_BEFORE.replace("target()", "target(fixed)")
+        assert anchor_signatures(self.SHIFT_BEFORE)[("x.py", 2)] != anchor_signatures(edited)[("x.py", 2)]
+
+    def test_signature_changes_when_a_neighbour_changes(self):
+        # The window is what distinguishes two identical-looking lines, so a
+        # neighbour edit has to move the signature.
+        edited = self.SHIFT_BEFORE.replace("omega", "different")
+        assert anchor_signatures(self.SHIFT_BEFORE)[("x.py", 2)] != anchor_signatures(edited)[("x.py", 2)]
+
+    def test_identical_lines_with_different_neighbours_differ(self):
+        diff = (
+            "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+            "@@ -1,6 +1,6 @@\n+if a:\n+    return True\n+if b:\n+    return True\n+done()\n+tail()\n"
+        )
+        signatures = anchor_signatures(diff)
+        assert signatures[("x.py", 2)] != signatures[("x.py", 4)]
+
+    def test_whitespace_only_reformatting_is_the_same_signature(self):
+        indented = self.SHIFT_BEFORE.replace("+target()", "+    target()")
+        assert anchor_signatures(self.SHIFT_BEFORE)[("x.py", 2)] == anchor_signatures(indented)[("x.py", 2)]
+
+    def test_hunk_edges_are_marked_absent_not_wrapped(self):
+        # The first line has no predecessor. It must not silently borrow the last
+        # line of the file, which would make two different anchors collide.
+        signatures = anchor_signatures(self.SHIFT_BEFORE)
+        assert "absent" in signatures[("x.py", 1)]
+        assert signatures[("x.py", 1)] != signatures[("x.py", 3)]
+
+    def test_removed_lines_have_no_signature(self):
+        diff = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,2 @@\n ctx\n-gone\n+added\n"
+        assert set(anchor_signatures(diff)) == {("x.py", 1), ("x.py", 2)}
+
+    def test_deleted_file_has_no_signatures(self):
+        assert anchor_signatures(DELETED_FILE_DIFF) == {}
+
+    def test_same_code_in_two_files_is_distinguished_by_path(self):
+        # The key includes the path separately, but the signature map is keyed on
+        # (path, line) so the two never merge here either.
+        two_files = (
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1,2 +1,2 @@\n+same\n+code\n"
+            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n@@ -1,2 +1,2 @@\n+same\n+code\n"
+        )
+        signatures = anchor_signatures(two_files)
+        assert ("a.py", 1) in signatures and ("b.py", 1) in signatures
+
+    @pytest.mark.parametrize("separator", TestSplitDiffLines.UNICODE_BREAKS)
+    def test_numbering_is_unaffected_by_a_unicode_break(self, separator):
+        # `dangerous()` must be line 2, not unnumbered — the same guarantee
+        # TestSplitDiffLines pins for walk_diff, observed here at the signature
+        # level because the reconciler keys comment identity on this map.
+        diff = (
+            "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+            f'@@ -1,2 +1,2 @@\n+note = "a{separator}b"\n+dangerous()\n'
+        )
+        signatures = anchor_signatures(diff)
+        assert set(signatures) == {("x.py", 1), ("x.py", 2)}
+        assert "dangerous()" in signatures[("x.py", 2)]
+
+
+def _hunk_lines(diff_text):
+    from verify import parse_diff_hunks
+
+    return {path: lines for path, lines in parse_diff_hunks(diff_text).items() if lines}
