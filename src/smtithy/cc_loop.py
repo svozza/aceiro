@@ -63,7 +63,10 @@ from verify import Rejection, verify
 
 SUBMIT_TOOL = "mcp__review__submit_review"
 
-ALLOWED_TOOLS = ["Read", "Grep", "Glob", SUBMIT_TOOL]
+# Read-only investigation plus the one submission channel. The plan generator
+# shares the read-only set and swaps in its own submit tool via build_options.
+READONLY_TOOLS = ["Read", "Grep", "Glob"]
+ALLOWED_TOOLS = [*READONLY_TOOLS, SUBMIT_TOOL]
 
 # allowed_tools does NOT restrict the surface to the tools it names: probing the
 # agent showed Workflow, Skill, ToolSearch, ReportFindings and the deferred
@@ -138,53 +141,62 @@ def tool_guidance(base_root: Path, pr_root: Path) -> str:
     )
 
 
+def nested_artifact_note(args) -> str:
+    """Name the leak shape when a review submission carries it, or ''.
+
+    The generic missing-keys reason measurably fails to dislodge this mode:
+    two live runs resubmitted the identical shape three times against it
+    (docs/findings/0001 has the XML-dialect ancestor). The model composes
+    the review correctly and fumbles the serialization layer, so the fix
+    is feedback that names the layer. Only fires on evidence — a missing
+    field plus serialization markup in the summary — because falsely
+    telling a model its complete artifact is nested induces the very
+    degradation it warns about (see run_evals.INJECTED_REJECTION_REASON).
+    """
+    summary = args.get("summary") if isinstance(args, dict) else None
+    if not isinstance(summary, str) or (isinstance(args, dict) and "findings" in args):
+        return ""
+    markers = ('"findings"', "'findings'", "<parameter", "</summary>")
+    if not any(marker in summary for marker in markers):
+        return ""
+    return (
+        "\n\nYour summary contains the rest of the review serialized as text. "
+        "Do not serialize fields inside other fields: pass `findings` as its "
+        "own array argument and `residual_risk` as its own string argument, "
+        "with `summary` holding only your prose summary."
+    )
+
+
 def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_fn, diff_text: str,
-                     changed_files: list[str], policy: dict, guidance: str):
+                     changed_files: list[str], policy: dict, guidance: str,
+                     tool_name: str = "submit_review", noun: str = "review",
+                     note_fn=nested_artifact_note):
     """The submission channel: verify in-process, answer with the real reason.
 
     Returning `is_error` sends the text back as tool feedback, so the model
     retries in the SAME session with its investigation intact — the property
     the old flow needed --resume plumbing for. Fail-closed throughout: nothing
     is recorded as accepted except through verify_fn.
+
+    One breaker for every channel: the plan generator passes its own
+    tool_name/noun and a verify_fn that closes over its content source, so the
+    spiral-bounding logic cannot drift between the two generators. note_fn
+    inspects a rejected submission for a channel-specific leak shape (see
+    nested_artifact_note); pass None for channels without a known one.
     """
 
     def error(text: str) -> dict:
         return {"content": [{"type": "text", "text": text}], "is_error": True}
 
-    def nested_artifact_note(args) -> str:
-        """Name the leak shape when a submission carries it, or ''.
-
-        The generic missing-keys reason measurably fails to dislodge this mode:
-        two live runs resubmitted the identical shape three times against it
-        (docs/findings/0001 has the XML-dialect ancestor). The model composes
-        the review correctly and fumbles the serialization layer, so the fix
-        is feedback that names the layer. Only fires on evidence — a missing
-        field plus serialization markup in the summary — because falsely
-        telling a model its complete artifact is nested induces the very
-        degradation it warns about (see run_evals.INJECTED_REJECTION_REASON).
-        """
-        summary = args.get("summary") if isinstance(args, dict) else None
-        if not isinstance(summary, str) or (isinstance(args, dict) and "findings" in args):
-            return ""
-        markers = ('"findings"', "'findings'", "<parameter", "</summary>")
-        if not any(marker in summary for marker in markers):
-            return ""
-        return (
-            "\n\nYour summary contains the rest of the review serialized as text. "
-            "Do not serialize fields inside other fields: pass `findings` as its "
-            "own array argument and `residual_risk` as its own string argument, "
-            "with `summary` holding only your prose summary."
-        )
-
     @tool(
-        name="submit_review",
-        description="Submit the completed review artifact. Call exactly once, when your review is final.",
+        name=tool_name,
+        description=f"Submit the completed {noun} artifact. Call exactly once, when your {noun} is final.",
         input_schema=schema,
     )
-    async def submit_review(args):
+    async def submit(args):
         state["round"] += 1
         if state["accepted"] is not None:
-            return error("A review has already been accepted; this submission was not saved.")
+            return error(f"A {noun} has already been accepted; this submission was not saved.")
         if state["abort_reason"]:
             return error("The run is aborted; this submission was not saved.")
         try:
@@ -199,19 +211,22 @@ def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_f
             if state["repeated"] >= MAX_REPEATED_REJECTIONS or state["round"] >= MAX_SUBMISSIONS:
                 state["abort_reason"] = f"final submission rejected: {exc}"
                 return error(
-                    f"Your review was rejected by the verifier: {exc}\n\n"
-                    "The submission budget is exhausted; the run is aborted and no review will be posted."
+                    f"Your {noun} was rejected by the verifier: {exc}\n\n"
+                    f"The submission budget is exhausted; the run is aborted and no {noun} will be posted."
                 )
-            return error(f"Your review was rejected by the verifier: {exc}{nested_artifact_note(args)}\n\n{guidance}")
+            note = note_fn(args) if note_fn is not None else ""
+            return error(f"Your {noun} was rejected by the verifier: {exc}{note}\n\n{guidance}")
         state["accepted"] = args
-        return {"content": [{"type": "text", "text": "Review accepted and recorded. Do not submit again."}]}
+        return {"content": [{"type": "text", "text": f"{noun.capitalize()} accepted and recorded. Do not submit again."}]}
 
-    return submit_review
+    return submit
 
 
-def build_review_server(submit) -> dict:
+def build_review_server(submit, name: str = "review") -> dict:
     """Wrap the submit tool in an in-process MCP server, WITHOUT the MCP
-    layer's own input validation.
+    layer's own input validation. `name` is the MCP server name — the plan
+    generator reuses this wrapper verbatim under "plan" (the no-validation
+    property is the point, and it is channel-agnostic).
 
     The SDK's create_sdk_mcp_server validates arguments against the input
     schema before the handler runs, and a leak-shaped submission (everything
@@ -222,7 +237,7 @@ def build_review_server(submit) -> dict:
     verify() rejects the same shapes with a reason the model can act on, so
     validation is delegated to it: every submission must reach the handler.
     """
-    server = Server("review", version="1.0.0")
+    server = Server(name, version="1.0.0")
     tool_def = Tool(name=submit.name, description=submit.description, inputSchema=submit.input_schema)
 
     @server.list_tools()
@@ -230,19 +245,20 @@ def build_review_server(submit) -> dict:
         return [tool_def]
 
     @server.call_tool(validate_input=False)
-    async def call_tool(name: str, arguments: dict) -> CallToolResult:
+    async def call_tool(tool_name: str, arguments: dict) -> CallToolResult:
         result = await submit.handler(arguments)
         content = [TextContent(type="text", text=item["text"]) for item in result["content"]]
         return CallToolResult(content=content, isError=result.get("is_error", False))
 
-    return {"type": "sdk", "name": "review", "instance": server}
+    return {"type": "sdk", "name": name, "instance": server}
 
 
-def build_options(system_prompt: str, base_root: Path, pr_root: Path, server) -> ClaudeAgentOptions:
+def build_options(system_prompt: str, base_root: Path, pr_root: Path, server,
+                  server_name: str = "review", submit_tool: str = SUBMIT_TOOL) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
-        mcp_servers={"review": server},
-        allowed_tools=ALLOWED_TOOLS,
+        mcp_servers={server_name: server},
+        allowed_tools=[*READONLY_TOOLS, submit_tool],
         disallowed_tools=DISALLOWED_TOOLS,
         max_turns=MAX_TURNS,
         permission_mode="dontAsk",
@@ -310,43 +326,16 @@ def fail(transcript: Transcript, reason: str, **fields) -> int:
     return 1
 
 
-def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify) -> int:
-    """Return 0 with a verified review.json written, or non-zero with none.
-
-    verify_fn is the eval harness's fault-injection seam; production passes none.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    policy_text = POLICY_PATH.read_text()
-    policy = json.loads(policy_text)
-    transcript = Transcript(output_dir / "transcript.jsonl", policy)
-
-    schema = build_artifact_schema(policy)
-    # SMTITHY_PROJECT_DESCRIPTION is the consumer's own account of their
-    # repository; absent, the assembled prompt is byte-identical to before
-    # this seam existed, so the shipped default carries its eval history.
-    system_prompt = (
-        apply_project_description(PROMPT_PATH.read_text(), os.environ.get("SMTITHY_PROJECT_DESCRIPTION"))
-        + render_constraints(policy)
-        + tool_guidance(base_root.resolve(), pr_root.resolve())
-    )
-
-    transcript.log(
-        "run_start",
-        generator="claude-agent-sdk",
-        model_id=os.environ.get("CC_MODEL", "default"),
-        prompt_sha256=sha256(system_prompt),
-        policy_sha256=sha256(policy_text),
-        max_rounds=MAX_SUBMISSIONS,
-    )
-
-    user_message = build_user_message(context_dir)
-    transcript.log("context", sha256=sha256(user_message), bytes=len(user_message.encode()))
-
-    diff_text = (context_dir / "diff.patch").read_text()
-    changed_files = json.loads((context_dir / "changed_files.json").read_text())
-    guidance = render_rejection_guidance(policy)
-
+def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, user_message: str,
+                  base_root: Path, pr_root: Path, output_dir: Path, make_tool,
+                  server_name: str = "review", submit_tool_name: str = SUBMIT_TOOL,
+                  artifact_filename: str = "review.json", tool_display_name: str = "submit_review") -> int:
+    """The generator-agnostic session loop: attempts, backoff, failure naming,
+    stream capture, and the fail-closed artifact write. Everything specific to
+    a channel — what the tool verifies, what the artifact is called — arrives
+    through the parameters, so the plan generator runs THIS loop rather than a
+    diverging copy of it. `make_tool` is called once per attempt with the
+    fresh state dict and returns the submit tool."""
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # Fresh per attempt: an api_error retry restarts the session, so its
         # submission counters must not carry over.
@@ -354,9 +343,10 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
             "round": 0, "repeated": 0, "last_fingerprint": None,
             "accepted": None, "abort_reason": None, "tool_calls": 0,
         }
-        submit = make_submit_tool(schema, state, transcript, verify_fn, diff_text, changed_files, policy, guidance)
-        server = build_review_server(submit)
-        options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server)
+        submit = make_tool(state)
+        server = build_review_server(submit, server_name)
+        options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
+                                server_name, submit_tool_name)
 
         try:
             result = anyio.run(_run_session, user_message, options, transcript, state, output_dir, attempt, policy)
@@ -381,7 +371,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         if result is not None and result.subtype == "error_max_turns":
             return fail(
                 transcript,
-                f"agent hit the {MAX_TURNS}-turn limit without submitting a review",
+                f"agent hit the {MAX_TURNS}-turn limit without calling {tool_display_name}",
                 num_turns=result.num_turns,
                 tool_calls=state["tool_calls"],
             )
@@ -440,17 +430,68 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         if artifact is None:
             return fail(
                 transcript,
-                f"agent completed without calling submit_review (subtype={result.subtype})",
+                f"agent completed without calling {tool_display_name} (subtype={result.subtype})",
                 num_turns=result.num_turns,
             )
 
-        (output_dir / "review.json").write_text(json.dumps(artifact, indent=2, ensure_ascii=False))
+        (output_dir / artifact_filename).write_text(json.dumps(artifact, indent=2, ensure_ascii=False))
         transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
         transcript.log("run_complete", rounds=state["round"])
         transcript.close()
         return 0
 
     return fail(transcript, "attempt budget exhausted without a verified artifact")
+
+
+def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify) -> int:
+    """Return 0 with a verified review.json written, or non-zero with none.
+
+    verify_fn is the eval harness's fault-injection seam; production passes none.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    policy_text = POLICY_PATH.read_text()
+    policy = json.loads(policy_text)
+    transcript = Transcript(output_dir / "transcript.jsonl", policy)
+
+    schema = build_artifact_schema(policy)
+    # SMTITHY_PROJECT_DESCRIPTION is the consumer's own account of their
+    # repository; absent, the assembled prompt is byte-identical to before
+    # this seam existed, so the shipped default carries its eval history.
+    system_prompt = (
+        apply_project_description(PROMPT_PATH.read_text(), os.environ.get("SMTITHY_PROJECT_DESCRIPTION"))
+        + render_constraints(policy)
+        + tool_guidance(base_root.resolve(), pr_root.resolve())
+    )
+
+    transcript.log(
+        "run_start",
+        generator="claude-agent-sdk",
+        model_id=os.environ.get("CC_MODEL", "default"),
+        prompt_sha256=sha256(system_prompt),
+        policy_sha256=sha256(policy_text),
+        max_rounds=MAX_SUBMISSIONS,
+    )
+
+    user_message = build_user_message(context_dir)
+    transcript.log("context", sha256=sha256(user_message), bytes=len(user_message.encode()))
+
+    diff_text = (context_dir / "diff.patch").read_text()
+    changed_files = json.loads((context_dir / "changed_files.json").read_text())
+    guidance = render_rejection_guidance(policy)
+
+    return drive_session(
+        transcript=transcript,
+        policy=policy,
+        system_prompt=system_prompt,
+        user_message=user_message,
+        base_root=base_root,
+        pr_root=pr_root,
+        output_dir=output_dir,
+        make_tool=lambda state: make_submit_tool(
+            schema, state, transcript, verify_fn, diff_text, changed_files, policy, guidance
+        ),
+    )
 
 
 def main() -> int:
