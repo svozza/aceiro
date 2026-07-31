@@ -16,12 +16,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
 
-from plan_verify import check_plan_schema  # noqa: E402
+from plan_verify import (  # noqa: E402
+    check_plan_containment,
+    check_plan_schema,
+    glob_to_regexp,
+    matches_denylist,
+    tree_content_source,
+    verify_plan,
+)
 from verify import Rejection  # noqa: E402
 
-PLAN_POLICY = json.loads(
+POLICY = json.loads(
     (Path(__file__).parent.parent / "src" / "smtithy" / "policy.json").read_text()
-)["plan"]
+)
+PLAN_POLICY = POLICY["plan"]
 
 
 def patch_step(step_id="s0", path="src/a.py", old="a", new="b"):
@@ -220,3 +228,311 @@ class TestMutationDiscipline:
         plan["steps"][1]["id"] = plan["steps"][0]["id"]
         with pytest.raises(Rejection):
             check_plan_schema(plan, PLAN_POLICY)
+
+
+# --------------------------------------------- containment (ADR-0005) ------
+#
+# Fixtures for the containment phase: a diff, its changed files, and a content
+# source. The content source is a plain dict lookup — verify_plan takes a
+# callable precisely so tests need no filesystem.
+
+PLAN_DIFF = """\
+diff --git a/src/app.py b/src/app.py
+index 1111111..2222222 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,4 +1,5 @@
+ import os
+-def load():
++def load(path):
++    check(path)
+     return os.environ
+diff --git a/src/util.py b/src/util.py
+index 3333333..4444444 100644
+--- a/src/util.py
++++ b/src/util.py
+@@ -1,2 +1,2 @@
+-def check():
++def check(path):
+     pass
+"""
+
+PLAN_CHANGED_FILES = ["src/app.py", "src/util.py"]
+
+PLAN_TREE = {
+    "src/app.py": b"import os\ndef load(path):\n    check(path)\n    return os.environ\n",
+    "src/util.py": b"def check(path):\n    pass\n",
+}
+
+
+def tree_source(tree=None):
+    tree = PLAN_TREE if tree is None else tree
+
+    def read(path: str) -> bytes:
+        if path not in tree:
+            raise FileNotFoundError(path)
+        return tree[path]
+
+    return read
+
+
+def contained(plan, **overrides):
+    kwargs = dict(
+        diff_text=PLAN_DIFF,
+        changed_files=PLAN_CHANGED_FILES,
+        policy_plan=PLAN_POLICY,
+        content_source=tree_source(),
+    )
+    kwargs.update(overrides)
+    return check_plan_containment(plan, **kwargs)
+
+
+def anchored_patch(step_id="s0", path="src/app.py", old="def load(path):\n", new="def load(path=None):\n"):
+    return {"id": step_id, "kind": "patch", "args": {"path": path, "old": old, "new": new}}
+
+
+def anchored_suggest(step_id="s0", path="src/app.py", line=2, old="def load(path):\n",
+                     new="def load(path=None):\n", note="make path optional"):
+    return {
+        "id": step_id,
+        "kind": "suggest",
+        "args": {"path": path, "line": line, "old": old, "new": new, "note": note},
+    }
+
+
+class TestGlobSemantics:
+    """The denylist matcher's semantics, pinned in both directions — the §17
+    lesson is that a pattern is enforced exactly as written, so what the
+    writing means must be tested, not assumed. Mirrors prove.test.ts's
+    globToRegExp block case for case."""
+
+    def test_double_star_spans_separators(self):
+        assert glob_to_regexp(".github/**").fullmatch(".github/workflows/ci.yml")
+
+    def test_double_star_slash_also_matches_zero_directories(self):
+        assert glob_to_regexp("**/*.pem").fullmatch("key.pem")
+        assert glob_to_regexp("**/*.pem").fullmatch("certs/deep/key.pem")
+        assert glob_to_regexp(".github/**").fullmatch(".github/x")
+
+    def test_single_star_does_not_span_separators(self):
+        assert glob_to_regexp("src/*.py").fullmatch("src/a.py")
+        assert not glob_to_regexp("src/*.py").fullmatch("src/nested/a.py")
+
+    def test_a_dot_is_a_literal_dot(self):
+        # fnmatch would pass both of these too, but the reason this matcher
+        # exists is that fnmatch treats ** as *; the dot is where a naive
+        # regex TRANSLATION goes wrong instead.
+        assert not glob_to_regexp("**/*.pem").fullmatch("keyXpem")
+        assert not glob_to_regexp(".github/**").fullmatch("Xgithub/x.yml")
+
+    def test_anchored_both_ends(self):
+        assert not glob_to_regexp("src/*.py").fullmatch("prefix/src/a.py")
+        assert not glob_to_regexp(".github/**").fullmatch("vendor/.github/x")
+
+    def test_matching_is_case_sensitive(self):
+        # fnmatch is case-insensitive on some platforms; paths in a git tree
+        # are not, and neither is the TS matcher.
+        assert not glob_to_regexp("**/*.pem").fullmatch("cert.PEM")
+
+    def test_matches_denylist_names_the_pattern(self):
+        assert matches_denylist(".github/workflows/ci.yml", PLAN_POLICY["path_denylist"]) == ".github/**"
+        assert matches_denylist("src/a.py", PLAN_POLICY["path_denylist"]) is None
+
+
+class TestFrame:
+    def test_anchored_plan_within_frame_passes(self):
+        contained({"steps": [anchored_patch(), push_step("s1")]})
+
+    def test_patch_outside_changed_files_rejects(self):
+        with pytest.raises(Rejection, match="not a file this PR touched"):
+            contained({"steps": [anchored_patch(path="src/evil.py")]})
+
+    def test_suggest_outside_changed_files_rejects(self):
+        # ADR-0009: suggest binds to the frame exactly as patch does.
+        with pytest.raises(Rejection, match="not a file this PR touched"):
+            contained({"steps": [anchored_suggest(path="src/evil.py")]})
+
+    def test_non_anchored_kinds_are_exempt(self):
+        # push_branch/open_pr/label carry no file path; a frame check that
+        # tripped over them would reject every complete plan.
+        contained({"steps": [push_step("s1")]})
+
+
+class TestDenylist:
+    def test_denylisted_path_rejects_even_when_changed(self):
+        # The denylist narrows changed_files: the PR touching a workflow file
+        # does not make it patchable.
+        with pytest.raises(Rejection, match="path denylist"):
+            contained(
+                {"steps": [anchored_patch(path=".github/workflows/ci.yml")]},
+                changed_files=[".github/workflows/ci.yml"],
+            )
+
+
+class TestSuggestLineProvenance:
+    def test_line_inside_a_hunk_passes(self):
+        contained({"steps": [anchored_suggest(line=2)]})
+
+    def test_line_outside_any_hunk_rejects(self):
+        with pytest.raises(Rejection, match="not inside any diff hunk"):
+            contained({"steps": [anchored_suggest(line=400)]})
+
+    def test_line_in_another_files_hunk_rejects(self):
+        # src/util.py has lines 1-2 in hunks; src/app.py's hunk covers 1-5.
+        # Line 2 exists in both, so probe with a line only app.py has.
+        with pytest.raises(Rejection, match="not inside any diff hunk"):
+            contained(
+                {"steps": [anchored_suggest(path="src/util.py", line=5,
+                                            old="def check(path):\n", new="def check(path=None):\n")]}
+            )
+
+
+class TestBounding:
+    def test_at_cap_distinct_files_pass(self):
+        changed = [f"src/f{i}.py" for i in range(PLAN_POLICY["max_patched_files"])]
+        tree = {path: b"anchor\n" for path in changed}
+        steps = [anchored_patch(f"s{i}", path=path, old="anchor\n", new="fixed\n")
+                 for i, path in enumerate(changed)]
+        contained({"steps": steps}, changed_files=changed, content_source=tree_source(tree))
+
+    def test_one_file_over_cap_rejects(self):
+        count = PLAN_POLICY["max_patched_files"] + 1
+        changed = [f"src/f{i}.py" for i in range(count)]
+        steps = [anchored_patch(f"s{i}", path=path) for i, path in enumerate(changed)]
+        with pytest.raises(Rejection, match="max_patched_files"):
+            contained({"steps": steps}, changed_files=changed)
+
+    def test_file_count_is_distinct_paths_not_steps(self):
+        # max_patched_files bounds FILES; several suggestions into one file
+        # are one file. (One-suggestion-per-file is the executor's delivery
+        # rule, not this bound.)
+        steps = [
+            anchored_patch("s0", old="import os\n", new="import os, sys\n"),
+            anchored_patch("s1", old="    return os.environ\n", new="    return dict(os.environ)\n"),
+        ]
+        contained({"steps": steps})
+
+    def test_changed_lines_at_cap_passes_and_cap_plus_one_rejects(self):
+        cap = PLAN_POLICY["max_changed_lines"]
+        # old contributes 1 line; new brings the step's total to the cap.
+        at_cap = "x\n" * (cap - 1)
+        tree = {"src/app.py": PLAN_TREE["src/app.py"]}
+        contained({"steps": [anchored_patch(new=at_cap)]}, content_source=tree_source(tree))
+        with pytest.raises(Rejection, match="max_changed_lines"):
+            contained({"steps": [anchored_patch(new=at_cap + "y\n")]}, content_source=tree_source(tree))
+
+    def test_changed_lines_count_both_sides(self):
+        # diff --stat's number: removed plus added, so a rewrite counts twice
+        # what its longer side alone would.
+        cap = PLAN_POLICY["max_changed_lines"]
+        half = "x\n" * (cap // 2 + 1)
+        tree = {"src/app.py": half.encode()}
+        with pytest.raises(Rejection, match="max_changed_lines"):
+            contained({"steps": [anchored_patch(old=half, new=half.replace("x", "y"))]},
+                      content_source=tree_source(tree))
+
+
+class TestAnchoring:
+    def test_old_matching_the_reviewed_tree_passes(self):
+        contained({"steps": [anchored_patch()]})
+
+    def test_old_not_in_the_file_rejects(self):
+        with pytest.raises(Rejection, match="does not byte-match"):
+            contained({"steps": [anchored_patch(old="def load():\n")]})
+
+    def test_missing_file_rejects_as_unreadable(self):
+        with pytest.raises(Rejection, match="cannot read"):
+            contained({"steps": [anchored_patch()]}, content_source=tree_source({}))
+
+    def test_ambiguous_anchor_rejects(self):
+        tree = {"src/app.py": b"pass\npass\n"}
+        with pytest.raises(Rejection, match="ambiguous"):
+            contained({"steps": [anchored_patch(old="pass\n")]}, content_source=tree_source(tree))
+
+    def test_anchoring_runs_after_the_frame(self):
+        # An out-of-frame path must reject as out-of-frame, not reach the
+        # content source: the filesystem is only consulted for paths that
+        # already passed the closed-set checks.
+        def exploding(path):
+            raise AssertionError(f"content source consulted for {path!r}")
+
+        with pytest.raises(Rejection, match="not a file this PR touched"):
+            contained({"steps": [anchored_patch(path="src/evil.py")]}, content_source=exploding)
+
+
+class TestTreeContentSource:
+    def test_reads_bytes_under_the_root(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "a.py").write_bytes(b"anchor\n")
+        assert tree_content_source(tmp_path)("src/a.py") == b"anchor\n"
+
+    def test_missing_file_raises_oserror(self, tmp_path):
+        with pytest.raises(OSError):
+            tree_content_source(tmp_path)("src/missing.py")
+
+    def test_symlink_out_of_the_tree_reads_as_missing(self, tmp_path):
+        # The quarantine tree is contributor-authored, so a symlink pointing
+        # out of it is an expected hostile shape: never followed.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret").write_bytes(b"AKIA-shaped bytes")
+        root = tmp_path / "pr_root"
+        root.mkdir()
+        (root / "link.py").symlink_to(outside / "secret")
+        with pytest.raises(OSError, match="outside the reviewed tree"):
+            tree_content_source(root)("link.py")
+
+    def test_dotdot_traversal_reads_as_missing(self, tmp_path):
+        outside = tmp_path / "secret"
+        outside.write_bytes(b"x")
+        root = tmp_path / "pr_root"
+        root.mkdir()
+        with pytest.raises(OSError, match="outside the reviewed tree"):
+            tree_content_source(root)("../secret")
+
+
+class TestPlanMarkdownAndSecrets:
+    def full_policy(self):
+        policy = copy.deepcopy(POLICY)
+        policy["markdown"]["link_host_allowlist"] = ["docs.example.com"]
+        return policy
+
+    def full_plan(self, note="make `path` optional", body="Fixes the reviewed finding.",
+                  old="def load(path):\n", new="def load(path=None):\n"):
+        return {
+            "steps": [
+                anchored_suggest(note=note),
+                {"id": "s1", "kind": "patch",
+                 "args": {"path": "src/app.py", "old": old, "new": new}},
+                push_step("s2"),
+                {"id": "s3", "kind": "open_pr",
+                 "args": {"branch": "fix/x", "title": "Fix load()", "body": body}},
+            ]
+        }
+
+    def run(self, plan, policy=None):
+        verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, policy or self.full_policy(), tree_source())
+
+    def test_a_full_plan_verifies_end_to_end(self):
+        self.run(self.full_plan())
+
+    def test_suggest_note_is_markdown_checked(self):
+        with pytest.raises(Rejection, match="raw HTML"):
+            self.run(self.full_plan(note="<script>alert(1)</script>"))
+
+    def test_open_pr_body_is_markdown_checked(self):
+        with pytest.raises(Rejection, match="@-mention"):
+            self.run(self.full_plan(body="ping @maintainer to merge"))
+
+    def test_secret_in_new_rejects(self):
+        # new is exempt from the markdown gate (file bytes, not prose) but
+        # NOT from the secret scan: the raw-JSON representation covers it.
+        self.run(self.full_plan(new='KEY = "not-a-secret"\n'))
+        with pytest.raises(Rejection, match="secret scan"):
+            self.run(self.full_plan(new='KEY = "AKIAIOSFODNN7EXAMPLE"\n'))
+
+    def test_secret_in_note_rendered_form_rejects(self):
+        # Bold-split key: invisible to the raw scan, complete once rendered —
+        # the same case check_secrets pins for review comments.
+        with pytest.raises(Rejection, match="secret scan"):
+            self.run(self.full_plan(note="uses key AKIA**IOSF**ODNN7EXAMPLE here"))

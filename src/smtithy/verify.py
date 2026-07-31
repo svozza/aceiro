@@ -404,6 +404,12 @@ def _iter_markdown_values(artifact: dict, policy: dict):
             yield finding[field]
 
 
+def rendered_markdown(value: str) -> str:
+    """A markdown field's visible rendered text, NFC-normalized first — the
+    one spelling of "what the reader sees" that every secret scan uses."""
+    return rendered_text(_PARSER.parse(unicodedata.normalize("NFC", value)))
+
+
 def check_secrets(artifact: dict, policy: dict) -> None:
     # Two representations are scanned, because markdown can make them differ:
     # the raw JSON source (catches secrets in non-markdown fields and in
@@ -414,7 +420,7 @@ def check_secrets(artifact: dict, policy: dict) -> None:
     # sees (inline boundaries removed, entities decoded, code included).
     texts = [json.dumps(artifact, ensure_ascii=False)]
     for value in _iter_markdown_values(artifact, policy):
-        texts.append(rendered_text(_PARSER.parse(unicodedata.normalize("NFC", value))))
+        texts.append(rendered_markdown(value))
     for pattern in policy["secret_scan_patterns"]:
         for text in texts:
             if re.search(pattern, text):
