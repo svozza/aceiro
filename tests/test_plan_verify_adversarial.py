@@ -236,14 +236,21 @@ class TestBoundsAtTheCap:
 
 
 class TestSuggestLineNearMisses:
-    # src/app.py's hunk covers new-side lines 1-5; src/util.py's covers 1-2.
+    # src/app.py's hunk covers new-side lines 1-4; src/util.py's covers 1-2.
 
     def test_last_line_of_the_hunk_verifies(self):
-        verified(plan_of(anchored_suggest(line=5, old="    return os.environ\n",
+        # Line 4 IS where `    return os.environ\n` lives, which is now part of
+        # what verifies: the addressed line and the anchored bytes are one
+        # region. This case read line=5 until PLAN_DIFF's hunk header was
+        # corrected — it declared @@ -1,4 +1,5 @@ over a body of 3 old / 4 new
+        # lines, so walk_diff numbered the NEXT file's `diff --git` line as
+        # src/app.py:5 and a suggestion could be addressed to a line the file
+        # does not have.
+        verified(plan_of(anchored_suggest(line=4, old="    return os.environ\n",
                                           new="    return dict(os.environ)\n")))
 
     def test_one_past_the_hunk_rejects(self):
-        rejected(plan_of(anchored_suggest(line=6)))
+        rejected(plan_of(anchored_suggest(line=5)))
 
     def test_line_zero_never_reaches_provenance(self):
         # Schema's minimum:1 owns this boundary; pinned so a schema loosening
@@ -251,9 +258,9 @@ class TestSuggestLineNearMisses:
         rejected(plan_of(anchored_suggest(line=0)))
 
     def test_valid_line_number_but_for_the_other_file_rejects(self):
-        # Line 5 is in app.py's hunk only; claiming it for util.py must fail
+        # Line 4 is in app.py's hunk only; claiming it for util.py must fail
         # — a provenance map keyed on line numbers alone would pass this.
-        rejected(plan_of(anchored_suggest(path="src/util.py", line=5,
+        rejected(plan_of(anchored_suggest(path="src/util.py", line=4,
                                           old="def check(path):\n", new="def check(p):\n")))
 
     def test_line_in_a_deleted_files_hunk_rejects(self):

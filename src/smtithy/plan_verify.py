@@ -216,7 +216,10 @@ def _line_count(text: str) -> int:
 
 def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                            policy_plan: dict, content_source) -> None:
-    """ADR-0005: frame, denylist, suggest.line provenance, bounding, anchoring.
+    """ADR-0005: frame, denylist, suggest.line provenance, bounding, anchoring
+    (which for a suggest step includes PLACEMENT — that `old` begins exactly at
+    the addressed line, so the anchored region and the region GitHub's suggestion
+    block replaces are the same region).
 
     Phase-by-phase across all steps, first violation wins, mirroring
     verify.py's structure. Anchoring runs LAST because it is the only check
@@ -290,13 +293,50 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
             content = content_source(path)
         except OSError as exc:
             raise Rejection(f"{where}: cannot read {path!r} at the reviewed SHA: {exc}")
-        occurrences = content.count(step["args"]["old"].encode("utf-8"))
+        old_bytes = step["args"]["old"].encode("utf-8")
+        occurrences = content.count(old_bytes)
         if occurrences == 0:
             raise Rejection(f"{where}: does not byte-match the content of {path!r} at the reviewed SHA")
         if occurrences > 1:
             raise Rejection(
                 f"{where}: matches {path!r} {occurrences} times; an ambiguous anchor cannot be applied"
             )
+
+        # Placement (ADR-0009 addendum: "`old` IS the anchored line"). Exactly-
+        # once proves the model read SOME bytes of the file; suggest.line decides
+        # which bytes GitHub's suggestion block REPLACES, because the block
+        # overwrites the commented line range and not the text in `old`. Unless
+        # those are the same region, anchoring constrains nothing about what the
+        # executor destroys — `old` unique at line 4 with line: 2 would delete a
+        # function signature nobody anchored. Checked here rather than in the
+        # cheap in-hunk phase above because it is the file content that decides
+        # it, and anchoring is the phase allowed to read the file.
+        if step["kind"] != "suggest":
+            continue
+        offset = content.index(old_bytes)
+        if offset > 0 and not content[offset - 1:offset] == b"\n":
+            raise Rejection(
+                f"{where}: does not start at the beginning of a line in {path!r}; a suggestion "
+                "replaces whole lines, so a sub-line anchor cannot describe what it overwrites"
+            )
+        start_line = content.count(b"\n", 0, offset) + 1
+        line = step["args"]["line"]
+        if start_line != line:
+            raise Rejection(
+                f"plan.steps[{index}].args.line: suggestion addresses line {line} of {path!r} but "
+                f"old is anchored at line {start_line}; the addressed and anchored regions must be one"
+            )
+        # A multi-line `old` has no start_line/end_line pair to declare (ADR-0004
+        # keeps the step shape closed), so its extent is derived from the anchor
+        # and every line it spans must be in the hunk set — the same provenance
+        # the addressed line already got, applied to the whole replaced range.
+        end_line = start_line + _line_count(step["args"]["old"]) - 1
+        for spanned in range(start_line, end_line + 1):
+            if spanned not in hunks.get(path, set()):
+                raise Rejection(
+                    f"plan.steps[{index}].args.old: spans line {spanned} of {path!r}, which "
+                    "is not inside any diff hunk"
+                )
 
 
 # -------------------------------------------------- markdown + secret scan --

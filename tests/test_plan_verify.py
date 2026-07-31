@@ -241,7 +241,7 @@ diff --git a/src/app.py b/src/app.py
 index 1111111..2222222 100644
 --- a/src/app.py
 +++ b/src/app.py
-@@ -1,4 +1,5 @@
+@@ -1,3 +1,4 @@
  import os
 -def load():
 +def load(path):
@@ -378,13 +378,60 @@ class TestSuggestLineProvenance:
             contained({"steps": [anchored_suggest(line=400)]})
 
     def test_line_in_another_files_hunk_rejects(self):
-        # src/util.py has lines 1-2 in hunks; src/app.py's hunk covers 1-5.
+        # src/util.py has lines 1-2 in hunks; src/app.py's hunk covers 1-4.
         # Line 2 exists in both, so probe with a line only app.py has.
         with pytest.raises(Rejection, match="not inside any diff hunk"):
             contained(
-                {"steps": [anchored_suggest(path="src/util.py", line=5,
+                {"steps": [anchored_suggest(path="src/util.py", line=4,
                                             old="def check(path):\n", new="def check(path=None):\n")]}
             )
+
+    # `old` occurring exactly once proves the model read SOME bytes of the file;
+    # `line` decides which bytes GitHub's suggestion block overwrites. Unless
+    # they are the same region, the anchoring property constrains nothing about
+    # what the executor destroys — ADR-0009's addendum states the binding the
+    # code was missing ("`old` IS the anchored line").
+
+    def test_old_at_a_different_in_hunk_line_rejects(self):
+        # `    return os.environ\n` is unique in src/app.py, at line 4. Line 2
+        # is in a hunk too, so both existing checks pass — and the suggestion
+        # would replace `def load(path):`, deleting the function signature.
+        with pytest.raises(Rejection, match="anchored at line 4"):
+            contained({"steps": [anchored_suggest(line=2, old="    return os.environ\n",
+                                                  new="    return {}\n")]})
+
+    def test_old_at_the_named_line_passes(self):
+        contained({"steps": [anchored_suggest(line=4, old="    return os.environ\n",
+                                              new="    return {}\n")]})
+
+    def test_multi_line_old_spanning_in_hunk_lines_passes(self):
+        # Lines 2-3, both in src/app.py's hunk set.
+        contained({"steps": [anchored_suggest(line=2, old="def load(path):\n    check(path)\n",
+                                              new="def load(path=None):\n")]})
+
+    def test_multi_line_old_addressed_at_the_wrong_line_rejects(self):
+        with pytest.raises(Rejection, match="anchored at line 2"):
+            contained({"steps": [anchored_suggest(line=3, old="def load(path):\n    check(path)\n",
+                                                  new="def load(path=None):\n")]})
+
+    def test_multi_line_old_running_out_of_the_hunk_rejects(self):
+        # src/util.py's hunk covers lines 1-2 only, and `old` spans 1-2 there,
+        # so probe the boundary on a tree whose file is longer than its hunk.
+        tree = {"src/util.py": b"def check(path):\n    pass\n    extra()\n"}
+        with pytest.raises(Rejection, match="is not inside any diff hunk"):
+            contained(
+                {"steps": [anchored_suggest(path="src/util.py", line=2,
+                                            old="    pass\n    extra()\n", new="    return\n")]},
+                content_source=tree_source(tree),
+            )
+
+    def test_old_not_starting_at_a_line_boundary_rejects(self):
+        # A fragment starting mid-line has no line to be addressed AT: the
+        # suggestion block replaces whole lines, so a sub-line anchor cannot
+        # describe what would be overwritten.
+        with pytest.raises(Rejection, match="does not start at the beginning of a line"):
+            contained({"steps": [anchored_suggest(line=2, old="load(path):\n",
+                                                  new="load(path=None):\n")]})
 
 
 class TestBounding:
