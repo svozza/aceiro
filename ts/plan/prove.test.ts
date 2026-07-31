@@ -184,6 +184,58 @@ describe('proveFrame', () => {
     assert.equal(result.holds, false);
     assert.ok(result.counterexample?.path.some((line) => line.includes('src/evil.py')));
   });
+
+  // The denylist was REPORTED in the counterexample and never asserted, so it
+  // could only appear when the frame had already failed for some other path. A
+  // denylisted path that IS in changed_files made the query unsat, and the
+  // prover printed 'frame: holds' for the file the Python gate rejects.
+
+  it('CATCHES a denylisted path that IS a changed file', async () => {
+    const result = await proveFrame(
+      plan(patch('.github/workflows/ai-pr-review.yml')),
+      POLICY,
+      ['.github/workflows/ai-pr-review.yml'],
+    );
+    assert.equal(result.holds, false);
+    assert.ok(
+      result.counterexample?.path.some(
+        (line) => line.includes('.github/workflows/ai-pr-review.yml') && line.includes('denylist'),
+      ),
+      `counterexample should name the denied path, got ${JSON.stringify(result.counterexample?.path)}`,
+    );
+  });
+
+  it('CATCHES a denylisted suggestion target that IS a changed file', async () => {
+    const result = await proveFrame(plan(suggest('deploy/key.pem')), POLICY, ['deploy/key.pem']);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('denylist')));
+  });
+
+  it('CATCHES a denylisted path among otherwise legitimate ones', async () => {
+    const result = await proveFrame(
+      plan(patch('src/a.py'), patch('secrets/tls.key'), patch('src/b.py')),
+      POLICY,
+      ['src/a.py', 'secrets/tls.key', 'src/b.py'],
+    );
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('secrets/tls.key')));
+  });
+
+  it('reports the escaping reason first when a path both escapes and is denied', async () => {
+    // Evaluation ORDER matches plan_verify.check_plan_containment, which checks
+    // the frame before the denylist, so the two gates give the same reason for
+    // the same plan rather than two defensible different ones.
+    const result = await proveFrame(plan(patch('.github/workflows/x.yml')), POLICY, ['src/a.py']);
+    assert.equal(result.holds, false);
+    assert.match(result.counterexample?.path[0] ?? '', /not a file this PR touched/);
+  });
+
+  it('holds for a path that merely resembles a denylist pattern', async () => {
+    // False-positive guard: `.github` as a path SEGMENT is denied, but a file
+    // whose name merely contains it is an ordinary source file.
+    const result = await proveFrame(plan(patch('docs/.github-notes.md')), POLICY, ['docs/.github-notes.md']);
+    assert.equal(result.holds, true);
+  });
 });
 
 describe('ordering with suggest steps (ADR-0009)', () => {

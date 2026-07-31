@@ -158,13 +158,22 @@ export async function proveOrdering(plan: Plan, policy: PlanPolicy): Promise<Pro
 }
 
 /**
- * Frame condition: every file the plan modifies is a file the PR touched.
+ * Frame condition: every file the plan modifies is a file the PR touched, AND no
+ * modified file is on the policy's path denylist.
  *
  * Quantified over all files via an uninterpreted function, which is the shape the
  * spike proved ergonomic. ADR-0005 is what makes this worth proving: patch
  * CONTENT is unverifiable, so containment is the property on offer — the frame
  * bounds WHERE the agent can write, and this is that bound as a ∀-claim over a
  * closed set the verifier already holds.
+ *
+ * BOTH obligations are asserted. The denylist used to be computed for the
+ * counterexample only and never turned into a constraint, so `denied` could be
+ * non-empty only when the frame had already failed for some other path — a
+ * denylisted path that IS in changedFiles made the query unsat and this returned
+ * holds:true, while src/smtithy/plan_verify.py rejected the identical plan.
+ * matchesAny/globToRegExp read as enforcement while enforcing nothing, which is
+ * the evaluation-order-sensitive shape ADR-0005 calls security-relevant.
  */
 export async function proveFrame(
   plan: Plan,
@@ -178,6 +187,7 @@ export async function proveFrame(
   const solver = new Solver();
   const touchedByPr = Fn.declare('touched_by_pr', Int.sort(), Bool.sort());
   const modifiedByPlan = Fn.declare('modified_by_plan', Int.sort(), Bool.sort());
+  const deniedByPolicy = Fn.declare('denied_by_policy', Int.sort(), Bool.sort());
 
   // Files are interned to ints: the solver reasons about identity, not text, and
   // an int keeps the encoding small. Both sides use the same table, so a path
@@ -204,6 +214,16 @@ export async function proveFrame(
   for (const path of changedFiles) solver.add(touchedByPr.call(idOf(path)));
   for (const path of patchedPaths) solver.add(modifiedByPlan.call(idOf(path)));
 
+  // The denylist as facts over the SAME intern table, so the solver decides both
+  // obligations against one identity for each file. Every interned path is pinned
+  // either way — an unconstrained predicate would let the solver choose a value
+  // and invent a violation no plan expresses, the same closed-world reason the
+  // quantifier below exists.
+  for (const [path, id] of intern) {
+    const denied = matchesAny(path, policy.path_denylist);
+    solver.add(denied ? deniedByPolicy.call(id) : Not(deniedByPolicy.call(id)));
+  }
+
   // Everything outside the two sets is pinned false, so the quantifier ranges
   // over a closed world. Without this, the solver may invent a file that is
   // modified and untouched and report a violation that no plan expresses.
@@ -216,11 +236,14 @@ export async function proveFrame(
     solver.add(ForAll([f], Not(modifiedByPlan.call(f))));
   }
 
-  // Negated policy: some modified file is not touched by the PR.
+  // Negated policy: some modified file is not touched by the PR, OR some modified
+  // file is on the denylist. unsat now covers both obligations, so 'frame: holds'
+  // cannot be printed for a denylisted path.
   const g = Int.const('g');
   solver.add(
     Or(
       ...known.map((id) => And(modifiedByPlan.call(id), Not(touchedByPr.call(id)))),
+      ...known.map((id) => And(modifiedByPlan.call(id), deniedByPolicy.call(id))),
       // Retained so an empty known set still produces a well-formed query.
       And(modifiedByPlan.call(g), Not(touchedByPr.call(g))),
     ),
@@ -233,9 +256,16 @@ export async function proveFrame(
 
   // Report the offending path by name. The solver's witness is an int, so the
   // useful answer comes from the intern table rather than the model.
+  //
+  // Escaping paths come FIRST, matching the phase order in
+  // plan_verify.check_plan_containment (frame, then denylist): a path that both
+  // escapes the frame and is denied gets the same reason from both gates rather
+  // than two defensible different ones.
   const changed = new Set(changedFiles);
   const escaping = patchedPaths.filter((path) => !changed.has(path));
-  const denied = patchedPaths.filter((path) => matchesAny(path, policy.path_denylist));
+  const denied = patchedPaths
+    .map((path) => ({ path, pattern: firstMatch(path, policy.path_denylist) }))
+    .filter((entry): entry is { path: string; pattern: string } => entry.pattern !== undefined);
   return {
     holds: false,
     policy: 'frame',
@@ -244,7 +274,9 @@ export async function proveFrame(
       policy: 'frame',
       path: [
         ...escaping.map((path) => `patch ${path}: not a file this PR touched`),
-        ...denied.map((path) => `patch ${path}: on the policy path denylist`),
+        ...denied.map(
+          ({ path, pattern }) => `patch ${path}: on the policy path denylist (${pattern})`,
+        ),
       ],
     },
   };
@@ -330,6 +362,13 @@ export async function proveTaint(
 
 function matchesAny(path: string, patterns: readonly string[]): boolean {
   return patterns.some((pattern) => globToRegExp(pattern).test(path));
+}
+
+/** The first pattern `path` matches, or undefined — the twin of
+ * plan_verify.matches_denylist, so the counterexample names the same pattern the
+ * Python rejection message does. */
+function firstMatch(path: string, patterns: readonly string[]): string | undefined {
+  return patterns.find((pattern) => globToRegExp(pattern).test(path));
 }
 
 /** Minimal glob for the path denylist: ** spans separators, * does not.

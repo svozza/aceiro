@@ -76,6 +76,22 @@ describe('prove-cli', () => {
     assert.equal(result.status, 2);
   });
 
+  it('exits 1 for a denylisted path that IS a changed file', () => {
+    // The whole plan is otherwise legitimate — the path is in changed_files, so
+    // the frame condition holds for it. Until the denylist became a solver
+    // assertion this printed 'frame: holds' and exited 0, while
+    // plan_verify.check_plan_containment rejected the identical plan.
+    const plan = {
+      steps: [
+        { id: 's0', kind: 'patch', args: { path: '.github/workflows/ai-pr-review.yml', old: 'x', new: 'y' } },
+      ],
+    };
+    const result = run(plan, ['.github/workflows/ai-pr-review.yml']);
+    assert.equal(result.status, 1, String(result.stdout) + String(result.stderr));
+    assert.match(String(result.stdout), /frame: VIOLATED/);
+    assert.match(String(result.stdout), /denylist/);
+  });
+
   it('a suggestion-only plan proves clean (vacuous ordering, ADR-0009)', () => {
     const plan = {
       steps: [

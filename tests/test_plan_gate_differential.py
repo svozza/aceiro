@@ -135,6 +135,21 @@ CASES = [
         PLAN_CHANGED_FILES,
         False,
     ),
+    (
+        # The denylist is the divergence in the other direction: Python rejected
+        # this while the prover printed 'frame: holds' and exited 0, because the
+        # path IS in changed_files so the frame obligation alone was satisfied.
+        "denylisted-path-that-is-a-changed-file",
+        {"steps": [anchored_patch("s0", path=".github/workflows/ci.yml")]},
+        [".github/workflows/ci.yml"],
+        False,
+    ),
+    (
+        "denylisted-pem-that-is-a-changed-file",
+        {"steps": [anchored_patch("s0", path="deploy/key.pem")]},
+        ["deploy/key.pem"],
+        False,
+    ),
 ]
 
 
