@@ -14,13 +14,18 @@ name: Evals
 # "pwn request" problem, and it is only safe behind a human gate that resolves
 # BEFORE a single line of that code is checked out or run.
 #
-# WHY THE TRIGGERS ARE NOT PATH-FILTERED
+# TRIGGERS
 #
-# In the staging repo this suite was path-filtered, so it ran rarely. Here every
-# pull request touches the harness, so the same filter would fire 11 scenarios
-# against a real model on every push. So: label, manual dispatch, and a schedule
-# on the default branch (ADR-0008). The deterministic suite stays on every pull
-# request in quality_check.yml, where it is free, fast and blocking.
+# Every pull request (opened/synchronize/reopened), because in this repo every
+# PR is a harness change and the evals are the only test of the behaviour the
+# harness exists to produce (ADR-0008, revised: the label-only cadence assumed
+# per-PR cost was prohibitive; measured, a full run is on the order of a
+# dollar). The `labeled` trigger is the manual re-run for an unmoved head,
+# dispatch takes runs/scenario knobs, and the weekly schedule stays — it
+# catches upstream model drift, which no PR of ours would trigger. The human
+# gate is orthogonal to cadence and unchanged: untrusted or draft authors wait
+# at the environment on every one of these paths. cancel-in-progress keeps a
+# rapid push train from queueing suites; only the newest head's run survives.
 #
 # --runs 1 IS THE DEFAULT, DELIBERATELY
 #
@@ -68,12 +73,18 @@ name: Evals
 # in-code assertion ADR-0006 requires is still owed.
 
 on:
-  # Label-triggered, so a maintainer opts a specific pull request in after
-  # reading it. pull_request_target for the same reason the review path uses it:
-  # the workflow definition comes from the base branch, so a fork cannot rewrite
-  # the gate that is about to gate it.
+  # Every pull request, on open and on every push (ADR-0008 addendum: the
+  # original label-only trigger assumed per-PR cost was prohibitive; measured,
+  # a full suite run is on the order of a dollar, and in this repo every PR is
+  # a harness change — exactly what the evals grade). `labeled` is kept as the
+  # manual re-trigger for a PR whose head has not moved. The human gate below
+  # is unchanged: untrusted and draft authors still wait at the environment
+  # before their code runs with the credential. pull_request_target for the
+  # same reason the review path uses it: the workflow definition comes from
+  # the base branch, so a fork cannot rewrite the gate that is about to gate
+  # it.
   pull_request_target:
-    types: [labeled]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
     inputs:
       runs:
@@ -111,9 +122,15 @@ jobs:
   #
   # Holds no secrets, so it cannot hand anything to code it checks out.
   eval_author_trust:
+    # On a `labeled` event only the run-evals label proceeds (any other label
+    # on a PR is noise, not a request); opened/synchronize/reopened always do.
     if: >-
       github.event_name != 'schedule'
-      && (github.event_name != 'pull_request_target' || github.event.label.name == 'run-evals')
+      && (
+        github.event_name != 'pull_request_target'
+        || github.event.action != 'labeled'
+        || github.event.label.name == 'run-evals'
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -145,7 +162,7 @@ jobs:
     if: >-
       always()
       && github.event_name == 'pull_request_target'
-      && github.event.label.name == 'run-evals'
+      && (github.event.action != 'labeled' || github.event.label.name == 'run-evals')
       && github.event.pull_request.user.type != 'Bot'
       && (
         needs.eval_author_trust.outputs.trusted != 'true'
@@ -167,7 +184,11 @@ jobs:
     if: >-
       always()
       && !github.event.pull_request.draft
-      && (github.event_name != 'pull_request_target' || github.event.label.name == 'run-evals')
+      && (
+        github.event_name != 'pull_request_target'
+        || github.event.action != 'labeled'
+        || github.event.label.name == 'run-evals'
+      )
       && (
         needs.eval_approve.result == 'success'
         || (

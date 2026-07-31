@@ -48,14 +48,15 @@ Still to arrive: context acquisition, rendering, and GitHub I/O.
 
 ## Running the evals
 
-The deterministic suite runs on every pull request. The evals — real model
-calls against fixed scenarios, both the review suite and the plan suite — do
-not: in this repository every pull request touches the harness, so the same
-trigger would fire everything against a live model on every push. They run on
-demand instead (ADR-0008):
+The deterministic suite runs on every pull request, and so do the evals —
+real model calls against fixed scenarios, both the review suite and the plan
+suite (ADR-0008, revised: a full pass costs on the order of a dollar, and in
+this repository every pull request is a harness change, which is exactly what
+the evals grade). Untrusted or draft authors wait at the `ai-pr-review`
+environment's required reviewer before their code runs with the credential.
+Also available:
 
-- **Label a pull request `run-evals`.** Untrusted or draft authors wait at the
-  `ai-pr-review` environment's required reviewer first.
+- **The `run-evals` label**, to re-run a pull request whose head has not moved.
 - **`workflow_dispatch`**, with `runs` (1 or 3) and an optional single `scenario`.
 - **Weekly on `main`**, which is the only way upstream model drift gets caught —
   no pull request of ours would trigger it.
