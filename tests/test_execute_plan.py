@@ -1,0 +1,375 @@
+"""Tests for execute_plan.py — the executor's re-verify + delivery decision.
+
+Chunk A of the plan executor: everything up to (and refusing at) the actual
+delivery. Network is never touched (api_json is stubbed); the prover runs as
+a stub subprocess script so the exit-code contract is exercised for real.
+
+Covers decide_delivery's whole case analysis (ADR-0009: the decision is the
+executor's, from checkable plan structure), run_prover's three-way exit
+contract (0 proved / 1 disproved-with-counterexample / 2 nothing-proved),
+the TOCTOU + fork gates on the PR snapshot, and main()'s fail-closed
+ordering: verify before prove, prove before decide, decide before any fetch.
+"""
+
+import json
+import sys
+
+import pytest
+
+import execute_plan
+from execute_plan import Refusal, decide_delivery
+from verify import Rejection
+
+from test_plan_verify import PLAN_DIFF, PLAN_CHANGED_FILES, PLAN_TREE
+
+POLICY = json.loads(
+    (execute_plan._HARNESS_ROOT / "policy.json").read_text()
+)
+
+
+def suggest(step_id="s0", path="src/app.py", line=2):
+    return {
+        "id": step_id,
+        "kind": "suggest",
+        "args": {"path": path, "line": line, "old": "def load(path):\n",
+                 "new": "def load(path=None):\n", "note": "make path optional"},
+    }
+
+
+def patch(step_id="s0", path="src/app.py", old="def load(path):\n"):
+    return {"id": step_id, "kind": "patch",
+            "args": {"path": path, "old": old, "new": "def load(path=None):\n"}}
+
+
+def push(step_id="s8"):
+    return {"id": step_id, "kind": "push_branch", "args": {"name": "fix/x"}}
+
+
+def open_pr(step_id="s9"):
+    return {"id": step_id, "kind": "open_pr",
+            "args": {"branch": "fix/x", "title": "Fix load()", "body": "Fixes the finding."}}
+
+
+def label(step_id="s7"):
+    return {"id": step_id, "kind": "label", "args": {"name": "ai-remediation"}}
+
+
+# ------------------------------------------------------- decide_delivery ---
+
+
+class TestDecideDelivery:
+    def test_single_file_suggestions_deliver_as_suggestions(self):
+        delivery = decide_delivery([suggest("s0"), suggest("s1", line=3)])
+        assert delivery.mode == "suggestions"
+        assert delivery.path == "src/app.py"
+
+    def test_label_alongside_suggestions_is_fine(self):
+        # label is a side effect, not a fix step; it must not confuse the
+        # decision in either direction.
+        assert decide_delivery([suggest(), label()]).mode == "suggestions"
+
+    def test_patch_chain_delivers_as_stacked_pr(self):
+        delivery = decide_delivery([patch(), push(), open_pr()])
+        assert delivery.mode == "stacked_pr"
+        assert delivery.path is None
+
+    def test_multi_file_patches_still_one_stacked_pr(self):
+        steps = [patch("s0"), patch("s1", path="src/util.py", old="def check(path):\n"),
+                 push(), open_pr()]
+        assert decide_delivery(steps).mode == "stacked_pr"
+
+    def test_no_fix_step_refuses(self):
+        # The label-only hole: such a plan verifies today; the executor is
+        # where it must fail visibly rather than no-op (chunk D designs the
+        # honest decline channel).
+        with pytest.raises(Refusal, match="no fix step"):
+            decide_delivery([label()])
+
+    def test_write_chain_alone_refuses(self):
+        with pytest.raises(Refusal, match="no fix step"):
+            decide_delivery([push(), open_pr()])
+
+    def test_mixed_suggest_and_patch_refuses(self):
+        # Unreachable for a plan the prompt shaped, refused anyway: "the
+        # verifier must have caught it" is not a delivery mechanism.
+        with pytest.raises(Refusal, match="mixed"):
+            decide_delivery([suggest("s0"), patch("s1"), push(), open_pr()])
+
+    def test_suggestions_spanning_files_refuse(self):
+        # ADR-0009's atomicity rule: per-file suggestions of a coordinated
+        # fix can be half-applied. A multi-file fix is patch steps or nothing.
+        with pytest.raises(Refusal, match="span 2 files"):
+            decide_delivery([suggest("s0"), suggest("s1", path="src/util.py")])
+
+    def test_suggestions_with_a_write_chain_refuse(self):
+        with pytest.raises(Refusal, match="nothing to push"):
+            decide_delivery([suggest(), push(), open_pr()])
+
+    def test_patch_without_push_refuses(self):
+        # Verifies (ordering is vacuous with no write step) but has no
+        # delivery: nothing would carry the patch anywhere.
+        with pytest.raises(Refusal, match="exactly one push_branch and one open_pr"):
+            decide_delivery([patch()])
+
+    def test_patch_without_open_pr_refuses(self):
+        with pytest.raises(Refusal, match=r"got 1 and 0"):
+            decide_delivery([patch(), push()])
+
+    def test_two_write_chains_refuse(self):
+        with pytest.raises(Refusal, match=r"got 2 and 2"):
+            decide_delivery([patch(), push("s2"), open_pr("s3"), push("s4"), open_pr("s5")])
+
+
+# ------------------------------------------------------------ run_prover ---
+
+
+@pytest.fixture
+def stub_prover(tmp_path):
+    """A node script standing in for prove-cli: exit code and streams driven
+    by the test, so run_prover's contract is exercised through a REAL
+    subprocess boundary rather than a mocked subprocess.run."""
+
+    def make(exit_code, stdout="", stderr=""):
+        script = tmp_path / "prover.js"
+        script.write_text(
+            f"process.stdout.write({json.dumps(stdout)});\n"
+            f"process.stderr.write({json.dumps(stderr)});\n"
+            f"process.exitCode = {exit_code};\n"
+        )
+        return script
+
+    return make
+
+
+@pytest.fixture
+def prover_inputs(tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps({"steps": [suggest()]}))
+    changed = tmp_path / "changed_files.json"
+    changed.write_text(json.dumps(PLAN_CHANGED_FILES))
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(POLICY))
+    return plan_path, changed, policy_path
+
+
+class TestRunProver:
+    def test_exit_zero_passes_and_echoes_verdicts(self, stub_prover, prover_inputs, capsys):
+        prover = stub_prover(0, stdout="ordering: holds (1.0ms)\n")
+        execute_plan.run_prover(prover, *prover_inputs)
+        assert "ordering: holds" in capsys.readouterr().out
+
+    def test_exit_one_fails_with_the_counterexample(self, stub_prover, prover_inputs, capsys):
+        # Exit 1 is an audit record: the counterexample must reach the log.
+        prover = stub_prover(1, stdout="frame: VIOLATED (2.0ms)\n  step s0 writes src/evil.py\n")
+        with pytest.raises(SystemExit):
+            execute_plan.run_prover(prover, *prover_inputs)
+        err = capsys.readouterr().err
+        assert "DISPROVED" in err
+        assert "step s0 writes src/evil.py" in err
+
+    def test_exit_two_fails_as_operational(self, stub_prover, prover_inputs, capsys):
+        # Exit 2 means nothing was proved at all — an operational failure of
+        # the run, not evidence about the plan, and logged as such.
+        prover = stub_prover(2, stderr="prove-cli: changed-files: expected an array of strings\n")
+        with pytest.raises(SystemExit):
+            execute_plan.run_prover(prover, *prover_inputs)
+        err = capsys.readouterr().err
+        assert "operational failure" in err
+        assert "expected an array of strings" in err
+        assert "DISPROVED" not in err
+
+    def test_unrunnable_prover_fails_closed(self, tmp_path, prover_inputs, capsys):
+        with pytest.raises(SystemExit):
+            execute_plan.run_prover(tmp_path / "does-not-exist.js", *prover_inputs)
+        assert "nothing was proved" in capsys.readouterr().err
+
+
+# --------------------------------------------------- pr_snapshot / fork ---
+
+
+def pr_payload(head="reviewed-sha", base="reviewed-base",
+               head_repo="o/r", base_repo="o/r", head_ref="feature/x"):
+    return {
+        "head": {"sha": head, "ref": head_ref,
+                 "repo": {"full_name": head_repo} if head_repo else None},
+        "base": {"sha": base, "repo": {"full_name": base_repo}},
+    }
+
+
+class TestPrSnapshot:
+    def stub(self, monkeypatch, response):
+        monkeypatch.setattr(
+            execute_plan, "api_json", lambda path, method="GET", payload=None: response
+        )
+
+    def test_unmoved_pr_returns_the_snapshot(self, monkeypatch):
+        self.stub(monkeypatch, pr_payload())
+        pr = execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "reviewed-base")
+        assert pr["head"]["ref"] == "feature/x"
+
+    def test_moved_head_fails(self, monkeypatch, capsys):
+        self.stub(monkeypatch, pr_payload(head="new-sha"))
+        with pytest.raises(SystemExit):
+            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "reviewed-base")
+        assert "head moved" in capsys.readouterr().err
+
+    def test_retargeted_base_fails(self, monkeypatch, capsys):
+        # A retarget changes the diff the plan claims to fix just as surely
+        # as a push does — post.py's rule, inherited.
+        self.stub(monkeypatch, pr_payload(base="other-base"))
+        with pytest.raises(SystemExit):
+            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "reviewed-base")
+        assert "base changed" in capsys.readouterr().err
+
+
+class TestIsFork:
+    def test_same_repo_is_not_a_fork(self):
+        assert not execute_plan.is_fork(pr_payload())
+
+    def test_different_head_repo_is_a_fork(self):
+        assert execute_plan.is_fork(pr_payload(head_repo="fork-owner/r"))
+
+    def test_deleted_fork_repo_counts_as_fork(self):
+        # head.repo is null when the fork was deleted: still no branch in the
+        # base repository to base a stacked PR on.
+        assert execute_plan.is_fork(pr_payload(head_repo=None))
+
+
+# ------------------------------------------------------------------ main ---
+
+
+@pytest.fixture
+def artifact_dir(tmp_path):
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    (artifact / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
+    (artifact / "diff.patch").write_text(PLAN_DIFF)
+    (artifact / "changed_files.json").write_text(json.dumps(PLAN_CHANGED_FILES))
+    return artifact
+
+
+@pytest.fixture
+def pr_root(tmp_path):
+    root = tmp_path / "pr_root"
+    for path, content in PLAN_TREE.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+    return root
+
+
+@pytest.fixture
+def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(json.dumps(POLICY))
+    prover = stub_prover(0, stdout="ordering: holds (1.0ms)\n")
+
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+    monkeypatch.setenv("PR_NUMBER", "1")
+    monkeypatch.setenv("HEAD_SHA", "reviewed-sha")
+    monkeypatch.setenv("BASE_SHA", "reviewed-base")
+    monkeypatch.setattr(sys, "argv", [
+        "execute_plan.py",
+        "--artifact-dir", str(artifact_dir),
+        "--pr-root", str(pr_root),
+        "--policy", str(policy_path),
+        "--prover", str(prover),
+    ])
+    return artifact_dir
+
+
+def stub_pr(monkeypatch, response):
+    calls = []
+
+    def fake_api_json(path, method="GET", payload=None):
+        calls.append(path)
+        return response
+
+    monkeypatch.setattr(execute_plan, "api_json", fake_api_json)
+    return calls
+
+
+class TestMain:
+    def test_verified_suggestion_plan_reaches_the_decision(self, main_env, monkeypatch, capsys):
+        # Chunk A ends AT the decision: the run must still exit non-zero
+        # ("decided but not delivered"), never green with nothing posted.
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        captured = capsys.readouterr()
+        assert "delivery decision: suggestion comments on 'src/app.py'" in captured.out
+        assert "not implemented yet" in captured.err
+
+    def test_verified_patch_plan_decides_stacked_pr_on_the_head_branch(
+            self, main_env, monkeypatch, capsys):
+        (main_env / "plan.json").write_text(json.dumps(
+            {"steps": [patch(), push(), open_pr()]}))
+        stub_pr(monkeypatch, pr_payload(head_ref="feature/x"))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        # The base comes from the live PR context, never the plan (open_pr
+        # has no base argument — ADR-0009 addendum).
+        assert "stacked PR based on 'feature/x'" in capsys.readouterr().out
+
+    def test_rejected_plan_never_reaches_the_prover_or_network(
+            self, main_env, monkeypatch, capsys):
+        (main_env / "plan.json").write_text(json.dumps(
+            {"steps": [suggest(path="src/evil.py")]}))
+        calls = stub_pr(monkeypatch, pr_payload())
+
+        def exploding_prover(*args):
+            raise AssertionError("prover ran for a rejected plan")
+
+        monkeypatch.setattr(execute_plan, "run_prover", exploding_prover)
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "plan rejected" in capsys.readouterr().err
+        assert calls == []
+
+    def test_disproved_plan_never_reaches_the_network(self, main_env, monkeypatch, capsys, stub_prover, tmp_path):
+        disprover = stub_prover(1, stdout="frame: VIOLATED\n")
+        argv = sys.argv[:]
+        argv[argv.index("--prover") + 1] = str(disprover)
+        monkeypatch.setattr(sys, "argv", argv)
+        calls = stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "DISPROVED" in capsys.readouterr().err
+        assert calls == []
+
+    def test_refused_plan_never_reaches_the_network(self, main_env, monkeypatch, capsys):
+        # Verifies and proves (a lone label is in-grammar and vacuously
+        # ordered) but no delivery carries it: refuse before any fetch.
+        (main_env / "plan.json").write_text(json.dumps({"steps": [label()]}))
+        calls = stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "refused: no fix step" in capsys.readouterr().err
+        assert calls == []
+
+    def test_moved_head_fails_after_the_decision(self, main_env, monkeypatch, capsys):
+        stub_pr(monkeypatch, pr_payload(head="moved-sha"))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "head moved" in capsys.readouterr().err
+
+    def test_stacked_pr_on_a_fork_is_refused(self, main_env, monkeypatch, capsys):
+        # ADR-0009 addendum: a fork PR's head branch does not exist in the
+        # base repository, so there is nothing to base a stacked PR on.
+        (main_env / "plan.json").write_text(json.dumps(
+            {"steps": [patch(), push(), open_pr()]}))
+        stub_pr(monkeypatch, pr_payload(head_repo="fork-owner/r"))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "stacked PR refused" in capsys.readouterr().err
+
+    def test_suggestions_on_a_fork_are_fine(self, main_env, monkeypatch, capsys):
+        # The fork gate applies to the stacked PR only: suggestions are the
+        # one delivery that works across both repository topologies.
+        stub_pr(monkeypatch, pr_payload(head_repo="fork-owner/r"))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        captured = capsys.readouterr()
+        assert "delivery decision: suggestion comments" in captured.out
+        assert "stacked PR refused" not in captured.err
