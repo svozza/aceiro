@@ -48,10 +48,11 @@ Still to arrive: context acquisition, rendering, and GitHub I/O.
 
 ## Running the evals
 
-The deterministic suite runs on every pull request. The evals — real model calls
-against the 11 scenarios — do not: in this repository every pull request touches
-the harness, so the same trigger would fire the whole suite against a live model
-on every push. They run on demand instead (ADR-0008):
+The deterministic suite runs on every pull request. The evals — real model
+calls against fixed scenarios, both the review suite and the plan suite — do
+not: in this repository every pull request touches the harness, so the same
+trigger would fire everything against a live model on every push. They run on
+demand instead (ADR-0008):
 
 - **Label a pull request `run-evals`.** Untrusted or draft authors wait at the
   `ai-pr-review` environment's required reviewer first.
@@ -97,6 +98,16 @@ suite to take on the order of fifteen minutes at the default `--workers 4`.
 `--scenario NAME` runs a single scenario while iterating on it — then finish
 with the full `--runs 3` before believing the change, since a fix measured on
 one scenario has been observed to move the failure to another.
+
+The plan generator has its own suite over the same layout plus a
+`context/finding.json` (the commanded finding, ADR-0007), graded on the
+ADR-0009 shape invariants rather than step inventories. CI runs it in the
+same gated job as the review suite; locally:
+
+```bash
+# same environment as above; no --cache-dir, plan scenarios need no BASE
+python src/smtithy/evals/run_plan_evals.py --output-dir /tmp/plan-eval-out --runs 3
+```
 
 Each scenario's output directory holds the forensics when something fails:
 `transcript.jsonl` carries the harness's own events (`run_failed`,

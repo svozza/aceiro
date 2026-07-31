@@ -233,7 +233,7 @@ jobs:
                 ]
               }]
             }
-      - name: Run eval scenarios
+      - name: Run review eval scenarios
         env:
           CLAUDE_CODE_USE_BEDROCK: "1"
           ANTHROPIC_MODEL: ${{ env.BEDROCK_INFERENCE_PROFILE }}
@@ -253,13 +253,37 @@ jobs:
             --cache-dir "$RUNNER_TEMP/eval-base-cache" \
             --runs "$RUNS" \
             ${SCENARIO:+--scenario "$SCENARIO"}
+      # The plan generator's suite (run_plan_evals.py), same credential, same
+      # session. `if: always() && ...` so a review-scenario failure still
+      # produces plan results in the same run — the two suites grade different
+      # generators, and one's regression should not hide the other's state.
+      # Skipped when a single review scenario was requested by name: --scenario
+      # names are suite-specific, and cross-applying one would either error or
+      # silently run everything.
+      - name: Run plan eval scenarios
+        if: always() && inputs.scenario == ''
+        env:
+          CLAUDE_CODE_USE_BEDROCK: "1"
+          ANTHROPIC_MODEL: ${{ env.BEDROCK_INFERENCE_PROFILE }}
+          DISABLE_TELEMETRY: "1"
+          DISABLE_ERROR_REPORTING: "1"
+          DISABLE_AUTOUPDATER: "1"
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
+          RUNS: ${{ inputs.runs || '1' }}
+        run: |
+          set -euo pipefail
+          python src/smtithy/evals/run_plan_evals.py \
+            --output-dir "$RUNNER_TEMP/plan-eval-output" \
+            --runs "$RUNS"
       - name: Upload eval results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: evals-${{ github.run_id }}
-          # run_evals.py redacts the captured stream and transcript with the
+          # Both runners redact the captured stream and transcript with the
           # policy's secret patterns before writing, which is what makes a
           # 30-day artifact of a live model session acceptable.
-          path: ${{ runner.temp }}/eval-output/
+          path: |
+            ${{ runner.temp }}/eval-output/
+            ${{ runner.temp }}/plan-eval-output/
           retention-days: 30
