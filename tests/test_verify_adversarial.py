@@ -221,6 +221,42 @@ class TestExfiltration:
         artifact["summary"] = "[x](https://github.com/aws-powertools-evil/repo)"
         rejected(artifact, sample_diff, changed_files, policy)
 
+    # A path-prefix allowlist entry ("github.com/aws-powertools/") constrains
+    # nothing if the path can walk back out of it: the browser applies RFC 3986
+    # remove_dot_segments before issuing the request, so the link the reader
+    # CLICKS resolves to an org the policy never allowlisted. Both the explicit
+    # link form and the GFM bare-URL form go through check_link, so both are
+    # bracketed here.
+    @pytest.mark.parametrize(
+        "destination",
+        [
+            pytest.param("https://github.com/aws-powertools/../attacker-org/leak", id="dot-dot"),
+            pytest.param("https://github.com/aws-powertools/..%2fattacker-org/leak", id="encoded-slash"),
+            pytest.param("https://github.com/aws-powertools/%2e%2e/attacker-org/leak", id="encoded-lower"),
+            pytest.param("https://github.com/aws-powertools/%2E%2E/attacker-org/leak", id="encoded-upper"),
+            pytest.param("https://github.com/aws-powertools/%2e%2E/attacker-org/leak", id="encoded-mixed"),
+            pytest.param("https://github.com/aws-powertools/x/../../attacker-org/leak", id="deep-then-out"),
+            pytest.param("https://github.com/aws-powertools/./../attacker-org/leak", id="single-then-dot-dot"),
+            pytest.param("https://github.com/aws-powertools/..\\attacker-org/leak", id="backslash"),
+        ],
+    )
+    def test_dot_segment_escapes_path_prefix(self, artifact, sample_diff, changed_files, policy, destination):
+        artifact["summary"] = f"[report]({destination}?d=exfil)"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_dot_segment_escapes_path_prefix_as_bare_url(self, artifact, sample_diff, changed_files, policy):
+        # GFM auto-links bare URLs, so the prose form must reject identically.
+        artifact["summary"] = "See https://github.com/aws-powertools/../attacker-org/leak for details."
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_dot_segment_in_issue_reference(self, artifact, sample_diff, changed_files, policy):
+        # The URL synthesised for a GFM issue reference goes through the same
+        # allowlist, so a `..` repo name must fail there too. (The repo part of
+        # ISSUE_REF_RE admits no slash, so `owner/../evil#1` is not a reference
+        # at all — a `..` repo is the form that actually reaches check_link.)
+        artifact["summary"] = "tracked in aws-powertools/..#1"
+        rejected(artifact, sample_diff, changed_files, policy)
+
     def test_reference_style_link(self, artifact, sample_diff, changed_files, policy):
         artifact["summary"] = "see [details][1]\n\n[1]: https://evil.example.com/"
         rejected(artifact, sample_diff, changed_files, policy)

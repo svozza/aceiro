@@ -222,12 +222,34 @@ def rendered_text(tokens) -> str:
     return strip_invisible("".join(parts))
 
 
+_PERCENT_RE = re.compile(r"%([0-9A-Fa-f]{2})")
+
+
+def _has_dot_segment(path: str) -> bool:
+    """A path segment is `.` or `..`, in literal or percent-encoded form.
+
+    An allowlist entry like ``github.com/aws-powertools/`` is a PREFIX, and a
+    prefix constrains nothing if the path can walk back out of it: the browser
+    applies RFC 3986 remove_dot_segments before issuing the request, so
+    ``…/aws-powertools/../attacker-org/leak`` matches the prefix here and
+    resolves to an org the policy never allowlisted.
+
+    Percent-escapes are decoded before the test because ``%2e%2e`` and ``..%2f``
+    reach the same resolved path, and the separator set includes backslash
+    because browsers treat it as one in a URL path. Decoding is for DETECTION
+    only — nothing decoded is ever returned for comparison.
+    """
+    decoded = _PERCENT_RE.sub(lambda m: chr(int(m.group(1), 16)), path)
+    return any(segment in (".", "..") for segment in re.split(r"[/\\]", decoded))
+
+
 def normalize_host(url: str) -> str | None:
     """Extract a normalized host+path prefix for allowlist comparison.
 
     Returns None for anything that is not clean https to an ASCII host —
-    unicode/homoglyph hosts, userinfo tricks, and other schemes all fail
-    closed rather than being 'normalized' into acceptance.
+    unicode/homoglyph hosts, userinfo tricks, dot-segment traversal out of an
+    allowlisted path prefix, and other schemes all fail closed rather than being
+    'normalized' into acceptance.
     """
     url = url.strip()
     match = re.match(r"^https://([^/?#\s]+)(/[^\s?#]*)?", url)
@@ -238,6 +260,13 @@ def normalize_host(url: str) -> str | None:
         return None  # userinfo/port tricks: reject rather than normalize
     if not re.fullmatch(r"[a-z0-9.-]+", authority):
         return None  # non-ASCII / punycode-ambiguous host: reject
+    # Rejected, not resolved: a link whose rendered destination differs from the
+    # text the allowlist matched has no business in a posted comment, so there is
+    # nothing to gain by computing where it would land. Dots INSIDE a segment
+    # (an ordinary filename) are untouched — only a whole segment of . or ..
+    if _has_dot_segment(path):
+        return None
+    # The path keeps its case: only the authority is case-insensitive.
     return authority + path
 
 

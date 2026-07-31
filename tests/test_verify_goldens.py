@@ -43,6 +43,21 @@ def test_allowlisted_links_pass(valid_artifact, sample_diff, changed_files, poli
     verify(valid_artifact, sample_diff, changed_files, policy)
 
 
+def test_deep_path_under_prefix_with_dots_passes(valid_artifact, sample_diff, changed_files, policy):
+    # Rejecting dot SEGMENTS must not reject dots in ordinary filenames: a
+    # legitimate deep path under the allowlisted prefix stays legitimate. The
+    # traversal cases these bracket are in
+    # test_verify_adversarial.py TestExfiltration.
+    valid_artifact["summary"] = (
+        "See [the file]"
+        "(https://github.com/aws-powertools/powertools-lambda-python/blob/v2.1.0/"
+        "aws_lambda_powertools/shared/functions.py#L10) and "
+        "[a dotfile](https://github.com/aws-powertools/powertools-lambda-python/"
+        "blob/main/.github/workflows/ci.yml)."
+    )
+    verify(valid_artifact, sample_diff, changed_files, policy)
+
+
 DOTFILE_DIFF = (
     "diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n"
     "--- a/.github/workflows/ci.yml\n"
