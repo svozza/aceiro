@@ -94,7 +94,8 @@ works, and any AWS profile whose credentials can `bedrock:InvokeModel` on the
 inference profile named in `ANTHROPIC_MODEL` (the same pair CI's scoped session
 policy allows). `CLAUDE_CONFIG_DIR` points somewhere disposable so the run
 can't pick up a developer's own Claude Code settings. Expect a `--runs 3`
-suite to take on the order of fifteen minutes at the default `--workers 4`.
+suite to take on the order of fifteen minutes at the default `--workers 4`,
+and a full pass of both suites to cost on the order of a dollar.
 
 `--scenario NAME` runs a single scenario while iterating on it — then finish
 with the full `--runs 3` before believing the change, since a fix measured on
