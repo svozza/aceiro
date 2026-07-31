@@ -1,0 +1,7 @@
+{
+  "number": 9102,
+  "title": "refactor(shared): simplify LRUDict eviction with popitem",
+  "body": "Uses OrderedDict.popitem in the eviction branch and documents the intent inline for future tooling.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

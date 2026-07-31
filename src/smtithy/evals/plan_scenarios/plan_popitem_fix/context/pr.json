@@ -1,0 +1,7 @@
+{
+  "number": 9001,
+  "title": "refactor(shared): simplify LRUDict eviction with popitem",
+  "body": "Cleans up the eviction branch in LRUDict.__setitem__ to use OrderedDict.popitem instead of next(iter(self)) + del.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

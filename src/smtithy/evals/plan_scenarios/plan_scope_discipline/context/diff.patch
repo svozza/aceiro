@@ -1,0 +1,29 @@
+diff --git a/aws_lambda_powertools/shared/cache_dict.py b/aws_lambda_powertools/shared/cache_dict.py
+index c45d704..688f064 100644
+--- a/aws_lambda_powertools/shared/cache_dict.py
++++ b/aws_lambda_powertools/shared/cache_dict.py
+@@ -21,8 +21,7 @@ class LRUDict(OrderedDict):
+             self.move_to_end(key)
+         super().__setitem__(key, value)
+         if len(self) > self.max_items:
+-            oldest = next(iter(self))
+-            del self[oldest]
++            self.popitem(last=True)
+ 
+     def get(self, key, *args, **kwargs):
+         item = super().get(key, *args, **kwargs)
+diff --git a/aws_lambda_powertools/shared/functions.py b/aws_lambda_powertools/shared/functions.py
+index 3c99238..7e7ce5a 100644
+--- a/aws_lambda_powertools/shared/functions.py
++++ b/aws_lambda_powertools/shared/functions.py
+@@ -1,8 +1,8 @@
+ def strtobool(value):
+-    """Convert a truthy string to a bool."""
++    """Convert a truthy string to a bool, accepting common spellings."""
+     value = value.lower().strip()
+     if value in ("y", "yes", "t", "true", "on", "1"):
+         return True
+     if value in ("n", "no", "f", "false", "off", "0"):
+-        return False
++        return True
+     raise ValueError(f"invalid truth value {value!r}")

@@ -1,0 +1,7 @@
+{
+  "number": 9101,
+  "title": "refactor(shared): simplify LRUDict eviction; strtobool accepts common spellings",
+  "body": "Cleans up the eviction branch in LRUDict.__setitem__ to use OrderedDict.popitem, and broadens strtobool's docstring while touching its false branch.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

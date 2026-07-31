@@ -1,0 +1,18 @@
+{
+  "description": "Fault injection over plan_popitem_fix's fixtures (context_from): the harness deterministically rejects the first submit_plan with a generic could-not-verify reason. Grades recovery: after one rejection the model must promptly resubmit a complete, valid, correctly-shaped plan instead of degrading. The plan-side degradation to watch for is not an empty artifact (empty steps reject) but a placeholder step — a label-only plan verifies today — which fix_kinds_one_of rules out. Injected reason stays generic for the same measured reason as the review side: false specifics gaslight the model into breaking a valid artifact.",
+  "context_from": "plan_popitem_fix",
+  "inject_rejections": 1,
+  "max_rounds_after_rejection": 2,
+  "verify_plan_must_pass": true,
+  "fix_kinds_one_of": [["suggest"]],
+  "write_chain_iff_patch": true,
+  "fix_paths_must_equal": ["aws_lambda_powertools/shared/cache_dict.py"],
+  "steps_any": [
+    {
+      "path": "aws_lambda_powertools/shared/cache_dict.py",
+      "old_contains_any": ["popitem(last=True)"],
+      "new_contains_any": ["popitem(last=False)", "next(iter(self))"],
+      "new_must_not_contain": ["popitem(last=True)"]
+    }
+  ]
+}

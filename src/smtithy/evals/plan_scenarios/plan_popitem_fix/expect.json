@@ -1,0 +1,16 @@
+{
+  "description": "The straight-line case: lru_eviction_bug's planted defect (byte-identical fixtures), its finding commanded. One file, one hunk, so ADR-0009's boundary says suggestion-shaped: fix steps are all `suggest`, no write chain. Shape is graded as the INVARIANT (kinds uniform, write chain iff patch), never a step inventory: how many suggest steps land on the file is the model's business, that a single-file fix isn't PR-shaped is the policy's.",
+  "verify_plan_must_pass": true,
+  "fix_kinds_one_of": [["suggest"]],
+  "write_chain_iff_patch": true,
+  "fix_paths_must_equal": ["aws_lambda_powertools/shared/cache_dict.py"],
+  "steps_any": [
+    {
+      "path": "aws_lambda_powertools/shared/cache_dict.py",
+      "old_contains_any": ["popitem(last=True)"],
+      "new_contains_any": ["popitem(last=False)", "next(iter(self))"],
+      "new_must_not_contain": ["popitem(last=True)"]
+    }
+  ],
+  "shape_note": "All-suggest is asserted, not exactly-one-step: the executor's delivery decision needs kind uniformity and span, nothing finer. new_contains_any accepts either correct fix (flip the flag, or restore the original idiom)."
+}

@@ -1,0 +1,43 @@
+diff --git a/aws_lambda_powertools/shared/client.py b/aws_lambda_powertools/shared/client.py
+index 7dd8951..c436982 100644
+--- a/aws_lambda_powertools/shared/client.py
++++ b/aws_lambda_powertools/shared/client.py
+@@ -2,4 +2,5 @@ from aws_lambda_powertools.shared.constants import DEFAULT_TIMEOUT
+ 
+ 
+ def fetch(url, get):
++    """Fetch url with the module-wide timeout."""
+     return get(url, timeout=DEFAULT_TIMEOUT)
+diff --git a/aws_lambda_powertools/shared/constants.py b/aws_lambda_powertools/shared/constants.py
+index 67ccf9d..dbf4ddf 100644
+--- a/aws_lambda_powertools/shared/constants.py
++++ b/aws_lambda_powertools/shared/constants.py
+@@ -1,3 +1,4 @@
+ """Shared constants for HTTP utilities."""
+ 
+-DEFAULT_TIMEOUT = 5
++DEFAULT_TIMEOUT_SECONDS = 5
++MAX_RETRIES = 3
+diff --git a/aws_lambda_powertools/shared/http.py b/aws_lambda_powertools/shared/http.py
+index c72a3bc..58e9794 100644
+--- a/aws_lambda_powertools/shared/http.py
++++ b/aws_lambda_powertools/shared/http.py
+@@ -1,6 +1,6 @@
+ from aws_lambda_powertools.shared import connection
+-from aws_lambda_powertools.shared.constants import DEFAULT_TIMEOUT
++from aws_lambda_powertools.shared.constants import DEFAULT_TIMEOUT_SECONDS, MAX_RETRIES
+ 
+ 
+ def open_connection(host):
+-    return connection.connect(host, timeout=DEFAULT_TIMEOUT)
++    return connection.connect(host, timeout=DEFAULT_TIMEOUT_SECONDS, retries=MAX_RETRIES)
+diff --git a/aws_lambda_powertools/shared/server.py b/aws_lambda_powertools/shared/server.py
+index 3f5c69f..88d6372 100644
+--- a/aws_lambda_powertools/shared/server.py
++++ b/aws_lambda_powertools/shared/server.py
+@@ -2,4 +2,5 @@ from aws_lambda_powertools.shared.constants import DEFAULT_TIMEOUT
+ 
+ 
+ def serve(handler, listen):
++    """Serve requests with the module-wide timeout."""
+     return listen(handler, timeout=DEFAULT_TIMEOUT)

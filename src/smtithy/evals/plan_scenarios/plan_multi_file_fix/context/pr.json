@@ -1,0 +1,7 @@
+{
+  "number": 9103,
+  "title": "feat(shared): retry support; clearer timeout constant name",
+  "body": "Renames DEFAULT_TIMEOUT to DEFAULT_TIMEOUT_SECONDS for clarity and adds MAX_RETRIES, wiring retries into open_connection.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

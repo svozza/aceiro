@@ -1,0 +1,13 @@
+diff --git a/aws_lambda_powertools/shared/cache_dict.py b/aws_lambda_powertools/shared/cache_dict.py
+index 1111111..2222222 100644
+--- a/aws_lambda_powertools/shared/cache_dict.py
++++ b/aws_lambda_powertools/shared/cache_dict.py
+@@ -22,7 +22,6 @@ class LRUDict(OrderedDict):
+         super().__setitem__(key, value)
+         if len(self) > self.max_items:
+-            oldest = next(iter(self))
+-            del self[oldest]
++            self.popitem(last=True)
+
+     def get(self, key, *args, **kwargs):
+         item = super().get(key, *args, **kwargs)
