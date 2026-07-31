@@ -20,13 +20,15 @@ repair.
 
 Checks, in order (mirroring verify.py's phase order):
 1. Strict structural schema (check_plan_schema).
-2. ADR-0005's containment (check_plan_containment): frame, denylist,
-   suggest.line provenance, bounding, anchoring. Anchoring is why verify_plan
-   grows a content source over verify()'s argument list — the ADR calls it
-   the largest change to the verifier's shape.
-3. Markdown allowlist on the args the policy marks markdown-bearing
+2. The ordering policy (check_plan_ordering), mirroring proveOrdering — decidable
+   from the plan alone, so it runs before anything that reads a file.
+3. ADR-0005's containment (check_plan_containment): frame, denylist,
+   suggest.line provenance and placement, bounding, anchoring. Anchoring is why
+   verify_plan grows a content source over verify()'s argument list — the ADR
+   calls it the largest change to the verifier's shape.
+4. Markdown allowlist on the args the policy marks markdown-bearing
    (check_plan_markdown, reusing verify.check_markdown_field).
-4. Secret scan over the whole plan, raw and rendered (check_plan_secrets,
+5. Secret scan over the whole plan, raw and rendered (check_plan_secrets,
    mirroring verify.check_secrets).
 """
 
@@ -339,6 +341,49 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                 )
 
 
+# ----------------------------------------------------------------- ordering --
+
+
+def check_plan_ordering(plan: dict, policy_plan: dict) -> None:
+    """policy.plan.ordering: no `after`-kind step may precede a `before`-kind one.
+
+    The Python side of what ts/plan/prove.ts proveOrdering proves, and it has to
+    exist: the process that holds the write token re-verifies rather than
+    trusting a claim from another job, so a policy read by only one of the two
+    gates is a policy the executor does not enforce. ADR-0009's "the only legal
+    write chain is patch → push_branch → open_pr" is this rule.
+
+    Semantics kept identical to the prover's, deliberately:
+
+    - It quantifies over PAIRS at their plan indices, so the rule is about
+      relative order and not adjacency — an unrelated step between the pair does
+      not hide the violation.
+    - A plan with no orderable pair holds VACUOUSLY. proveOrdering returns early
+      rather than asserting Or() of nothing, and a suggestion-only plan (no
+      write-class step at all) is the case that matters — see
+      ts/plan/prove.test.ts and prove-cli.test.ts.
+    - First violation wins, in plan order, matching this module's other phases.
+
+    The prover states this negated and asks a solver; over a straight-line plan
+    of at most max_steps the same claim is a double loop, and the two must agree
+    on every plan. The differential is the test that keeps them honest.
+    """
+    steps = plan["steps"]
+    for rule in policy_plan["ordering"]:
+        for j, second in enumerate(steps):
+            if second["kind"] != rule["after"]:
+                continue
+            for i, first in enumerate(steps):
+                if i == j or first["kind"] != rule["before"]:
+                    continue
+                if j < i:
+                    raise Rejection(
+                        f"plan.steps[{j}]: {second['kind']} ({second['id']!r}) precedes "
+                        f"{first['kind']} ({first['id']!r}) at plan.steps[{i}], which the "
+                        f"ordering policy forbids"
+                    )
+
+
 # -------------------------------------------------- markdown + secret scan --
 
 
@@ -413,6 +458,7 @@ def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: di
     filesystem assumption beyond it.
     """
     check_plan_schema(plan, policy["plan"])
+    check_plan_ordering(plan, policy["plan"])
     check_plan_containment(plan, diff_text, changed_files, policy["plan"], content_source)
     check_plan_markdown(plan, policy)
     check_plan_secrets(plan, policy)

@@ -97,6 +97,18 @@ def render_plan_constraints(policy: dict) -> str:
     plan = policy["plan"]
     kinds = ", ".join(f"`{kind}`" for kind in sorted(plan["step_kinds"]))
     denylist = ", ".join(f"`{p}`" for p in plan["path_denylist"])
+    # Rendered from policy.ordering, not restated: the rule is enforced by both
+    # gates, so the prose has to move when an operator edits the policy object.
+    # An empty ordering list renders NOTHING rather than a sentence with a hole
+    # in it — render_constraints' rule for the empty allowlist, same reasoning.
+    if plan["ordering"]:
+        pairs = "; ".join(f"every `{rule['before']}` before every `{rule['after']}`" for rule in plan["ordering"])
+        ordering_rule = (
+            f"- Step order is enforced: {pairs}. A step out of that order rejects "
+            "the whole plan, however far apart the pair sits.\n"
+        )
+    else:
+        ordering_rule = ""
     return (
         "\n\n## Enforced plan constraints (verifier-rejected if violated)\n\n"
         f"- Step kinds: {kinds}. Nothing else exists; an unknown kind rejects "
@@ -113,6 +125,7 @@ def render_plan_constraints(policy: dict) -> str:
         "- A `suggest` step's `line` must be a line number inside a diff hunk "
         "for that file; read it off the annotated diff verbatim, never "
         "compute it.\n"
+        f"{ordering_rule}"
         "- `suggest.note` and `open_pr.body` are markdown with the same "
         "restrictions as a review comment: no links unless allowlisted, no "
         "images, no raw HTML, no @-mentions, every fence closed.\n"

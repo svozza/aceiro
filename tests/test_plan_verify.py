@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
 
 from plan_verify import (  # noqa: E402
     check_plan_containment,
+    check_plan_ordering,
     check_plan_schema,
     glob_to_regexp,
     matches_denylist,
@@ -46,6 +47,23 @@ def suggest_step(step_id="s0", path="src/a.py"):
 
 def push_step(step_id="s1", name="fix/x"):
     return {"id": step_id, "kind": "push_branch", "args": {"name": name}}
+
+
+def open_pr_step(step_id="s2", branch="fix/x", title="t", body="the fix"):
+    return {"id": step_id, "kind": "open_pr", "args": {"branch": branch, "title": title, "body": body}}
+
+
+def label_step(step_id="s3", name="needs-tests"):
+    return {"id": step_id, "kind": "label", "args": {"name": name}}
+
+
+def _full_policy():
+    """POLICY with a populated link allowlist, for cases that run the whole
+    driver: the shipped list is empty, so open_pr.body's markdown check would
+    reject any link and every case would pass for that one reason."""
+    policy = copy.deepcopy(POLICY)
+    policy["markdown"]["link_host_allowlist"] = ["docs.example.com"]
+    return policy
 
 
 def valid_plan():
@@ -505,6 +523,68 @@ class TestAnchoring:
 
         with pytest.raises(Rejection, match="not a file this PR touched"):
             contained({"steps": [anchored_patch(path="src/evil.py")]}, content_source=exploding)
+
+
+class TestOrdering:
+    """The Python twin of ts/plan/prove.test.ts describe('proveOrdering').
+
+    Case for case, same names, because the semantics must be byte-identical:
+    the prover and this module read the same policy.ordering, and a plan one
+    admits and the other rejects is the defect this module's docstring names.
+    """
+
+    def test_holds_when_patch_precedes_push_branch_precedes_open_pr(self):
+        check_plan_ordering({"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2")]}, PLAN_POLICY)
+
+    def test_catches_push_branch_before_patch(self):
+        with pytest.raises(Rejection, match="push_branch.*precedes.*patch"):
+            check_plan_ordering({"steps": [push_step("s0"), patch_step("s1")]}, PLAN_POLICY)
+
+    def test_catches_open_pr_before_push_branch(self):
+        with pytest.raises(Rejection, match="open_pr.*precedes.*push_branch"):
+            check_plan_ordering({"steps": [open_pr_step("s0"), push_step("s1")]}, PLAN_POLICY)
+
+    def test_catches_a_violation_across_unrelated_steps_between_the_pair(self):
+        # The rule is about relative order, not adjacency.
+        with pytest.raises(Rejection):
+            check_plan_ordering(
+                {"steps": [open_pr_step("s0"), patch_step("s1"), push_step("s2")]}, PLAN_POLICY
+            )
+
+    def test_holds_for_a_plan_with_no_orderable_pair(self):
+        check_plan_ordering({"steps": [label_step("s0")]}, PLAN_POLICY)
+
+    def test_holds_for_repeated_patches_which_no_rule_orders(self):
+        check_plan_ordering(
+            {"steps": [patch_step("s0"), patch_step("s1", path="src/b.py"), push_step("s2")]}, PLAN_POLICY
+        )
+
+    # ordering with suggest steps (ADR-0009), mirroring the TS describe block.
+
+    def test_holds_for_a_suggestion_only_plan_vacuously(self):
+        check_plan_ordering({"steps": [suggest_step("s0")]}, PLAN_POLICY)
+
+    def test_catches_push_branch_before_patch_alongside_suggestions(self):
+        # Vacuous-pass is this policy's known failure mode: suggest steps must
+        # not dilute the ordering obligation on the write chain beside them.
+        with pytest.raises(Rejection, match="push_branch"):
+            check_plan_ordering(
+                {"steps": [suggest_step("s0"), push_step("s1"), patch_step("s2", path="src/b.py")]},
+                PLAN_POLICY,
+            )
+
+    def test_verify_plan_enforces_ordering(self):
+        # The phase is wired into the driver, not merely available: the plan is
+        # otherwise fully valid (anchored, in-frame, in-bounds). This plan
+        # violates BOTH rules, and rules are evaluated in policy order, so the
+        # patch/push_branch one is reported — first violation wins.
+        plan = {"steps": [open_pr_step("s0"), push_step("s1"), anchored_patch("s2")]}
+        with pytest.raises(Rejection, match=r"push_branch.*precedes.*patch.*ordering policy forbids"):
+            verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
+
+    def test_verify_plan_admits_the_legal_write_chain(self):
+        plan = {"steps": [anchored_patch("s0"), push_step("s1"), open_pr_step("s2")]}
+        verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
 
 
 class TestTreeContentSource:

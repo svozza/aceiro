@@ -208,6 +208,16 @@ class TestPlanPromptMechanics:
         for pattern in plan["path_denylist"]:
             assert pattern in rendered
 
+    def test_constraints_render_the_ordering_rules(self):
+        # An enforced rule the prompt omits is a rule the model can only
+        # discover by burning a submission on a rejection. Rendered from the
+        # policy rather than restated, so an edited `ordering` moves the prose.
+        rendered = plan_loop.render_plan_constraints(POLICY)
+        for rule in POLICY["plan"]["ordering"]:
+            assert f"`{rule['before']}`" in rendered
+            assert f"`{rule['after']}`" in rendered
+        assert "before" in rendered.lower()
+
     def test_constraints_have_no_empty_interpolation(self):
         assembled = PLAN_PROMPT + plan_loop.render_plan_constraints(POLICY)
         for line in assembled.splitlines():
