@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>smtithy — generate → verify → execute</title>
+<style>
+  .viz-root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #898781;
+    --grid: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --role-model: #eb6834;      /* untrusted generator */
+    --role-verify: #2a78d6;     /* deterministic gate */
+    --role-human: #1baf7a;      /* human gate */
+    --role-exec: #4a3aa7;       /* trusted effect / credential */
+    --status-good: #0ca30c;
+    --edge: #c3c2b7;
+    --panel: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz-root {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted: #898781;
+      --grid: #2c2c2a;
+      --baseline: #383835;
+      --border: rgba(255,255,255,0.10);
+      --role-model: #d95926;
+      --role-verify: #3987e5;
+      --role-human: #199e70;
+      --role-exec: #9085e9;
+      --status-good: #0ca30c;
+      --edge: #52514e;
+      --panel: #222221;
+    }
+  }
+  :root[data-theme="dark"] .viz-root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255,255,255,0.10);
+    --role-model: #d95926;
+    --role-verify: #3987e5;
+    --role-human: #199e70;
+    --role-exec: #9085e9;
+    --status-good: #0ca30c;
+    --edge: #52514e;
+    --panel: #222221;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .viz-root { background: var(--page); color: var(--text-primary); min-height: 100vh; padding: 24px; }
+
+  header { max-width: 1400px; margin: 0 auto 16px; display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 20px; font-weight: 650; }
+  header p  { color: var(--text-secondary); font-size: 13px; }
+  .spacer { flex: 1; }
+  .theme-btn {
+    font: inherit; font-size: 12px; color: var(--text-secondary);
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 10px; cursor: pointer;
+  }
+
+  .layout { max-width: 1400px; margin: 0 auto; display: flex; gap: 16px; align-items: flex-start; }
+  .canvas-wrap {
+    flex: 1; min-width: 0; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; overflow-x: auto; position: relative;
+  }
+  .canvas { position: relative; width: 1040px; height: 700px; }
+  .canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  .lane-label {
+    position: absolute; left: 14px; font-size: 11px; font-weight: 650; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-muted);
+  }
+  .lane-rule { position: absolute; left: 0; right: 0; border-top: 1px solid var(--grid); }
+
+  .node {
+    position: absolute; width: 116px; min-height: 56px; padding: 8px 10px 7px;
+    background: var(--surface-1); border: 1px solid var(--baseline); border-radius: 8px;
+    border-left-width: 4px; cursor: pointer; transition: box-shadow .12s, transform .12s;
+    font-size: 12px; line-height: 1.25;
+  }
+  .node:hover, .node:focus-visible { box-shadow: 0 2px 10px rgba(0,0,0,.18); outline: none; transform: translateY(-1px); }
+  .node.selected { box-shadow: 0 0 0 2px var(--text-primary); }
+  .node.lit { box-shadow: 0 0 0 2px var(--hl, var(--role-verify)); }
+  .node .k { font-weight: 650; display: block; color: var(--text-primary); }
+  .node .s { color: var(--text-secondary); font-size: 11px; display: block; margin-top: 2px; }
+  .node .badge { position: absolute; top: -8px; right: -6px; font-size: 10px; line-height: 1;
+    padding: 3px 5px; border-radius: 999px; background: var(--panel); border: 1px solid var(--border); }
+  .node.model  { border-left-color: var(--role-model);  --hl: var(--role-model); }
+  .node.verify { border-left-color: var(--role-verify); --hl: var(--role-verify); }
+  .node.human  { border-left-color: var(--role-human);  --hl: var(--role-human); }
+  .node.exec   { border-left-color: var(--role-exec);   --hl: var(--role-exec); }
+  .node.data   { border-left-color: var(--baseline); }
+  .node.pending { border-style: dashed; }
+  .node.pending .k { color: var(--text-secondary); }
+  .gate-cap { font-size: 10px; color: var(--text-muted); display: block; margin-top: 2px; }
+
+  path.edge { stroke: var(--edge); stroke-width: 1.5; fill: none; }
+  path.edge.reject { stroke-dasharray: 5 4; }
+  path.edge.reads  { stroke-dasharray: 2 4; }
+  path.edge.lit    { stroke: var(--hlc); stroke-width: 2.5; }
+  .edge-label { font-size: 10px; fill: var(--text-muted); }
+  .edge-label.lit { fill: var(--hlc); font-weight: 600; }
+
+  .panel {
+    width: 340px; flex-shrink: 0; background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; position: sticky; top: 16px; font-size: 13px;
+    max-height: calc(100vh - 32px); overflow-y: auto;
+  }
+  .panel h2 { font-size: 15px; margin-bottom: 2px; }
+  .panel .role-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+    color: var(--text-secondary); margin: 4px 0 10px; }
+  .role-dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .panel p { color: var(--text-secondary); line-height: 1.5; margin-bottom: 10px; }
+  .panel .files { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-secondary);
+    background: var(--page); border: 1px solid var(--grid); border-radius: 6px; padding: 8px; margin-bottom: 10px; }
+  .panel .ev { border-left: 3px solid var(--status-good); padding: 2px 0 2px 10px; margin-bottom: 10px;
+    color: var(--text-secondary); line-height: 1.5; }
+  .panel .ev b { color: var(--text-primary); }
+  .panel .pend { border-left: 3px solid var(--baseline); padding: 2px 0 2px 10px; color: var(--text-secondary); line-height: 1.5; }
+  .panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-muted); margin: 14px 0 6px; }
+
+  .controls { max-width: 1400px; margin: 0 auto 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .controls span { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .07em; margin-right: 4px; }
+  .flow-btn {
+    font: inherit; font-size: 12px; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+    background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--baseline);
+  }
+  .flow-btn:hover { border-color: var(--text-secondary); }
+  .flow-btn.on { border-color: var(--text-primary); font-weight: 600; }
+
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 0 auto 10px; max-width: 1400px;
+    font-size: 12px; color: var(--text-secondary); align-items: center; }
+  .legend .item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .dash { width: 22px; border-top: 2px dashed var(--edge); display: inline-block; }
+  .legend .dot2 { width: 22px; border-top: 2px dotted var(--edge); display: inline-block; }
+  .legend .pendbox { width: 14px; height: 14px; border: 1px dashed var(--baseline); border-radius: 4px; display: inline-block; }
+</style>
+</head>
+<body>
+<div class="viz-root" id="root">
+  <header>
+    <h1>smtithy — generate → verify → execute</h1>
+    <p>What exists today, how an artifact flows, and where every gate sits. Click any node.</p>
+    <div class="spacer"></div>
+    <button class="theme-btn" id="themeBtn" type="button">Toggle dark</button>
+  </header>
+
+  <div class="legend" aria-hidden="true">
+    <span class="item"><span class="role-dot" style="background:var(--role-model)"></span> model (untrusted)</span>
+    <span class="item"><span class="role-dot" style="background:var(--role-verify)"></span> deterministic gate</span>
+    <span class="item"><span class="role-dot" style="background:var(--role-human)"></span> human gate</span>
+    <span class="item"><span class="role-dot" style="background:var(--role-exec)"></span> trusted effect / credential</span>
+    <span class="item"><span class="role-dot" style="background:var(--baseline)"></span> inert artifact</span>
+    <span class="item"><span class="dash"></span> rejection feedback</span>
+    <span class="item"><span class="dot2"></span> reads policy</span>
+    <span class="item"><span class="pendbox"></span> designed, not built</span>
+  </div>
+
+  <div class="controls">
+    <span>Play a flow</span>
+    <button class="flow-btn" data-flow="review" type="button">Review run</button>
+    <button class="flow-btn" data-flow="plan" type="button">Remediation run</button>
+    <button class="flow-btn" data-flow="reject" type="button">Rejection recovery</button>
+    <button class="flow-btn" data-flow="ci" type="button">CI eval run (trusted PR)</button>
+    <button class="flow-btn" data-flow="" type="button">Clear</button>
+  </div>
+
+  <div class="layout">
+    <div class="canvas-wrap">
+      <div class="canvas" id="canvas">
+        <svg id="edges" aria-hidden="true">
+          <defs>
+            <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0.5 L7.5,4 L0,7.5 Z" fill="var(--edge)"></path>
+            </marker>
+            <marker id="arrLit" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0.5 L7.5,4 L0,7.5 Z" fill="var(--hlc, #2a78d6)"></path>
+            </marker>
+          </defs>
+        </svg>
+      </div>
+    </div>
+    <aside class="panel" id="panel" aria-live="polite"></aside>
+  </div>
+</div>
+
+<script>
+const NODES = [
+  // ---------- review lane (y=64) ----------
+  { id:'pr',    x:12,   y:64,  role:'data',   title:'Pull request', sub:'the subject under review',
+    desc:'A PR event freezes the trust decision: the workflow definition and policy come from the base branch, the PR’s content is quarantined data. Everything downstream treats the diff, description, and head tree as contributor-authored data, never instructions.',
+    files:'.github/workflows/ai-pr-review.yml', ev:null, pend:null },
+  { id:'ctx',   x:140,  y:64,  role:'exec',   title:'prepare_context', sub:'SHA-anchored context',
+    desc:'Builds the fixed context the generator sees: the diff at the reviewed head SHA, changed_files, the PR description — each fenced with invisible-codepoint stripping so fenced content cannot terminate its own fence. One diff walk (diff_map) feeds both the line numbers shown to the model and the lines provenance later accepts, so they cannot drift.',
+    files:'prepare_context.py · diff_map.py · artifact.py', ev:'<b>604</b> deterministic tests cover the fence escaping, the Unicode default-ignorable table, and the single diff walk.', pend:null },
+  { id:'gen',   x:268,  y:64,  role:'model',  title:'Review generator', sub:'cc_loop · Claude via Agent SDK',
+    desc:'Reads two roots (trusted BASE, quarantined PR head) with Read/Grep/Glob only — no Bash, no Write, no network, no ambient config, safe-mode. Submits through the in-process submit_review tool; a rejected submission gets the verifier’s real reason as tool feedback and retries in the same session. A breaker aborts after 3 identical rejections or 4 submissions.',
+    files:'cc_loop.py · prompts/ai-pr-review.md', ev:'Live in CI: <b>11/11</b> review scenarios passed on the test PR (run 30617003684), including all injection scenarios.', pend:null },
+  { id:'ver',   x:396,  y:64,  role:'verify', title:'verify()', sub:'4 phases, fail-closed, whole artifact', gate:true,
+    desc:'The security boundary. Allowlists a safe grammar; anything outside rejects the whole artifact: (1) strict schema, (2) provenance — every finding’s path is a changed file and its line is inside a diff hunk, (3) markdown AST allowlist — link hosts, no images/HTML/@-mentions, closed fences, no reference definitions, (4) secret scan over raw and rendered text.',
+    files:'verify.py · policy.json', ev:'The adversarial corpus (~490 lines) is the executable threat model; a case that starts passing is a regression.', pend:null },
+  { id:'art',   x:524,  y:64,  role:'data',   title:'review.json', sub:'verified, inert',
+    desc:'The artifact is data. It carries no version field (a model-supplied schema version is a model-selected policy — ADR-0004), and it does nothing until the executor renders it.',
+    files:'review.json · transcript.jsonl (audit, secret-redacted)', ev:null, pend:null },
+  { id:'post',  x:652,  y:64,  role:'exec',   title:'post.py executor', sub:'holds the write token', gate:true,
+    desc:'The only process with pull-requests:write. Re-checks the head SHA before posting (TOCTOU: drift means refuse, not adapt), renders the verified artifact into one marker-keyed sticky comment with the AI notice and policy hash, and trusts no claim from any other job.',
+    files:'post.py · github_api.py · author_trust.py · environment_gate.py', ev:'Ported behaviour-preserving from the incumbent reviewer with its test suite.', pend:null },
+  { id:'cmt',   x:780,  y:64,  role:'human',  title:'Review comment', sub:'a human reads it',
+    desc:'The visible effect: one sticky review comment. The human reader is the quality control the verifier deliberately is not — the verifier bounds what can be said and where, never whether it is right.',
+    files:null, ev:null, pend:null },
+
+  // ---------- shared policy ----------
+  { id:'pol',   x:524,  y:186, role:'data',   title:'policy.json', sub:'the reviewable security object',
+    desc:'One declarative policy, two readers in two languages (ADR-0003): the Python verifiers and the TypeScript prover. Its sha256 is stamped into every transcript and posted comment. A plan one gate admits and the other rejects is a defect in one of them.',
+    files:'policy.json · ts/plan/policy.ts (typed loader, no defaults)', ev:'Shipped-policy tests pin its facts on both sides — e.g. open_pr has no base arg (the merge target is never model-suppliable).', pend:null },
+
+  // ---------- remediation lane (y=292) ----------
+  { id:'fix',   x:12,   y:292, role:'human',  title:'/fix N command', sub:'a maintainer commands one finding', gate:true,
+    desc:'Remediation is commanded per finding by a trusted commander (ADR-0007). Trust follows the commander — write-or-above — not the PR author: the most valuable case is a maintainer commanding a fix on a first-time contributor’s PR. Deduplicated on (pr, head_sha, finding); a moved head means refuse.',
+    files:'author_trust.py (reused with the commander’s login)', ev:null, pend:'Command wiring (issue_comment workflow) arrives with the executor.' },
+  { id:'fnd',   x:140,  y:292, role:'data',   title:'finding.json', sub:'+ the same review context',
+    desc:'The commanded finding — an element of the accepted review artifact, so it already passed verify() — plus the identical SHA-anchored context the reviewer saw. The plan is anchored against the same diff the review was, or anchor and review could disagree.',
+    files:'context/finding.json · diff.patch · changed_files.json', ev:null, pend:null },
+  { id:'pgen',  x:268,  y:292, role:'model',  title:'Plan generator', sub:'plan_loop · same session shape',
+    desc:'A second cc_loop-style session: same read-only tools, same deny-list, same breaker — literally the same drive_session loop, with submit_plan swapped in. The prompt mandates the smallest correct fix for the one commanded finding, and “copy old from the PR head root, verbatim”: the honest path is the easy path. Prompt is marked DRAFT until the decline channel is measured.',
+    files:'plan_loop.py · prompts/ai-pr-plan.md (DRAFT)', ev:'Live: <b>5/5</b> plan scenarios in CI + 15/15 across 3 local runs (~$1.27) — scope discipline, injection resistance, multi-file shape all held.', pend:null },
+  { id:'pver',  x:396,  y:292, role:'verify', title:'verify_plan()', sub:'schema · containment · markdown · secrets', gate:true,
+    desc:'ADR-0005: containment, not quality control. Frame — every patched path is a file the PR touched (exact identity). Denylist — deliberate glob port (** spans separators; fnmatch does not). suggest.line — same in-hunk provenance as findings. Bounds — ≤3 files, ≤120 lines per step. Anchoring — old must byte-match the PR head exactly once: zero matches means the model wasn’t looking at the file, two means the write is ambiguous and refused.',
+    files:'plan_verify.py · tests/test_plan_verify_adversarial.py (35 near-misses)', ev:'Anchoring runs against the quarantine tree via a confined content source — symlinks out of the tree read as missing.', pend:null },
+  { id:'plan',  x:524,  y:292, role:'data',   title:'plan.json', sub:'straight-line, literal args',
+    desc:'A steps array of {id, kind, args} — no control flow, no bindings, no version field (ADR-0004’s three reserved closures). Kinds today: suggest, patch, push_branch, open_pr, label. ADR-0010 adds create behind an allowlist that ships empty — written, gated on a grill-with-docs session.',
+    files:'plan.json · transcript.jsonl', ev:null, pend:null },
+  { id:'prov',  x:652,  y:292, role:'verify', title:'z3 prover', sub:'∀-claims, negated', gate:true,
+    desc:'The TypeScript side (ADR-0003): policies asserted negated, so unsat means no execution violates them — ordering (patch → push_branch → open_pr), the frame condition as a quantified claim over a closed file set, and taint in its general transitive form (exercised via synthetic bindings the schema forbids). Returns a counterexample on sat, because a bare verdict is not an audit record.',
+    files:'ts/plan/prove.ts · schema.ts · policy.ts', ev:'<b>67</b> node tests, including CATCHES mutants for each policy — vacuous-pass is the named failure mode.', pend:null },
+  { id:'pexec', x:780,  y:292, role:'exec',   title:'Plan executor', sub:'delivery is ITS decision', gate:true, pending:true,
+    desc:'Not built yet. Re-verifies the plan (trusts no other job), then picks delivery from checkable structure — never the model’s choice: one path, one hunk → suggestion comments; a fix spanning files → the stacked follow-up PR, whose merge is atomic where per-file suggestions are not (ADR-0009). Ports the staging repo’s inline-comment reconciler (anchor-keyed identity, reply-aware retraction, post-before-retract).',
+    files:'(pending) · reference: staging/inline-comments-test @ 70bebcd4', ev:null,
+    pend:'Pending with it: the decline channel — the honest exit for commanded fixes the vocabulary cannot express (out-of-frame, fork multi-file) — and the label-only-plan hole it closes.' },
+  { id:'sug',   x:908, y:250, role:'human',  title:'Suggestion block', sub:'contributor clicks Apply', gate:true, pending:true,
+    desc:'The default delivery, and the only one that works on fork PRs. The commit lands on the contributor’s branch through their deliberate click — the last point a human sees the actual bytes before they join a merge candidate. Anchoring self-extinguishes once applied (old stops matching).',
+    files:null, ev:null, pend:'Arrives with the executor.' },
+  { id:'spr',   x:908, y:334, role:'human',  title:'Stacked follow-up PR', sub:'base = the reviewed head', gate:true, pending:true,
+    desc:'The fallback for atomic multi-file fixes, same-repo only. Cut from the reviewed head SHA, based on the PR’s own branch — merging the fix updates the open PR and re-triggers review; broken code never lands on the default branch. open_pr deliberately has no base argument: the merge target is never model-suppliable.',
+    files:null, ev:null, pend:'Arrives with the executor.' },
+
+  // ---------- CI lane (y=488 / 560) ----------
+  { id:'cipr',  x:12,   y:524, role:'data',   title:'Any PR event', sub:'opened · synchronize · label',
+    desc:'As of ADR-0008 (revised): every pull request runs the full eval suites, not just labeled ones — measured, a full pass costs on the order of a dollar, and every PR here is a harness change, which is exactly what the evals grade. The run-evals label survives as the re-trigger for an unmoved head.',
+    files:'.github/workflows/evals.yml · quality_check.yml', ev:null, pend:null },
+  { id:'qc',    x:140,  y:488, role:'verify', title:'quality_check', sub:'free, fast, blocking',
+    desc:'The deterministic suites on every PR from any fork: 604 pytest (verifier, plan verifier, both adversarial corpora, hypothesis properties, harness logic) and 67 node tests (prover). No secrets anywhere in this job.',
+    files:'tests/ · ts/plan/*.test.ts', ev:'<b>604 + 67</b> green on the test PR.', pend:null },
+  { id:'trust', x:140,  y:560, role:'verify', title:'eval_author_trust', sub:'real permission, not association',
+    desc:'Resolves the author’s actual repository permission via the API — author_association is a social relationship, not access. Checked out at the BASE ref, always: the PR must never supply the code that decides whether to trust the PR. Holds no secrets.',
+    files:'author_trust.py', ev:'Ran and passed on the test PR.', pend:null },
+  { id:'appr',  x:268,  y:560, role:'human',  title:'eval_approve', sub:'environment: required reviewers', gate:true,
+    desc:'The human gate for untrusted or draft authors: their code does not run with a credential until a maintainer approves the ai-pr-review environment. Trusted non-draft authors skip it — and the downstream job re-derives trust rather than trusting the skip, because “skipped” alone cannot distinguish “author holds write” from “the gate failed to run”. Four observed fail-open modes are recorded in the 0006 addendum; the in-code gate assertion is still owed.',
+    files:'evals.yml · environment ai-pr-review', ev:'On the test PR it <b>skipped</b> for the trusted author and the evals job ran via the re-derivation branch — the exact path this session’s edits touched.', pend:null },
+  { id:'ejob',  x:396,  y:560, role:'exec',   title:'evals job', sub:'the only credentialed job', gate:true,
+    desc:'Runs behind the ai-pr-review-runtime environment, whose protection is a branch policy — the Bedrock role’s trust policy requires this exact environment in the OIDC subject, and an inline session policy caps the token to bedrock:InvokeModel on one inference profile. Checkout uses persist-credentials:false because this job executes the PR’s own code.',
+    files:'evals.yml · run_evals.py · run_plan_evals.py', ev:'Both suites live on the test PR: review <b>11/11</b>, plan <b>5/5</b>. Weekly schedule still catches upstream model drift.', pend:null },
+  { id:'eres',  x:524,  y:560, role:'data',   title:'Graded results', sub:'behaviour, not shape',
+    desc:'Review scenarios grade planted defects, injection resistance, and recovery. Plan scenarios grade the ADR-0009 invariants — fix kinds uniform, write chain iff patch, scope discipline — never step inventories, so the graders pin policy rather than today’s prompt. --runs 3 before believing any behaviour change.',
+    files:'evals/scenarios/ (11) · evals/plan_scenarios/ (5) · expect.json each', ev:'Redacted transcripts upload as a 30-day artifact.', pend:null },
+];
+
+const EDGES = [
+  { from:'pr',   to:'ctx' }, { from:'ctx',  to:'gen' }, { from:'gen',  to:'ver', label:'submit_review' },
+  { from:'ver',  to:'art', label:'verified' }, { from:'art',  to:'post' }, { from:'post', to:'cmt' },
+  { from:'ver',  to:'gen', type:'reject', label:'rejected: real reason (≤4, breaker)' },
+
+  { from:'pol', to:'ver',  type:'reads' }, { from:'pol', to:'pver', type:'reads' }, { from:'pol', to:'prov', type:'reads', bend: 1 },
+
+  { from:'fix',  to:'fnd' }, { from:'fnd',  to:'pgen' }, { from:'pgen', to:'pver', label:'submit_plan' },
+  { from:'pver', to:'plan', label:'verified' }, { from:'plan', to:'prov' }, { from:'prov', to:'pexec', label:'unsat' },
+  { from:'pver', to:'pgen', type:'reject', label:'rejected (same breaker)' },
+  { from:'pexec', to:'sug', label:'1 file, 1 hunk' },
+  { from:'pexec', to:'spr', label:'multi-file (atomic)' },
+
+  { from:'cipr', to:'qc' }, { from:'cipr', to:'trust' },
+  { from:'trust', to:'appr', label:'untrusted / draft → wait', labelPos:'below' },
+  { from:'appr', to:'ejob', label:'approved · or skipped + trust re-derived' },
+  { from:'ejob', to:'eres' },
+];
+
+const FLOWS = {
+  review: { color:'var(--role-verify)', steps:['pr','ctx','gen','ver','art','post','cmt'] },
+  plan:   { color:'var(--role-exec)',   steps:['fix','fnd','pgen','pver','plan','prov','pexec','sug','spr'] },
+  reject: { color:'var(--role-model)',  steps:['gen','ver','gen','ver','art'] },
+  ci:     { color:'var(--role-human)',  steps:['cipr','trust','appr','ejob','eres'] },
+};
+
+const ROLE_NAMES = { model:'Model — untrusted generator', verify:'Deterministic gate', human:'Human gate', exec:'Trusted effect / credential', data:'Inert artifact / data' };
+const ROLE_VARS  = { model:'--role-model', verify:'--role-verify', human:'--role-human', exec:'--role-exec', data:'--baseline' };
+
+const canvas = document.getElementById('canvas');
+const svg = document.getElementById('edges');
+const panel = document.getElementById('panel');
+const byId = {};
+
+const LANES = [
+  { y: 20,  label: 'REVIEW — in production' },
+  { y: 248, label: 'REMEDIATION — generator + gates built, executor pending' },
+  { y: 452, label: 'CI TRUST GATES — live-tested today' },
+];
+for (const lane of LANES) {
+  const l = document.createElement('div');
+  l.className = 'lane-label'; l.style.top = (lane.y) + 'px'; l.textContent = lane.label;
+  canvas.appendChild(l);
+  const r = document.createElement('div');
+  r.className = 'lane-rule'; r.style.top = (lane.y - 8) + 'px';
+  canvas.appendChild(r);
+}
+
+for (const n of NODES) {
+  const el = document.createElement('div');
+  el.className = 'node ' + n.role + (n.pending ? ' pending' : '');
+  el.style.left = n.x + 'px'; el.style.top = n.y + 'px';
+  el.tabIndex = 0; el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', n.title + (n.gate ? ' (gate)' : ''));
+  el.innerHTML = '<span class="k">' + n.title + '</span><span class="s">' + n.sub + '</span>'
+    + (n.gate ? '<span class="gate-cap">⛨ gate</span>' : '')
+    + (n.pending ? '<span class="badge">planned</span>' : (n.ev ? '<span class="badge" style="color:var(--status-good)">✓</span>' : ''));
+  el.addEventListener('click', () => select(n.id));
+  el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(n.id); } });
+  canvas.appendChild(el);
+  byId[n.id] = { data: n, el };
+}
+
+function rect(id) {
+  const el = byId[id].el;
+  return { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight };
+}
+
+function edgePath(e) {
+  const a = rect(e.from), b = rect(e.to);
+  if (e.type === 'reject') {
+    const sx = a.x + a.w * 0.35, sy = a.y + a.h;
+    const tx = b.x + b.w * 0.65, ty = b.y + b.h;
+    const dip = Math.max(sy, ty) + 26;
+    return { d: `M ${sx} ${sy} C ${sx} ${dip}, ${tx} ${dip}, ${tx} ${ty}`, lx: (sx + tx) / 2, ly: dip + 12, anchor: 'middle' };
+  }
+  if (e.type === 'reads') {
+    const sx = a.x + a.w / 2, sy0 = a.y, sy1 = a.y + a.h;
+    const tx = b.x + b.w / 2;
+    if (b.y > a.y) { // downward
+      const bend = e.bend ? 40 : 0;
+      return { d: `M ${sx} ${sy1} C ${sx + bend} ${sy1 + 40}, ${tx} ${b.y - 40}, ${tx} ${b.y}`, lx: 0, ly: 0 };
+    }
+    return { d: `M ${sx} ${sy0} C ${sx} ${sy0 - 40}, ${tx} ${b.y + b.h + 40}, ${tx} ${b.y + b.h}`, lx: 0, ly: 0 };
+  }
+  // forward flow
+  const sy = a.y + a.h / 2, ty = b.y + b.h / 2;
+  const sx = a.x + a.w, tx = b.x;
+  if (Math.abs(a.y - b.y) < 4 && tx >= sx) {
+    const ly = e.labelPos === 'below' ? Math.max(a.y + a.h, b.y + b.h) + 14 : Math.min(a.y, b.y) - 6;
+    const my = (sy + ty) / 2;
+    return { d: `M ${sx} ${my} L ${tx} ${my}`, lx: (sx + tx) / 2, ly, anchor: 'middle' };
+  }
+  if (tx >= sx) { // forward with vertical offset (forks, ci column)
+    const mx = (sx + tx) / 2;
+    return { d: `M ${sx} ${sy} C ${mx} ${sy}, ${mx} ${ty}, ${tx} ${ty}`, lx: mx, ly: (sy + ty) / 2 - 6, anchor: 'middle' };
+  }
+  // downward (cipr -> trust/qc when stacked)
+  const sx2 = a.x + a.w, sy2 = a.y + a.h / 2;
+  return { d: `M ${sx2} ${sy2} C ${sx2 + 40} ${sy2}, ${tx - 40} ${ty}, ${tx} ${ty}`, lx: (sx2 + tx) / 2, ly: (sy2 + ty) / 2 - 6, anchor: 'middle' };
+}
+
+const edgeEls = [];
+for (const e of EDGES) {
+  const p = edgePath(e);
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', p.d);
+  path.setAttribute('class', 'edge' + (e.type ? ' ' + e.type : ''));
+  if (e.type !== 'reads') path.setAttribute('marker-end', 'url(#arr)');
+  svg.appendChild(path);
+  let labelEl = null;
+  if (e.label && p.lx) {
+    labelEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    labelEl.setAttribute('x', p.lx); labelEl.setAttribute('y', p.ly);
+    labelEl.setAttribute('text-anchor', p.anchor || 'middle');
+    labelEl.setAttribute('class', 'edge-label');
+    labelEl.textContent = e.label;
+    svg.appendChild(labelEl);
+  }
+  edgeEls.push({ e, path, labelEl });
+}
+
+function select(id) {
+  for (const k in byId) byId[k].el.classList.toggle('selected', k === id);
+  const n = byId[id].data;
+  const color = `var(${ROLE_VARS[n.role]})`;
+  panel.innerHTML = `
+    <h2>${n.title}${n.gate ? ' ⛨' : ''}</h2>
+    <div class="role-chip"><span class="role-dot" style="background:${color}"></span>${ROLE_NAMES[n.role]}${n.pending ? ' · designed, not built' : ''}</div>
+    <p>${n.desc}</p>
+    ${n.files ? `<h3>Where</h3><div class="files">${n.files}</div>` : ''}
+    ${n.ev ? `<h3>Evidence</h3><div class="ev">${n.ev}</div>` : ''}
+    ${n.pend ? `<h3>Pending</h3><div class="pend">${n.pend}</div>` : ''}
+  `;
+}
+
+function clearFlow() {
+  document.getElementById('root').style.removeProperty('--hlc');
+  for (const k in byId) byId[k].el.classList.remove('lit');
+  for (const { path, labelEl } of edgeEls) { path.classList.remove('lit'); path.setAttribute('marker-end', path.classList.contains('reads') ? '' : 'url(#arr)'); if (labelEl) labelEl.classList.remove('lit'); }
+  for (const b of document.querySelectorAll('.flow-btn')) b.classList.remove('on');
+}
+
+let flowTimer = null;
+function playFlow(name, btn) {
+  clearFlow();
+  if (flowTimer) { clearInterval(flowTimer); flowTimer = null; }
+  if (!name) return;
+  btn.classList.add('on');
+  const flow = FLOWS[name];
+  document.getElementById('root').style.setProperty('--hlc', flow.color);
+  let i = 0;
+  const step = () => {
+    if (i >= flow.steps.length) { clearInterval(flowTimer); flowTimer = null; return; }
+    const id = flow.steps[i];
+    byId[id].el.classList.add('lit');
+    byId[id].el.style.setProperty('--hl', flow.color);
+    if (i > 0) {
+      const prev = flow.steps[i - 1];
+      for (const { e, path, labelEl } of edgeEls) {
+        if (e.from === prev && e.to === id) {
+          path.classList.add('lit');
+          if (!path.classList.contains('reads')) path.setAttribute('marker-end', 'url(#arrLit)');
+          if (labelEl) labelEl.classList.add('lit');
+        }
+      }
+    }
+    select(id);
+    i += 1;
+  };
+  step();
+  flowTimer = setInterval(step, 700);
+}
+
+for (const b of document.querySelectorAll('.flow-btn')) {
+  b.addEventListener('click', () => playFlow(b.dataset.flow, b));
+}
+
+document.getElementById('themeBtn').addEventListener('click', () => {
+  const root = document.documentElement;
+  const cur = root.getAttribute('data-theme');
+  const dark = cur ? cur === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  root.setAttribute('data-theme', dark ? 'light' : 'dark');
+});
+
+// default panel: the architecture in one breath
+panel.innerHTML = `
+  <h2>The architecture</h2>
+  <p><b>Generate → verify → execute.</b> Model output is untrusted data, never
+  instructions. A deterministic verifier proves it satisfies a policy held as
+  reviewable data. A trusted executor renders the verified artifact and performs
+  the effect. The generator holds no write credential and calls no write API.</p>
+  <p>Three lanes: the <b>review</b> pipeline (in production), the
+  <b>remediation</b> pipeline (generator and both gates built and live-tested;
+  executor designed, pending), and the <b>CI trust gates</b> that decide whose
+  code may run with the one credential in the repository.</p>
+  <p>Gates are marked ⛨. Two kinds alternate through every path: deterministic
+  ones (blue) that bound <i>what</i> an artifact can say and touch, and human
+  ones (green) that decide <i>whether</i> it happens — the PR merge, the
+  suggestion click, the environment approval. The system’s claim is that no
+  model output reaches an effect without passing at least one of each.</p>
+  <h3>Today’s live evidence</h3>
+  <div class="ev">Test PR #1 (run 30617003684): trigger fired on <b>opened</b>,
+  gate <b>skipped</b> correctly for a trusted author, review suite <b>11/11</b>,
+  plan suite <b>5/5</b> under the scoped Bedrock role.</div>
+  <p style="color:var(--text-muted); font-size:12px">Click any node for its role,
+  checks, and evidence — or play a flow above.</p>
+`;
+</script>
+</body>
+</html>
