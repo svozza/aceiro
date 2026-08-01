@@ -150,9 +150,15 @@ def escape_fence(text: str, tag: str, tags: frozenset[str] = HARNESS_FENCE_TAGS)
     own fence nor forge another one (in-band-signaling guard).
 
     Both forms of every tag in `tags`, since an opening tag is half a forged
-    block. Only these tags: ordinary angle-bracket text (a C++ include, a
-    generic, HTML in a reviewed file) passes through, or the model would be shown
-    a mangled diff.
+    block, and any spelling a reader would take for that tag: attributes and a
+    self-closing slash are as much the tag as the bare name. Only these tags:
+    ordinary angle-bracket text (a C++ include, a generic, HTML in a reviewed
+    file) passes through, or the model would be shown a mangled diff -- so the
+    tag name must be followed by a delimiter, or `<commanded_findings>` would be
+    caught by `commanded_finding`.
+
+    A forged tag's attributes are discarded along with its brackets. Fenced text
+    is data, and nothing downstream reads an attribute off a harness fence.
 
     Invisible code points are MARKED rather than dropped (canonicalize.
     mark_invisible): fenced text is what a reviewer reads, and deletion is what
@@ -164,10 +170,10 @@ def escape_fence(text: str, tag: str, tags: frozenset[str] = HARNESS_FENCE_TAGS)
         # `<_tag>` reads the same to the model but is no longer the token; the
         # leading underscore is not a tag start the harness ever emits.
         text = re.sub(
-            rf"<(/?)\s*{re.escape(candidate)}\s*>",
+            rf"<(/?)\s*{re.escape(candidate)}(?=[\s/>])[^>]*>",
             rf"<\g<1>_{candidate}>",
             text,
-            flags=re.IGNORECASE,
+            flags=re.IGNORECASE | re.DOTALL,
         )
     return text
 
