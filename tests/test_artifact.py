@@ -14,6 +14,8 @@ import re
 
 import copy
 
+import pytest
+
 from artifact import (
     WITHHELD,
     build_artifact_schema,
@@ -166,6 +168,37 @@ class TestRedactSecrets:
         redacted = redact_secrets(artifact, POLICY)
         assert "AKIAABCDEFGHIJKLMNOP" not in json.dumps(redacted)
         assert redacted["summary"] == "s"  # the rest of the artifact survives
+
+    # The bridge check ran only when the value under the label key was itself a
+    # string. One level deeper — a list element or a sub-dict — neither the leaf
+    # pass (a bare 40-char secret matches no standalone pattern) nor the bridge
+    # (never evaluated) redacted it, and the fail-closed rescan could not save it
+    # either: the label pattern needs [=:]\s* immediately before the value, and
+    # `: ["` defeats that. Transcript.log passes model-controlled nested JSON
+    # (tool_request logs block.input), so nesting is not hypothetical.
+    SECRET = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY1"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"aws_secret_access_key": SECRET}, id="flat-string"),
+            pytest.param({"aws_secret_access_key": [SECRET]}, id="list-element"),
+            pytest.param({"aws_secret_access_key": {"v": SECRET}}, id="nested-dict"),
+            pytest.param({"aws_secret_access_key": [{"v": [SECRET]}]}, id="deeply-nested"),
+            pytest.param({"input": {"env": {"AWS_SECRET_ACCESS_KEY": SECRET}}}, id="tool-use-shaped"),
+            pytest.param({"args": ["aws_secret_access_key", SECRET]}, id="list-of-pairs"),
+            pytest.param({"aws_secret_access_key": {"nested": {"deeper": SECRET}}}, id="two-levels"),
+        ],
+    )
+    def test_labelled_secret_is_redacted_at_any_depth(self, payload):
+        assert self.SECRET not in json.dumps(redact_secrets(payload, POLICY))
+
+    def test_an_unlabelled_forty_char_string_is_left_alone(self):
+        # Calibration: the label is what makes it a secret. A 40-char base64-ish
+        # value under an innocent key is an ordinary sha or id, and redacting
+        # every long string would gut the transcript's diagnostic value.
+        payload = {"commit_sha": self.SECRET, "note": "unchanged"}
+        assert redact_secrets(payload, POLICY) == payload
 
     def test_secret_across_key_value_bridge_is_redacted(self):
         # The motivating case: neither the label `aws_secret_access_key` nor a

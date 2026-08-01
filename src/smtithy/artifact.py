@@ -194,24 +194,55 @@ def redact_secrets(value, policy: dict):
             text = re.sub(pattern, "[REDACTED]", text)
         return text
 
-    def redact(value):
+    def bridges(label: str, text: str) -> bool:
+        """`label` adjacent to `text` matches a label-style pattern.
+
+        Both separators are tried because the patterns accept either, and the
+        serialization the reader eventually sees may use either.
+        """
+        return any(re.search(p, f"{label}={text}") or re.search(p, f"{label}:{text}") for p in patterns)
+
+    def redact(value, labels: tuple[str, ...] = ()):
+        """`labels` is every enclosing dict KEY on the path to `value`.
+
+        ALL of them, not just the nearest, and threading them is the point. The
+        bridge check used to run only where the value under a labelled key was
+        itself a string, so one level deeper — a list element or a sub-dict —
+        nothing caught it: a bare 40-char secret matches no standalone pattern,
+        and the fail-closed rescan could not help either, because the label
+        patterns need `[=:]\\s*` immediately before the value and `: ["` defeats
+        that. Transcript.log receives model-controlled nested JSON (tool_request
+        logs block.input), so the nesting is ordinary.
+
+        Keeping the whole ancestry matters: in
+        {"aws_secret_access_key": {"v": "…"}} the NEAREST key is the innocuous
+        "v", while the label a reader sees is the outer one. A secret is redacted
+        if ANY ancestor labels it.
+        """
         match value:
             case str():
-                return redact_str(value)
+                text = redact_str(value)
+                # Secret identifiable only when a label and the value are
+                # adjacent (patterns like aws_secret_access_key[=:]…).
+                if any(bridges(label, text) for label in labels):
+                    return "[REDACTED]"
+                return text
             case dict():
                 out = {}
                 for key, item in value.items():
-                    item = redact(item)
-                    # Secret identifiable only when key and value are adjacent
-                    # (label-style patterns like aws_secret_access_key[=:]…).
-                    if isinstance(item, str) and any(
-                        re.search(p, f"{key}={item}") or re.search(p, f"{key}:{item}") for p in patterns
-                    ):
-                        item = "[REDACTED]"
-                    out[redact_str(key)] = item
+                    inner = (*labels, key) if isinstance(key, str) else labels
+                    out[redact_str(key)] = redact(item, inner)
                 return out
             case list():
-                return [redact(item) for item in value]
+                # A list inherits its container's labels, and additionally lets a
+                # string SIBLING label its neighbours — the
+                # ["aws_secret_access_key", "…"] pair shape, where the label is an
+                # element rather than a key.
+                siblings = tuple(item for item in value if isinstance(item, str))
+                return [
+                    redact(item, (*labels, *(s for s in siblings if s is not item)))
+                    for item in value
+                ]
             case _:
                 return value
 
