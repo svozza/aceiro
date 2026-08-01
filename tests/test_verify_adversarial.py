@@ -625,6 +625,39 @@ class TestSecrets:
         artifact["summary"] = f"key AKIA{invisible}IOSFODNN7EXAMPLE leaked"
         rejected(artifact, sample_diff, changed_files, policy)
 
+    # A link DESTINATION was never scanned: check_secrets built its texts from
+    # json.dumps(artifact) plus rendered_markdown(value), and rendered_text
+    # collected text/code_inline/fence content — never href attributes. markdown-it
+    # and GitHub both decode entities in an href, so the raw JSON does not match
+    # the pattern while the rendered link carries the whole credential, exposing it
+    # in the comment and transmitting it when followed.
+
+    def test_entity_encoded_key_in_a_link_destination(self, artifact, sample_diff, changed_files, policy):
+        artifact["summary"] = "[docs](https://docs.powertools.aws.dev/?k=AKIA&#73;OSFODNN7EXAMPLE)"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_plain_key_in_a_link_destination(self, artifact, sample_diff, changed_files, policy):
+        # The raw JSON catches this one; asserted so the href scan is not the
+        # only thing standing between an obvious key and the comment.
+        artifact["summary"] = "[docs](https://docs.powertools.aws.dev/?k=AKIAIOSFODNN7EXAMPLE)"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_key_in_a_link_destination_in_a_finding_body(self, artifact, sample_diff, changed_files, policy):
+        artifact["findings"][0]["body"] = "see [ref](https://docs.powertools.aws.dev/#AKIA&#73;OSFODNN7EXAMPLE)"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_invisible_split_key_in_a_link_destination(self, artifact, sample_diff, changed_files, policy):
+        # The two canonicalizations compose: an href is scanned, and it is
+        # scanned with invisibles stripped. (The field itself would also reject
+        # under ADR-0011 — this pins that the SCAN sees it too, so the check does
+        # not depend on which gate happens to fire first.)
+        artifact["summary"] = "[d](https://docs.powertools.aws.dev/?k=AKIA&#8203;IOSFODNN7EXAMPLE)"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_an_allowlisted_link_with_no_secret_still_passes(self, artifact, sample_diff, changed_files, policy):
+        artifact["summary"] = "[docs](https://docs.powertools.aws.dev/lambda/python/latest/)"
+        verify(artifact, sample_diff, changed_files, policy)
+
     def test_bold_marker_in_prose_does_not_false_positive(self, artifact, sample_diff, changed_files, policy):
         # Two separate short runs stay separate across a real rendered break.
         artifact["summary"] = "Constants like AKIA prefixes are discussed.\n\nSee IOSFODNN7EXAMPLE docs."

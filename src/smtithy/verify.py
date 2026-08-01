@@ -25,6 +25,7 @@ import re
 import sys
 import unicodedata
 from pathlib import Path
+from urllib.parse import unquote
 
 from markdown_it import MarkdownIt
 
@@ -496,6 +497,44 @@ def _iter_markdown_values(artifact: dict, policy: dict):
             yield finding[field]
 
 
+def link_destinations(tokens) -> list[str]:
+    """Every href the document renders, entity-decoded as markdown-it decodes it.
+
+    A destination is rendered content the scan has to see, and it was the one
+    rendered thing rendered_text could not collect: that walk gathers
+    text/code_inline/fence content, never attributes. So
+    ``[docs](https://host/?k=AKIA&#73;OSFODNN7EXAMPLE)`` matched no pattern in the
+    raw JSON (the entity splits the run) and none in the visible text (the href is
+    not text) — while GitHub renders a link carrying the complete credential, and
+    following it transmits it.
+
+    Only link_open needs collecting: images are rejected outright and reference
+    definitions are rejected before this runs, so no other destination survives.
+
+    Each destination is returned twice, raw and percent-DECODED, because
+    markdown-it normalises an href by percent-encoding it: an entity for U+200B
+    comes back as ``%E2%80%8B``, which no invisible-stripping can see and no
+    pattern matches, while the browser decodes it before sending. Decoding is for
+    scanning only — nothing here feeds the allowlist, which deliberately compares
+    the undecoded form (normalize_host).
+    """
+    found: list[str] = []
+
+    def walk(token_list) -> None:
+        for token in token_list:
+            if token.type == "link_open":
+                href = token.attrGet("href") or ""
+                found.append(href)
+                decoded = unquote(href)
+                if decoded != href:
+                    found.append(decoded)
+            if token.children:
+                walk(token.children)
+
+    walk(tokens)
+    return found
+
+
 def rendered_markdown(value: str) -> str:
     """A markdown field's visible rendered text, NFC-normalized first — the
     one spelling of "what the reader sees" that every secret scan uses."""
@@ -503,22 +542,33 @@ def rendered_markdown(value: str) -> str:
 
 
 def check_secrets(artifact: dict, policy: dict) -> None:
-    # Two representations are scanned, because markdown can make them differ:
-    # the raw JSON source (catches secrets in non-markdown fields and in
-    # markdown syntax itself), and each markdown field's RENDERED text. A key
-    # written as ``AKIA**IOSF**ODNN7EXAMPLE`` or with HTML entities never
-    # matches in the source — the formatting splits the run — but renders as
-    # one visible, complete credential; rendered_text() sees what the reader
-    # sees (inline boundaries removed, entities decoded, code included).
-    # The source is scanned twice: verbatim, and with invisible code points
-    # removed. Stripping catches a credential split by an invisible in a field
-    # that rendered_markdown never sees (a non-markdown, pattern-constrained
-    # field), and keeping the verbatim copy means stripping can only ever add
-    # matches — it cannot fuse two runs into a false negative.
+    # THREE representations are scanned, because markdown can make them differ:
+    #
+    # 1. The raw JSON source, verbatim and with invisible code points removed.
+    #    Verbatim catches secrets in non-markdown fields and in markdown syntax
+    #    itself; stripped catches a credential split by an invisible in a field
+    #    rendered_markdown never sees (a pattern-constrained one). Keeping both
+    #    means stripping can only ADD matches, never fuse two runs into a false
+    #    negative.
+    # 2. Each markdown field's RENDERED text. A key written as
+    #    ``AKIA**IOSF**ODNN7EXAMPLE`` or with HTML entities never matches in the
+    #    source — the formatting splits the run — but renders as one visible,
+    #    complete credential; rendered_text() sees what the reader sees (inline
+    #    boundaries removed, entities decoded, code included).
+    # 3. Each rendered LINK DESTINATION. An href is rendered content too, and the
+    #    one rendered thing the visible-text walk cannot reach, so an
+    #    entity-encoded key in a query string used to pass both other
+    #    representations while GitHub rendered a link carrying it in full.
     source = json.dumps(artifact, ensure_ascii=False)
     texts = [source, strip_invisible(source)]
     for value in _iter_markdown_values(artifact, policy):
-        texts.append(rendered_markdown(value))
+        tokens = _PARSER.parse(unicodedata.normalize("NFC", value))
+        rendered = rendered_text(tokens)
+        texts.append(rendered)
+        for href in link_destinations(tokens):
+            # Stripped as well as verbatim, for the same reason the source is.
+            texts.append(href)
+            texts.append(strip_invisible(href))
     for pattern in policy["secret_scan_patterns"]:
         for text in texts:
             if re.search(pattern, text):
