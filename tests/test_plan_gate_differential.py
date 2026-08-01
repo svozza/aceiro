@@ -172,6 +172,57 @@ CASES = [
         ["deploy/key.pem"],
         False,
     ),
+    (
+        # The bounding caps, which TypeScript enforced NOWHERE: over the file
+        # count, over the per-step line count, and over the byte budget the line
+        # count cannot see. Each was admitted by the prover and rejected by
+        # verify_plan, which is what this file exists to catch.
+        "over-max-patched-files",
+        {"steps": [anchored_patch(f"s{i}", path=f"src/f{i}.py") for i in range(4)]},
+        [f"src/f{i}.py" for i in range(4)],
+        False,
+    ),
+    (
+        "over-max-changed-lines-in-one-step",
+        {"steps": [anchored_patch("s0", new="x\n" * 200)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # Two changed lines, 16 KB of substitution: the case the line cap is
+        # structurally blind to, and the reason the byte cap exists.
+        "long-single-line-rewrite-under-the-line-cap",
+        {"steps": [anchored_patch("s0", old="x" * 8000, new="y" * 8000)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # Astral input, where the two gates' string-length metrics genuinely
+        # differ (UTF-16 units vs code points). The byte budget is defined in
+        # UTF-8 bytes precisely so this case cannot land on opposite verdicts.
+        "astral-content-over-the-byte-budget",
+        {"steps": [anchored_patch("s0", new="🙂" * 2001)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # Each step inside every per-step bound, the plan total outside it. Both
+        # gates must count the sum, or "bounded" is a property of one step only.
+        "per-step-bounds-met-plan-total-exceeded",
+        {"steps": [anchored_patch("s0", old="def load(path):\n", new="z" * 7000),
+                   anchored_patch("s1", old="    check(path)\n", new="z" * 7000),
+                   anchored_patch("s2", old="    return os.environ\n", new="z" * 7000)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # The complement: a plan comfortably inside every bound must stay
+        # admitted, or the caps have cost the harness its purpose.
+        "well-inside-every-bound",
+        {"steps": [anchored_patch("s0"), push_step("s1"), open_pr_step("s2")]},
+        PLAN_CHANGED_FILES,
+        True,
+    ),
 ]
 
 
@@ -187,3 +238,58 @@ def test_both_gates_reach_the_same_verdict(plan, changed_files, expected, tmp_pa
         f"prove-cli {'admitted' if prover_verdict else 'rejected'}, expected "
         f"{'admit' if expected else 'reject'}"
     )
+
+
+# Every key under policy.plan, and the file(s) that must MENTION it for that gate
+# to be reading it. A mention is a weak proxy for a reader and deliberately so:
+# the point is to make an unread key impossible to add quietly, not to prove the
+# reading is correct — the corpus above is what does that. A key with no entry
+# fails, so adding one to policy.json forces the decision "which gates read this?"
+# to be made and recorded here.
+#
+# This is the assertion that would have caught plan.ordering having no Python
+# reader at all, and max_patched_files/max_changed_lines having no TypeScript one.
+PYTHON_GATE = REPO_ROOT / "src" / "smtithy" / "plan_verify.py"
+TS_GATE_FILES = [
+    REPO_ROOT / "ts" / "plan" / "prove.ts",
+    REPO_ROOT / "ts" / "plan" / "schema.ts",
+    REPO_ROOT / "ts" / "plan" / "policy.ts",
+]
+
+# Keys read by one gate BY DESIGN, with the reason. ADR-0003 divides the labour:
+# the prover owns reachability reasoning, the Python verifier owns the artifact
+# and containment checks until the port. Each entry is that division stated, so a
+# key drifting out of a gate cannot be waved through as "probably intentional".
+SINGLE_GATE_KEYS = {
+    # Anchoring and containment read file content, which only the executor's
+    # Python side has (ADR-0003 keeps the content verifier Python until the port).
+    "path_denylist": "both",
+}
+
+
+def _policy_plan_keys() -> list[str]:
+    return sorted(json.loads(POLICY_PATH.read_text())["plan"])
+
+
+def test_every_policy_key_has_a_reader_in_both_gates():
+    python_text = PYTHON_GATE.read_text()
+    ts_text = "\n".join(path.read_text() for path in TS_GATE_FILES)
+    missing = []
+    for key in _policy_plan_keys():
+        expected_in = SINGLE_GATE_KEYS.get(key, "both")
+        if expected_in in ("both", "python") and key not in python_text:
+            missing.append(f"{key}: no reader in {PYTHON_GATE.name}")
+        if expected_in in ("both", "ts") and key not in ts_text:
+            missing.append(f"{key}: no reader in ts/plan/")
+    assert not missing, (
+        "a policy key no gate reads is a rule that reads as enforcement while "
+        "enforcing nothing:\n  " + "\n  ".join(missing)
+    )
+
+
+def test_the_coverage_list_names_every_shipped_key():
+    # The assertion above iterates policy.json, so it cannot miss a key. This
+    # pins the opposite direction: SINGLE_GATE_KEYS must not name a key the
+    # policy no longer has, which would leave a stale exemption in place.
+    stale = set(SINGLE_GATE_KEYS) - set(_policy_plan_keys())
+    assert not stale, f"SINGLE_GATE_KEYS names keys policy.json does not have: {sorted(stale)}"

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Declarative safety policy for AI review artifacts. verify.py interprets this; the file's sha256 is stamped into the transcript and posted comment. This is the DEFAULT policy, and it is deliberately fail-closed: link_host_allowlist ships empty, so every link in a finding rejects until a consumer names the hosts it trusts. Entries are host+path prefixes: a trailing slash means prefix match (an org path under a forge, say), and a path-less entry matches that host and everything under it. Never list a host you do not control. plan.label_allowlist ships empty on the same principle, so a plan cannot apply any label until a consumer names the ones it accepts — a label is a control surface (this repo's own evals workflow triggers on one). plan.branch_prefix confines every branch a plan may push to a harness-owned namespace, so the push target cannot be the default branch or the contributor's own head branch.",
+  "description": "Declarative safety policy for AI review artifacts. verify.py interprets this; the file's sha256 is stamped into the transcript and posted comment. This is the DEFAULT policy, and it is deliberately fail-closed: link_host_allowlist ships empty, so every link in a finding rejects until a consumer names the hosts it trusts. Entries are host+path prefixes: a trailing slash means prefix match (an org path under a forge, say), and a path-less entry matches that host and everything under it. Never list a host you do not control. plan.label_allowlist ships empty on the same principle, so a plan cannot apply any label until a consumer names the ones it accepts — a label is a control surface (this repo's own evals workflow triggers on one). plan.branch_prefix confines every branch a plan may push to a harness-owned namespace, so the push target cannot be the default branch or the contributor's own head branch. The bounding caps come in pairs because a line count and a byte count bound different things: max_changed_lines/max_changed_bytes per step, max_plan_changed_bytes over the whole plan, since a minified or generated line is one line carrying arbitrary content.",
   "artifact_schema": {
     "summary": { "type": "string", "min_length": 1, "max_length": 4000, "markdown": true },
     "findings": {
@@ -94,6 +94,8 @@
     ],
     "max_patched_files": 3,
     "max_changed_lines": 120,
+    "max_changed_bytes": 8000,
+    "max_plan_changed_bytes": 16000,
     "path_denylist": [
       ".github/**",
       "**/*.pem",

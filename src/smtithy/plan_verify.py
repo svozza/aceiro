@@ -54,10 +54,48 @@ PLAN_KEYS = frozenset({"steps"})
 STEP_KEYS = frozenset({"id", "kind", "args"})
 
 
+def check_reserved_closures(policy_plan: dict) -> None:
+    """Refuse a policy that widens ADR-0004's reservations past what this gate
+    implements.
+
+    control_flow and argument_forms are reservations, which means they have to
+    REFUSE their shape today or they reserve nothing. This gate reasons about a
+    straight-line plan throughout: ordering compares plan indices, containment
+    simulates steps applying in sequence, and the prover's ∀-claims quantify over
+    those same fixed positions. A policy declaring `branch` would be read by no
+    code here — the branch step would verify as an ordinary straight-line step,
+    and both gates would prove properties of a program neither had modelled.
+
+    A policy error, not a Rejection about the plan: the fault is the deployment's,
+    and reporting it as "the model produced something invalid" would send a reader
+    to the generator. It is raised as Rejection only because that is the one
+    failure channel this module has, with the message carrying the distinction —
+    the prover's PolicyError is the same decision in a language that has a second
+    exception type for it.
+    """
+    if control_flow := policy_plan["control_flow"]:
+        raise Rejection(
+            f"policy error: plan.control_flow declares {control_flow} — this gate implements "
+            "straight-line plans only, and a branch it does not model is a branch nothing checks "
+            "(ADR-0004: the reservation must refuse its shape until the semantics exist)"
+        )
+    forms = policy_plan["argument_forms"]
+    if forms != ["literal"]:
+        raise Rejection(
+            f"policy error: plan.argument_forms declares {forms} — this gate implements "
+            '["literal"] only, so an execution-time binding would pass a check that never '
+            "looked at it"
+        )
+
+
 def check_plan_schema(candidate, policy_plan: dict) -> None:
     """Raise Rejection on the first structural violation; return None if the
     plan is well-shaped. Shape only: containment (ADR-0005) and markdown are
     separate phases, same as verify.py's schema/provenance split."""
+    # The policy this gate is about to interpret must be one it implements, and
+    # that is decided before any step is read: a policy fault reported as a bad
+    # plan sends a reader to the generator.
+    check_reserved_closures(policy_plan)
     if not isinstance(candidate, dict):
         raise Rejection("plan: expected a JSON object")
 
@@ -223,6 +261,24 @@ def tree_content_source(root: Path):
     return read
 
 
+def count_occurrences(content: bytes, needle: bytes) -> int:
+    """Every start offset at which `needle` occurs in `content`, INCLUDING
+    overlaps.
+
+    `bytes.count` counts non-overlapping occurrences: `aa` in `xaaay` counts 1
+    although it begins at two offsets. Anchoring's exactly-once rule is about
+    where a write LANDS, and `bytes.replace` picks the first of the overlapping
+    pair — so the non-overlapping count would call a genuinely ambiguous write
+    unique and hand the executor the guess the rule exists to refuse.
+    """
+    count = 0
+    start = 0
+    while (found := content.find(needle, start)) != -1:
+        count += 1
+        start = found + 1
+    return count
+
+
 def _line_count(text: str) -> int:
     """Lines in a patch fragment: a trailing newline ends the last line rather
     than starting an empty new one, and the empty string is zero lines."""
@@ -327,16 +383,24 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         if line not in hunks.get(path, set()):
             raise Rejection(f"plan.steps[{index}].args.line: line {line} of {path!r} is not inside any diff hunk")
 
-    # Bounding. Distinct files across the whole plan; changed lines PER STEP
-    # (ADR-0005 caps "changed lines per patch", and ADR-0009 applies the same
-    # caps per suggestion). A step's changed-line count is diff --stat's:
-    # lines removed plus lines added.
+    # Bounding. Distinct files across the whole plan; changed lines and changed
+    # BYTES per step (ADR-0005 caps "changed lines per patch", and ADR-0009
+    # applies the same caps per suggestion), then changed bytes over the plan.
+    # Every count is diff --stat's reading: the old side plus the new side.
+    #
+    # Two dimensions because a line count bounds nothing about line LENGTH: a
+    # 20000-character single-line `old` and `new` — a minified or generated line
+    # is a plausible real target — scores 2 changed lines and passed a cap of 120
+    # while substituting 40 KB. The plan total is separate from the per-step cap
+    # because several steps may share one file, so max_patched_files does not
+    # bound the sum.
     patched_paths = {step["args"]["path"] for _, step in anchored}
     if len(patched_paths) > policy_plan["max_patched_files"]:
         raise Rejection(
             f"plan: {len(patched_paths)} patched files exceeds max_patched_files "
             f"{policy_plan['max_patched_files']}"
         )
+    plan_bytes = 0
     for index, step in anchored:
         changed_lines = _line_count(step["args"]["old"]) + _line_count(step["args"]["new"])
         if changed_lines > policy_plan["max_changed_lines"]:
@@ -344,6 +408,21 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                 f"plan.steps[{index}]: {changed_lines} changed lines exceeds max_changed_lines "
                 f"{policy_plan['max_changed_lines']}"
             )
+        # UTF-8 bytes, not code points: the budget bounds what reaches the file,
+        # and a file holds bytes. Measured in code points a 3-byte code point
+        # would cost a third of its real size.
+        changed_bytes = len(step["args"]["old"].encode("utf-8")) + len(step["args"]["new"].encode("utf-8"))
+        if changed_bytes > policy_plan["max_changed_bytes"]:
+            raise Rejection(
+                f"plan.steps[{index}]: {changed_bytes} changed bytes exceeds max_changed_bytes "
+                f"{policy_plan['max_changed_bytes']}"
+            )
+        plan_bytes += changed_bytes
+    if plan_bytes > policy_plan["max_plan_changed_bytes"]:
+        raise Rejection(
+            f"plan: {plan_bytes} changed bytes across all steps exceeds max_plan_changed_bytes "
+            f"{policy_plan['max_plan_changed_bytes']}"
+        )
 
     # Anchoring: old must byte-match the file at the reviewed SHA — the
     # closest analogue to provenance a patch can have (ADR-0005). RAW bytes
@@ -378,14 +457,15 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         # so an anchor matching only text an earlier step INVENTED is not anchored
         # at all. Against the pending content: that is where the executor applies
         # it, so exactly-once has to hold there too.
-        if original.count(old_bytes) == 0:
+        at_reviewed_sha = count_occurrences(original, old_bytes)
+        if at_reviewed_sha == 0:
             raise Rejection(f"{where}: does not byte-match the content of {path!r} at the reviewed SHA")
-        if original.count(old_bytes) > 1:
+        if at_reviewed_sha > 1:
             raise Rejection(
-                f"{where}: matches {path!r} {original.count(old_bytes)} times at the reviewed SHA; "
+                f"{where}: matches {path!r} {at_reviewed_sha} times at the reviewed SHA; "
                 "an ambiguous anchor cannot be applied"
             )
-        occurrences = pending.count(old_bytes)
+        occurrences = count_occurrences(pending, old_bytes)
         if occurrences == 0:
             raise Rejection(
                 f"{where}: no longer occurs in {path!r} once the earlier steps in this plan "

@@ -379,6 +379,92 @@ export function proveCardinality(plan: Plan, policy: PlanPolicy): ProofResult {
   return { holds: false, policy: 'cardinality', ms, counterexample: { policy: 'cardinality', path: violations } };
 }
 
+/** The kinds whose args name file content the executor would write. Twin of
+ * plan_verify.ANCHORED_KINDS; suggest joins patch per ADR-0009. */
+const ANCHORED_KINDS = ['patch', 'suggest'];
+
+/** Lines in a patch fragment: a trailing newline ends the last line rather than
+ * starting an empty new one, and the empty string is zero lines. Twin of
+ * plan_verify._line_count — the two gates must count a fragment the same way. */
+function lineCount(text: string): number {
+  if (text.length === 0) return 0;
+  return (text.match(/\n/gu)?.length ?? 0) + (text.endsWith('\n') ? 0 : 1);
+}
+
+/** UTF-8 byte length. NOT `text.length`, which counts UTF-16 units and would put
+ * this gate's budget at a different number from plan_verify's for exactly the
+ * astral input the two length metrics already disagree on. The budget bounds what
+ * reaches the file, and a file holds bytes. */
+function utf8Length(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Bounding (ADR-0005): distinct patched files, and changed lines and bytes per
+ * step plus bytes over the plan.
+ *
+ * A ground check, for proveWriteTargets' reason: counting a closed set is not a
+ * ∀-shaped claim, and ∀-encoding it would add an encoding layer to trust for no
+ * reachability reasoning gained. It is here because it was NOWHERE in TypeScript —
+ * a plan over max_patched_files or max_changed_lines was admitted by this gate and
+ * rejected by plan_verify.py, and a plan one gate admits and the other rejects is
+ * a defect in one of them.
+ *
+ * Two dimensions, because a line count bounds nothing about line LENGTH: a
+ * minified or generated line is one line carrying arbitrary content. The plan
+ * total is separate from the per-step cap because several steps may share one
+ * file, so max_patched_files does not bound the sum.
+ */
+export function proveBounds(plan: Plan, policy: PlanPolicy): ProofResult {
+  const started = performance.now();
+  const violations: string[] = [];
+  const anchored = [...plan.steps.entries()].filter(([, step]) => ANCHORED_KINDS.includes(step.kind));
+
+  const paths = new Set(
+    anchored
+      .map(([, step]) => step.args['path'])
+      .filter((path): path is string => typeof path === 'string'),
+  );
+  if (paths.size > policy.max_patched_files) {
+    violations.push(`${paths.size} patched files exceeds max_patched_files ${policy.max_patched_files}`);
+  }
+
+  let planBytes = 0;
+  for (const [index, step] of anchored) {
+    const old = step.args['old'];
+    const replacement = step.args['new'];
+    if (typeof old !== 'string' || typeof replacement !== 'string') continue; // the schema gate owns shape
+
+    // diff --stat's reading on both counts: the old side plus the new side, so a
+    // rewrite cannot spend the whole budget twice.
+    const changedLines = lineCount(old) + lineCount(replacement);
+    if (changedLines > policy.max_changed_lines) {
+      violations.push(
+        `${index}: ${step.kind} (${step.id}) changes ${changedLines} lines, ` +
+          `exceeding max_changed_lines ${policy.max_changed_lines}`,
+      );
+    }
+    const changedBytes = utf8Length(old) + utf8Length(replacement);
+    if (changedBytes > policy.max_changed_bytes) {
+      violations.push(
+        `${index}: ${step.kind} (${step.id}) changes ${changedBytes} bytes, ` +
+          `exceeding max_changed_bytes ${policy.max_changed_bytes}`,
+      );
+    }
+    planBytes += changedBytes;
+  }
+  if (planBytes > policy.max_plan_changed_bytes) {
+    violations.push(
+      `${planBytes} changed bytes across all steps exceeds ` +
+        `max_plan_changed_bytes ${policy.max_plan_changed_bytes}`,
+    );
+  }
+
+  const ms = performance.now() - started;
+  if (violations.length === 0) return { holds: true, policy: 'bounds', ms };
+  return { holds: false, policy: 'bounds', ms, counterexample: { policy: 'bounds', path: violations } };
+}
+
 /** Which argument names a write-class kind's target. Twin of
  * plan_verify.BRANCH_ARGS. */
 const BRANCH_ARGS: Readonly<Record<string, string>> = { push_branch: 'name', open_pr: 'branch' };

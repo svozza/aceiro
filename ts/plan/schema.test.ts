@@ -37,6 +37,8 @@ const POLICY: PlanPolicy = checkPlanPolicy({
   ordering: [{ before: 'patch', after: 'push_branch' }],
   max_patched_files: 3,
   max_changed_lines: 120,
+  max_changed_bytes: 8000,
+  max_plan_changed_bytes: 16000,
   path_denylist: [],
   branch_prefix: 'smtithy/',
   label_allowlist: [],
@@ -123,6 +125,38 @@ describe('ADR-0004 closure 2: argument_forms admits only literals', () => {
       () => checkPlanPolicy({ ...POLICY, argument_forms: ['literal', 'ref'] }),
       { name: 'PolicyError', message: /only implements/ },
     );
+  });
+});
+
+describe('ADR-0004 closure 1: control_flow is reserved, so a policy declaring it is refused', () => {
+  // argument_forms already refuses a widened value above; control_flow did not,
+  // and it is the same reservation. Every proof here reasons about a
+  // straight-line plan — proveOrdering pins positions to the plan's own indices,
+  // proveFrame quantifies over a closed file set — so a `branch` kind admitted
+  // by the schema would be proved about as an ordinary sequential step, and the
+  // branches nobody modelled would be the part no policy covered.
+
+  const withBranch = {
+    ...POLICY,
+    control_flow: ['branch'],
+    step_kinds: {
+      ...POLICY.step_kinds,
+      branch: { write_class: false, args: { cond: { type: 'string', min_length: 1, max_length: 100 } } },
+    },
+  };
+
+  it('rejects a policy declaring any control flow', () => {
+    assert.throws(() => checkPlanPolicy(withBranch), { name: 'PolicyError', message: /control_flow/ });
+  });
+
+  it('reports it as a PolicyError, never as a bad plan', () => {
+    // The fault is the deployment's. A Rejection here would send a reader to the
+    // generator for a rule the prover cannot implement.
+    assert.throws(() => checkPlanPolicy(withBranch), { name: 'PolicyError' });
+  });
+
+  it('still accepts the reserved empty value', () => {
+    assert.deepEqual(checkPlanPolicy({ ...POLICY, control_flow: [] }).control_flow, []);
   });
 });
 

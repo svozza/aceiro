@@ -254,11 +254,79 @@ class TestShippedPolicyAgreement:
         # Mirrored in ts/plan/shipped-policy.test.ts.
         assert PLAN_POLICY["branch_prefix"] == "smtithy/"
 
+    def test_bounding_is_declared_in_both_dimensions(self):
+        # ADR-0005's bounding half. A line count bounds nothing about line
+        # LENGTH, so a byte budget ships alongside it; mirrored in
+        # ts/plan/shipped-policy.test.ts.
+        assert PLAN_POLICY["max_changed_lines"] >= 1
+        assert PLAN_POLICY["max_changed_bytes"] >= 1
+        assert PLAN_POLICY["max_plan_changed_bytes"] >= PLAN_POLICY["max_changed_bytes"]
+
+    def test_the_plan_byte_budget_bounds_more_than_the_per_step_cap(self):
+        # A plan cap at or above max_steps x per-step is not a cap: several steps
+        # may share one file, so max_patched_files does not bound the sum either.
+        assert PLAN_POLICY["max_plan_changed_bytes"] < PLAN_POLICY["max_changed_bytes"] * PLAN_POLICY["max_steps"]
+
+    def test_the_byte_budget_admits_the_patch_a_real_fix_needs(self):
+        # Fail-closed must not mean useless: a per-step budget below the largest
+        # single-line target the arg spec accepts would make the caps
+        # unsatisfiable for a plausible fix. The `old` arg caps at 20000
+        # characters, so a budget under that is deliberate — the point is that a
+        # 40 KB substitution is not a "smallest correct fix" (prompts/ai-pr-plan).
+        assert PLAN_POLICY["max_changed_bytes"] < PLAN_POLICY["step_kinds"]["patch"]["args"]["old"]["max_length"] * 2
+
     def test_label_allowlist_ships_empty(self):
         # link_host_allowlist's precedent (ADR-0010's too): a label is a control
         # surface — this repo's evals workflow triggers on `run-evals` — so a
         # plan can apply none until a consumer names the ones it accepts.
         assert PLAN_POLICY["label_allowlist"] == []
+
+
+class TestReservedClosures:
+    """ADR-0004's reservations refuse their shape TODAY, or they are not
+    reservations. control_flow ships empty and argument_forms literal-only, and
+    both gates must REFUSE a policy that widens them rather than reading the flag
+    and carrying on — a branch step the verifier treats as an ordinary
+    straight-line step is a branch nothing reasons about.
+
+    Mirrored in ts/plan/policy.test.ts: the prover's ordering and frame proofs
+    quantify over plan positions, which is a claim about a straight-line plan.
+    """
+
+    def test_shipped_policy_reserves_both(self):
+        assert PLAN_POLICY["control_flow"] == []
+        assert PLAN_POLICY["argument_forms"] == ["literal"]
+
+    def test_a_policy_declaring_control_flow_is_refused(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["control_flow"] = ["branch"]
+        policy["step_kinds"]["branch"] = {
+            "write_class": False,
+            "args": {"cond": {"type": "string", "min_length": 1, "max_length": 100, "pattern": "[a-z]+"}},
+        }
+        with pytest.raises(Rejection, match="control_flow"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_a_policy_declaring_another_argument_form_is_refused(self):
+        # The prover already refuses this (checkPlanPolicy: "this prover only
+        # implements [\"literal\"]"); the Python gate read the key nowhere, so a
+        # widened policy would have been enforced by one gate and not the other.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["argument_forms"] = ["literal", "binding"]
+        with pytest.raises(Rejection, match="argument_forms"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_the_refusal_precedes_any_step_check(self):
+        # A policy this gate cannot implement must not be reported as a bad plan:
+        # the reason has to name the policy, not the model's output.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["control_flow"] = ["branch"]
+        with pytest.raises(Rejection, match="policy error"):
+            check_plan_schema({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
+
+    def test_the_shipped_policy_still_passes(self):
+        # The reservations must refuse a WIDENED policy, not the shipped one.
+        check_plan_schema({"steps": [patch_step()]}, PLAN_POLICY)
 
 
 class TestMutationDiscipline:
@@ -518,6 +586,63 @@ class TestBounding:
             contained({"steps": [anchored_patch(old=half, new=half.replace("x", "y"))]},
                       content_source=tree_source(tree))
 
+    # The line count is blind to line LENGTH, so "bounded" has to hold in both
+    # dimensions or a minified/generated line — a plausible real patch target —
+    # carries an arbitrarily large substitution through a cap of 120.
+
+    def test_a_long_single_line_rewrite_is_bounded_by_bytes(self):
+        cap = PLAN_POLICY["max_changed_bytes"]
+        old = "x" * cap
+        new = "y" * cap
+        tree = {"src/app.py": old.encode() + b"\n"}
+        with pytest.raises(Rejection, match="max_changed_bytes"):
+            contained({"steps": [anchored_patch(old=old, new=new)]}, content_source=tree_source(tree))
+
+    def test_changed_bytes_at_cap_passes_and_cap_plus_one_rejects(self):
+        cap = PLAN_POLICY["max_changed_bytes"]
+        old = "def load(path):\n"
+        at_cap = "y" * (cap - len(old.encode()))
+        tree = {"src/app.py": PLAN_TREE["src/app.py"]}
+        contained({"steps": [anchored_patch(new=at_cap)]}, content_source=tree_source(tree))
+        with pytest.raises(Rejection, match="max_changed_bytes"):
+            contained({"steps": [anchored_patch(new=at_cap + "y")]}, content_source=tree_source(tree))
+
+    def test_changed_bytes_count_both_sides(self):
+        # Same diff --stat reading as the line cap: old plus new, so a rewrite
+        # cannot spend the whole budget twice.
+        cap = PLAN_POLICY["max_changed_bytes"]
+        half = "x" * (cap // 2 + 1)
+        tree = {"src/app.py": half.encode() + b"\n"}
+        with pytest.raises(Rejection, match="max_changed_bytes"):
+            contained({"steps": [anchored_patch(old=half, new=half.replace("x", "y"))]},
+                      content_source=tree_source(tree))
+
+    def test_changed_bytes_are_utf8_bytes_not_code_points(self):
+        # The budget bounds what reaches the file, and a file holds bytes: a
+        # 3-byte code point must cost 3. Measured in code points, this content
+        # would be a third of its real size.
+        cap = PLAN_POLICY["max_changed_bytes"]
+        new = "一" * (cap // 3 + 1)  # 3 UTF-8 bytes each
+        tree = {"src/app.py": PLAN_TREE["src/app.py"]}
+        with pytest.raises(Rejection, match="max_changed_bytes"):
+            contained({"steps": [anchored_patch(new=new)]}, content_source=tree_source(tree))
+
+    def test_the_plan_total_is_bounded_across_steps(self):
+        # Per-step alone is not a bound on the plan: max_patched_files x
+        # max_changed_bytes would be the real ceiling, and several steps may
+        # share one file. The plan budget is what makes "bounded" a property of
+        # the delivery rather than of one step.
+        cap = PLAN_POLICY["max_plan_changed_bytes"]
+        per_step = PLAN_POLICY["max_changed_bytes"]
+        assert cap < per_step * PLAN_POLICY["max_steps"], "a plan cap at or above N*per-step bounds nothing new"
+        filler = "z" * (per_step - 200)
+        anchors = [f"anchor{i}\n" for i in range(cap // per_step + 2)]
+        tree = {"src/app.py": "".join(anchors).encode()}
+        steps = [anchored_patch(f"s{i}", old=anchor, new=filler + f"\n{i}\n")
+                 for i, anchor in enumerate(anchors)]
+        with pytest.raises(Rejection, match="max_plan_changed_bytes"):
+            contained({"steps": steps}, content_source=tree_source(tree))
+
 
 class TestAnchoring:
     def test_old_matching_the_reviewed_tree_passes(self):
@@ -535,6 +660,31 @@ class TestAnchoring:
         tree = {"src/app.py": b"pass\npass\n"}
         with pytest.raises(Rejection, match="ambiguous"):
             contained({"steps": [anchored_patch(old="pass\n")]}, content_source=tree_source(tree))
+
+    def test_overlapping_occurrences_are_ambiguous(self):
+        # bytes.count() counts NON-OVERLAPPING occurrences, so `aa` in `xaaay`
+        # counts 1 while it really begins at two offsets. str.replace picks the
+        # first; the executor would be applying a write the verifier called
+        # unique, which is the guess exactly-once exists to refuse.
+        tree = {"src/app.py": b"xaaay\n"}
+        with pytest.raises(Rejection, match="ambiguous"):
+            contained({"steps": [anchored_patch(old="aa", new="bb")]}, content_source=tree_source(tree))
+
+    def test_overlapping_occurrences_are_ambiguous_at_apply_time_too(self):
+        # The pending-content half of the same count: `aa` is unique in the file
+        # at the reviewed SHA and unique by count() after s0 applies, but s0's
+        # `new` gives it two overlapping start offsets, so the write s1 describes
+        # is ambiguous where it will actually land.
+        tree = {"src/app.py": b"aa\n"}
+        with pytest.raises(Rejection, match="ambiguous"):
+            contained({"steps": [
+                anchored_patch("s0", old="aa\n", new="xaaay\n"),
+                anchored_patch("s1", old="aa", new="q"),
+            ]}, content_source=tree_source(tree))
+
+    def test_a_genuinely_unique_anchor_still_passes(self):
+        # The property the overlap count must not break: one occurrence stays one.
+        contained({"steps": [anchored_patch()]})
 
     # Each step's `old` was matched against the file at the reviewed SHA, so
     # exactly-once held for the FIRST step applied to a path and no later one.

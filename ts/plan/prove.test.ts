@@ -23,6 +23,7 @@ import { checkPlanPolicy, writeClassKinds, type PlanPolicy } from './policy.js';
 import { checkPlanSchema, type Plan } from './schema.js';
 import {
   globToRegExp,
+  proveBounds,
   proveCardinality,
   proveFrame,
   proveOrdering,
@@ -80,6 +81,8 @@ const POLICY: PlanPolicy = checkPlanPolicy({
   ],
   max_patched_files: 3,
   max_changed_lines: 120,
+  max_changed_bytes: 8000,
+  max_plan_changed_bytes: 16000,
   path_denylist: ['.github/**', '**/*.pem', '**/*.key'],
   branch_prefix: 'smtithy/',
   label_allowlist: ['needs-tests'],
@@ -440,6 +443,107 @@ describe('proveTaint', () => {
     const subject = plan(readPrFile(), patch('src/a.py'));
     const result = await proveTaint(subject, POLICY, [{ from: 0, to: 1 }]);
     assert.equal(result.holds, true);
+  });
+});
+
+describe('proveBounds', () => {
+  // ADR-0005's bounding half, which this gate did not enforce at all: a plan
+  // over max_patched_files or max_changed_lines was admitted here and rejected
+  // by plan_verify.py, and a plan one gate admits and the other rejects is a
+  // defect in one of them. The Python twin is test_plan_verify.py TestBounding.
+  const lines = (n: number) => 'x\n'.repeat(n);
+  const bigPatch = (path: string, old: string, replacement: string) => ({
+    kind: 'patch',
+    args: { path, old, new: replacement },
+  });
+
+  it('holds for a plan inside every bound', () => {
+    const result = proveBounds(plan(patch('src/a.py'), pushBranch()), POLICY);
+    assert.equal(result.holds, true);
+    assert.equal(result.counterexample, undefined);
+  });
+
+  it('holds at exactly max_patched_files', () => {
+    const paths = ['src/a.py', 'src/b.py', 'src/c.py'];
+    assert.equal(paths.length, POLICY.max_patched_files);
+    assert.equal(proveBounds(plan(...paths.map(patch)), POLICY).holds, true);
+  });
+
+  it('CATCHES one file over max_patched_files, and names the count', () => {
+    const paths = ['src/a.py', 'src/b.py', 'src/c.py', 'src/d.py'];
+    const result = proveBounds(plan(...paths.map(patch)), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('max_patched_files')));
+  });
+
+  it('counts distinct paths, not steps', () => {
+    // Several patches into one file are one file: this must stay legal, or the
+    // bound would forbid the two-hunk fix ADR-0005 expects.
+    const result = proveBounds(
+      plan(bigPatch('src/a.py', 'a', 'b'), bigPatch('src/a.py', 'c', 'd'), bigPatch('src/a.py', 'e', 'f')),
+      POLICY,
+    );
+    assert.equal(result.holds, true);
+  });
+
+  it('CATCHES a step over max_changed_lines, counting both sides', () => {
+    // diff --stat's reading: removed plus added, so a rewrite costs twice what
+    // its longer side alone would.
+    const half = lines(POLICY.max_changed_lines / 2 + 1);
+    const result = proveBounds(plan(bigPatch('src/a.py', half, half)), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('max_changed_lines')));
+  });
+
+  it('holds at exactly max_changed_lines', () => {
+    const atCap = lines(POLICY.max_changed_lines - 1);
+    const result = proveBounds(plan(bigPatch('src/a.py', 'a', atCap)), POLICY);
+    assert.equal(result.holds, true);
+  });
+
+  it('CATCHES a long single-line rewrite the line count cannot see', () => {
+    // The whole reason the byte cap exists: two lines, 16 KB of substitution.
+    const long = 'x'.repeat(POLICY.max_changed_bytes);
+    const result = proveBounds(plan(bigPatch('src/a.py', long, long)), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('max_changed_bytes')));
+  });
+
+  it('measures UTF-8 bytes, not UTF-16 units or code points', () => {
+    // The metric has to be the one Python uses, or the caps diverge for exactly
+    // the astral input the schema's length metric already differs on. A 4-byte
+    // emoji is 2 UTF-16 units and 1 code point; only bytes agree across gates.
+    const emoji = '🙂'.repeat(POLICY.max_changed_bytes / 4 + 1);
+    const result = proveBounds(plan(bigPatch('src/a.py', 'a', emoji)), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('max_changed_bytes')));
+  });
+
+  it('CATCHES a plan whose steps are each in bounds but whose total is not', () => {
+    // Per-step alone bounds nothing about the plan: several steps may share one
+    // file, so max_patched_files does not bound the sum.
+    const chunk = 'x'.repeat(POLICY.max_changed_bytes - 100);
+    const steps = [0, 1, 2].map((i) => bigPatch('src/a.py', `anchor${i}`, chunk));
+    const result = proveBounds(plan(...steps), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('max_plan_changed_bytes')));
+  });
+
+  it('binds suggest exactly as it binds patch', () => {
+    // ADR-0009 applies ADR-0005's caps per suggestion: an applied suggestion
+    // changes the file exactly as a patch would.
+    const long = 'x'.repeat(POLICY.max_changed_bytes);
+    const result = proveBounds(
+      plan({ kind: 'suggest', args: { path: 'src/a.py', line: 1, old: long, new: long, note: 'n' } }),
+      POLICY,
+    );
+    assert.equal(result.holds, false);
+  });
+
+  it('ignores kinds that carry no file content', () => {
+    // push_branch/open_pr/label have no old/new; a bound tripping over them
+    // would reject every complete plan.
+    assert.equal(proveBounds(plan(pushBranch(), openPr()), POLICY).holds, true);
   });
 });
 

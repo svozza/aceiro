@@ -98,6 +98,22 @@ describe('the shipped policy.json', () => {
     assert.ok(policy.max_changed_lines >= 1);
   });
 
+  it('bounds patches in BYTES as well as lines', () => {
+    // A line count bounds nothing about line LENGTH: a 20000-character
+    // single-line old and new score 2 changed lines and delivered 40 KB under a
+    // cap of 120. The Python pin is test_plan_verify.py TestShippedPolicyAgreement.
+    const policy = loadPlanPolicy(POLICY_PATH);
+    assert.ok(policy.max_changed_bytes >= 1);
+    assert.ok(policy.max_plan_changed_bytes >= policy.max_changed_bytes);
+  });
+
+  it('sets the plan byte budget below what the per-step caps alone allow', () => {
+    // Otherwise the plan cap bounds nothing new: several steps may share one
+    // file, so max_patched_files does not bound the sum either.
+    const policy = loadPlanPolicy(POLICY_PATH);
+    assert.ok(policy.max_plan_changed_bytes < policy.max_changed_bytes * policy.max_steps);
+  });
+
   it('denies paths that must never be patched whatever the PR touched', () => {
     // A narrowing of the already-closed changed_files frame, which is why a
     // denylist is acceptable here despite allowlisting being the rule elsewhere.

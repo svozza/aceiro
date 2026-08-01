@@ -58,6 +58,11 @@ export interface PlanPolicy {
   readonly ordering: readonly OrderingRule[];
   readonly max_patched_files: number;
   readonly max_changed_lines: number;
+  /** Bytes per step, and over the whole plan. Paired with max_changed_lines
+   * because a line count bounds nothing about line LENGTH: a minified or
+   * generated line is one line carrying arbitrary content. */
+  readonly max_changed_bytes: number;
+  readonly max_plan_changed_bytes: number;
   readonly path_denylist: readonly string[];
   /** The harness-owned namespace every branch a plan pushes must sit under. A
    * prefix rather than a denylist of protected names, so "not the default branch"
@@ -90,6 +95,8 @@ const PLAN_KEYS = [
   'ordering',
   'max_patched_files',
   'max_changed_lines',
+  'max_changed_bytes',
+  'max_plan_changed_bytes',
   'path_denylist',
   'branch_prefix',
   'label_allowlist',
@@ -102,7 +109,13 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
   const plan = candidate as Record<string, unknown>;
   requireKeys(plan, PLAN_KEYS, 'policy.plan');
 
-  for (const numeric of ['max_steps', 'max_patched_files', 'max_changed_lines'] as const) {
+  for (const numeric of [
+    'max_steps',
+    'max_patched_files',
+    'max_changed_lines',
+    'max_changed_bytes',
+    'max_plan_changed_bytes',
+  ] as const) {
     const value = plan[numeric];
     if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
       throw new PolicyError(`policy.plan.${numeric}: expected a positive integer`);
@@ -120,6 +133,20 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
   // permissive setting. No default: a default here is a rule nobody reviewed.
   if (typeof plan['branch_prefix'] !== 'string' || plan['branch_prefix'].length === 0) {
     throw new PolicyError('policy.plan.branch_prefix: expected a non-empty string');
+  }
+
+  const controlFlow = plan['control_flow'] as readonly string[];
+  if (controlFlow.length > 0) {
+    // The same reservation as argument_forms below, and it must refuse its shape
+    // for the same reason. Every proof in this prover reasons about a
+    // straight-line plan — proveOrdering pins positions to the plan's own
+    // indices, proveFrame quantifies over a closed file set derived from those
+    // positions — so a `branch` kind admitted by the schema gate would be proved
+    // about as an ordinary sequential step, and the branches nobody modelled
+    // would be exactly the part no policy covered.
+    throw new PolicyError(
+      `policy.plan.control_flow: this prover implements straight-line plans only, got ${JSON.stringify(controlFlow)}`,
+    );
   }
 
   const forms = plan['argument_forms'] as readonly string[];

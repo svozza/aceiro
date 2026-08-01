@@ -18,6 +18,7 @@ import { parseArgs } from 'node:util';
 import { checkPlanSchema } from './schema.js';
 import { loadPlanPolicy, Rejection } from './policy.js';
 import {
+  proveBounds,
   proveCardinality,
   proveFrame,
   proveOrdering,
@@ -66,6 +67,7 @@ async function main(): Promise<number> {
     // namespace prefix cannot express.
     proveWriteTargets(plan, policy, values['head-branch']),
     proveCardinality(plan, policy),
+    proveBounds(plan, policy),
   ];
 
   let failed = false;
