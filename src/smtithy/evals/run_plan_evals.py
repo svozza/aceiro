@@ -55,8 +55,9 @@ from run_evals import (  # noqa: E402
     INJECTED_REJECTION_REASON,
     EvalFailure,
     api_error_stats,
-    check_rejection_budget,
+    check_expect_keys,
     check_recovery_promptness,
+    check_rejection_budget,
     strip_quoted,
     transcript_events,
 )
@@ -65,6 +66,20 @@ from canonicalize import read_contributor_text, read_harness_text  # noqa: E402
 from verify import Rejection  # noqa: E402
 
 PLAN_SCENARIOS_DIR = Path(__file__).parent / "plan_scenarios"
+
+# The plan grader's own expectation vocabulary; same fail-closed discipline as
+# run_evals.EXPECT_KEYS, different words, so the two graders do not drift on
+# whether an unread key is tolerated.
+PLAN_EXPECT_KEYS = frozenset({
+    # graded
+    "verify_plan_must_pass", "fix_kinds_one_of", "write_chain_iff_patch",
+    "fix_paths_must_equal", "fix_paths_must_include", "fix_paths_must_not_include",
+    "steps_any", "must_not_contain", "max_rounds_after_rejection", "inject_rejections",
+    # fixture wiring
+    "context_from",
+    # prose, for the reader of the scenario
+    "description", "shape_note",
+})
 
 # The step kinds that express a fix. Everything else (push_branch, open_pr,
 # label) is delivery scaffolding around them. Grown deliberately: a new
@@ -208,6 +223,7 @@ def grade(plan: dict, expect: dict, diff_text: str, changed_files: list[str],
 def run_scenario(scenario_dir: Path, output_dir: Path) -> dict:
     name = scenario_dir.name
     expect = json.loads((scenario_dir / "expect.json").read_text())
+    check_expect_keys(expect, name, PLAN_EXPECT_KEYS)
     fixture_dir = PLAN_SCENARIOS_DIR / expect["context_from"] if "context_from" in expect else scenario_dir
     context_dir = fixture_dir / "context"
     pr_root = fixture_dir / "pr_root"

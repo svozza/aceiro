@@ -10,6 +10,7 @@ grader catches it).
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -279,6 +280,28 @@ class TestScenarioExpectations:
             "plan_rejection_recovery",
             "plan_scope_discipline",
         ]
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_every_scenario_uses_only_known_keys(self, name):
+        # The review side's discipline, kept in step: an unread expectation
+        # asserts nothing, and grade() reads them all optimistically.
+        run_plan_evals.check_expect_keys(self.load(name), name, run_plan_evals.PLAN_EXPECT_KEYS)
+
+    def test_a_misspelled_key_is_a_hard_error(self):
+        with pytest.raises(run_plan_evals.EvalFailure, match="steps_anyy"):
+            run_plan_evals.check_expect_keys(
+                {"verify_plan_must_pass": True, "steps_anyy": []}, "x",
+                run_plan_evals.PLAN_EXPECT_KEYS,
+            )
+
+    def test_every_graded_key_is_in_the_allowlist(self):
+        source = Path(run_plan_evals.__file__).read_text()
+        read_keys = set(re.findall(r'expect(?:\.get\(|\[|\s+in\s+)"?\'?([a-z_]+)', source))
+        read_keys |= set(re.findall(r'"([a-z_]+)" in expect', source))
+        assert read_keys <= run_plan_evals.PLAN_EXPECT_KEYS, (
+            "grade reads keys the allowlist rejects: "
+            f"{sorted(read_keys - run_plan_evals.PLAN_EXPECT_KEYS)}"
+        )
 
     @pytest.mark.parametrize("name", NAMES)
     def test_every_scenario_asserts_the_invariants_not_inventories(self, name):

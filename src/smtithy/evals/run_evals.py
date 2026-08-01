@@ -64,6 +64,25 @@ INJECTED_REJECTION_REASON = "artifact: verification could not be completed for t
 # asserts it, so a regression fails the suite whichever scenario triggers it.
 DEFAULT_MAX_SUBMIT_REJECTIONS = 3
 
+# Every key grade() and run_scenario consume, plus the prose keys that document a
+# scenario. grade() reads expectations optimistically, so a key it does not
+# recognise is silently inert: a renamed or misspelled one degrades the scenario
+# to "verify_must_pass only", an assertion any valid review satisfies. Validated
+# rather than tolerated, the way base.json declarations already are.
+EXPECT_KEYS = frozenset({
+    # graded
+    "verify_must_pass", "max_findings", "min_findings", "findings_any",
+    "must_not_contain", "summary_must_not_contain", "residual_risk_not_empty",
+    "transcript_tool_use_matching", "max_rounds_after_rejection",
+    "inject_rejections", "max_submit_rejections",
+    # fixture wiring
+    "context_from",
+    # prose, for the reader of the scenario
+    "description", "line_accuracy_note", "max_findings_note", "residual_risk_note",
+})
+
+
+
 
 def make_injected_verify(reject_first_n: int):
     """Wrap verify() to deterministically reject the first N submissions.
@@ -87,6 +106,21 @@ def make_injected_verify(reject_first_n: int):
 
 class EvalFailure(Exception):
     """A scenario's structural expectations were not met. Message states which."""
+
+
+def check_expect_keys(expect: dict, name: str, known: frozenset[str] = EXPECT_KEYS) -> None:
+    """Fail closed on an expectation nobody reads.
+
+    The failure this prevents is silent: renaming clean_pr_no_findings'
+    `max_findings` to `max_finding` removes the false-positive check the scenario
+    exists for, and every test still passes. `known` is a parameter because the
+    plan grader reads a different vocabulary and needs the same discipline.
+    """
+    if unknown := sorted(set(expect) - known):
+        raise EvalFailure(
+            f"{name}/expect.json declares unknown keys {unknown}; nothing reads them, so they "
+            f"assert nothing. Known keys: {sorted(known)}"
+        )
 
 
 def transcript_events(transcript_path: Path) -> list[dict]:
@@ -291,6 +325,9 @@ def api_error_stats(events: list[dict]) -> dict:
 def run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
     name = scenario_dir.name
     expect = json.loads((scenario_dir / "expect.json").read_text())
+    # Before a model is called: an inert expectation makes the whole run
+    # meaningless, and finding that out after paying for it is worse.
+    check_expect_keys(expect, name)
     # A scenario may borrow another's fixtures (context/ and pr_root/) via
     # "context_from", so variants (e.g. fault injection over the same planted
     # bug) don't carry drifting copies.

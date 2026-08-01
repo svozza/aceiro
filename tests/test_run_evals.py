@@ -299,6 +299,73 @@ class TestInjectionScenarioExpectations:
             )
 
 
+class TestExpectKeysAreValidated:
+    """An expectation nobody reads asserts nothing, silently.
+
+    grade() reads every key optimistically (`if "max_findings" in expect`), so a
+    misspelled or renamed one degrades the scenario to "verify_must_pass only" —
+    an assertion any syntactically valid review satisfies — with the whole
+    deterministic suite still green. base.json declarations already fail closed
+    on an unknown key (tests/test_base_fixture.py); this is the same discipline
+    for the file that decides what a scenario proves.
+    """
+
+    def test_a_known_expectation_set_is_accepted(self):
+        run_evals.check_expect_keys({"verify_must_pass": True, "max_findings": 0}, "x")
+
+    def test_a_misspelled_key_is_a_hard_error(self):
+        with pytest.raises(run_evals.EvalFailure, match="max_finding"):
+            run_evals.check_expect_keys({"verify_must_pass": True, "max_finding": 0}, "x")
+
+    def test_every_shipped_scenario_uses_only_known_keys(self):
+        for scenario in sorted(Path(run_evals.SCENARIOS_DIR).iterdir()):
+            if not scenario.is_dir():
+                continue
+            expect = json.loads((scenario / "expect.json").read_text())
+            run_evals.check_expect_keys(expect, scenario.name)
+
+    def test_every_graded_key_is_in_the_allowlist(self):
+        # The allowlist is only as good as its agreement with grade(): a key
+        # grade() reads but the allowlist omits would make a valid scenario a
+        # hard error, which is the failure mode of the fix itself.
+        source = Path(run_evals.__file__).read_text()
+        read_keys = set(re.findall(r'expect(?:\.get\(|\[|\s+in\s+)"?\'?([a-z_]+)', source))
+        read_keys |= set(re.findall(r'"([a-z_]+)" in expect', source))
+        assert read_keys <= run_evals.EXPECT_KEYS, (
+            f"grade()/run_scenario read keys the allowlist rejects: {sorted(read_keys - run_evals.EXPECT_KEYS)}"
+        )
+
+
+class TestEveryScenarioAssertsSomething:
+    """The review-side completeness gate, mirroring
+    test_run_plan_evals.TestScenarioExpectations. verify_must_pass alone is
+    satisfied by any valid review, so a scenario carrying only that has stopped
+    grading the behaviour it was built for."""
+
+    NAMES = sorted(p.name for p in Path(run_evals.SCENARIOS_DIR).iterdir() if p.is_dir())
+
+    SUBSTANTIVE = {
+        "findings_any", "max_findings", "min_findings", "must_not_contain",
+        "summary_must_not_contain", "residual_risk_not_empty",
+        "transcript_tool_use_matching", "max_rounds_after_rejection",
+    }
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_the_scenario_verifies_and_asserts_something_else(self, name):
+        expect = json.loads((Path(run_evals.SCENARIOS_DIR) / name / "expect.json").read_text())
+        assert expect.get("verify_must_pass"), f"{name}: the artifact must verify"
+        assert self.SUBSTANTIVE & set(expect), (
+            f"{name}: asserts nothing beyond verify_must_pass, which any valid review satisfies"
+        )
+
+    @pytest.mark.parametrize("name", ["clean_pr_no_findings", "zero_width_fence_breakout"])
+    def test_the_false_positive_scenarios_pin_zero_findings(self, name):
+        # These two exist for exactly this number; nothing else in the suite
+        # pinned it, which is how the reproduction went unnoticed.
+        expect = json.loads((Path(run_evals.SCENARIOS_DIR) / name / "expect.json").read_text())
+        assert expect.get("max_findings") == 0, f"{name}: the false-positive check is its whole purpose"
+
+
 def new_side_lines(diff_text: str) -> dict[str, dict[int, str]]:
     """Map path -> {new-side line number: text} for every line in a hunk.
 
