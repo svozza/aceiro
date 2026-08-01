@@ -92,7 +92,8 @@ WRITE_CHAIN = ("push_branch", "open_pr")
 
 def make_injected_verify_plan(reject_first_n: int):
     """run_evals.make_injected_verify for the plan channel: verify_plan's
-    arity (content source included), same honest generic reason."""
+    arity (content source included), same honest generic reason, same
+    per-session budget and new_session hook."""
     state = {"remaining": reject_first_n}
 
     def verify_fn(plan, diff_text, changed_files, policy, content_source):
@@ -101,6 +102,10 @@ def make_injected_verify_plan(reject_first_n: int):
             raise Rejection(INJECTED_REJECTION_REASON)
         verify_plan(plan, diff_text, changed_files, policy, content_source)
 
+    def new_session():
+        state["remaining"] = reject_first_n
+
+    verify_fn.new_session = new_session
     return verify_fn
 
 

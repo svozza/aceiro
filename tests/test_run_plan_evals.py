@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy" / "evals"))
 
+import cc_loop  # noqa: E402
 import run_plan_evals  # noqa: E402
 from conftest import POLICY  # noqa: E402
 from verify import Rejection  # noqa: E402
@@ -64,6 +65,19 @@ class TestMakeInjectedVerifyPlan:
     def test_zero_injections_is_a_pure_pass_through(self):
         verify_fn = run_plan_evals.make_injected_verify_plan(0)
         verify_fn(suggest_plan(), PLAN_DIFF, PLAN_CHANGED_FILES, POLICY, tree_source())
+
+    def test_the_budget_is_per_session(self):
+        # cc_loop restarts the CLI on an api_error, and the property under test
+        # is a property of the session that produced the artifact. plan_loop
+        # wraps verify_fn in a `checked` closure for the content source, so the
+        # hook must travel on the object drive_session is handed, not the wrapper.
+        verify_fn = run_plan_evals.make_injected_verify_plan(1)
+        args = (suggest_plan(), PLAN_DIFF, PLAN_CHANGED_FILES, POLICY, tree_source())
+        with pytest.raises(Rejection, match="could not be completed"):
+            verify_fn(*args)
+        cc_loop.start_session_on(verify_fn)
+        with pytest.raises(Rejection, match="could not be completed"):
+            verify_fn(*args)
 
 
 class TestFixKinds:

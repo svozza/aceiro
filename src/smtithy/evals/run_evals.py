@@ -85,13 +85,21 @@ EXPECT_KEYS = frozenset({
 
 
 def make_injected_verify(reject_first_n: int):
-    """Wrap verify() to deterministically reject the first N submissions.
+    """Wrap verify() to deterministically reject the first N submissions OF EACH
+    SESSION.
 
     Tests the half of the retry path no mock can reach: whether the *real
     model*, given our rejection feedback, comes back with a complete valid
     artifact instead of degrading into a placeholder. Thread-local by
     construction (one closure per scenario), so concurrent scenarios are
     unaffected.
+
+    Per session, not per scenario, because cc_loop restarts the CLI on an
+    api_error and the property under test is a property of the session that
+    produced the artifact. A budget spent in a session that then died would
+    leave the surviving session's first submission accepted, and the scenario
+    would grade a model that never received rejection feedback. cc_loop calls
+    `new_session` once per attempt.
     """
     state = {"remaining": reject_first_n}
 
@@ -101,6 +109,10 @@ def make_injected_verify(reject_first_n: int):
             raise Rejection(INJECTED_REJECTION_REASON)
         verify(artifact, diff_text, changed_files, policy)
 
+    def new_session():
+        state["remaining"] = reject_first_n
+
+    verify_fn.new_session = new_session
     return verify_fn
 
 
@@ -148,12 +160,37 @@ def check_tool_use(events: list[dict], wanted: dict) -> None:
     )
 
 
+def surviving_session(events: list[dict]) -> list[dict]:
+    """The events of the session that produced the artifact.
+
+    An api_error with retrying=true ends a session: everything before it
+    happened in a session that died, so a rejection there reached no surviving
+    submission. Two DIFFERENT counters are called round in this transcript —
+    `attempt` on api_error/tool_request/model_response, and the submission
+    counter on submit_rejected — so the split is on the event, never on a
+    comparison between the two.
+    """
+    start = 0
+    for index, record in enumerate(events):
+        if record.get("event") == "api_error" and record.get("retrying"):
+            start = index + 1
+    return events[start:]
+
+
 def check_rejection_budget(events: list[dict], expect: dict) -> None:
     """Global tripwire: fail any scenario whose run burned more submit
     rejections than expected. Catches a regression back into the live
     retry-spiral (12 consecutive rejections) from ANY scenario, at zero
     extra model cost. Injection scenarios raise the budget to cover the
-    rejections they deliberately cause."""
+    rejections they deliberately cause.
+
+    Two different scopes, deliberately. The spiral bound is about total model
+    cost, so it counts the WHOLE run: four rejections spread over two sessions
+    is the same regression as four in one. Whether fault injection took effect
+    is about the surviving session only — a rejection delivered to a session
+    that then died on an upstream error taught the model nothing that reached
+    the artifact.
+    """
     injected = expect.get("inject_rejections", 0)
     allowed = expect.get("max_submit_rejections", DEFAULT_MAX_SUBMIT_REJECTIONS) + injected
 
@@ -163,10 +200,21 @@ def check_rejection_budget(events: list[dict], expect: dict) -> None:
             f"{rejections} submit_review rejections exceeds the allowed {allowed} "
             f"({injected} injected) -- model is not recovering from rejection feedback"
         )
-    if rejections < injected:
+
+    # Matched on the reason, not counted: an organic verifier rejection standing
+    # in for an injected one would report that injection took effect when it did
+    # not, which is the same false pass from the other direction.
+    delivered = sum(
+        1
+        for record in surviving_session(events)
+        if record.get("event") == "submit_rejected"
+        and record.get("reason") == INJECTED_REJECTION_REASON
+    )
+    if delivered < injected:
         raise EvalFailure(
-            f"expected {injected} injected rejections in the transcript, saw {rejections} -- "
-            "fault injection did not take effect"
+            f"expected {injected} injected rejections in the session that produced the artifact, "
+            f"saw {delivered} of {rejections} total -- fault injection did not reach the surviving "
+            "session, so the model was never graded on recovering from it"
         )
 
 
@@ -174,16 +222,23 @@ def check_recovery_promptness(events: list[dict], max_rounds_after: int) -> None
     """A recovered run is not enough: the live spiral burned 12 rounds before
     'recovering' into a placeholder. Assert the accepted submission arrived
     within max_rounds_after rounds of the last rejection."""
+    # Scoped to the surviving session: a rejection in a session that died was
+    # never recovered FROM, and subtracting its submission counter from the
+    # surviving session's makes the recovery look instantaneous.
     last_rejected_round = None
     completed_round = None
-    for record in events:
+    for record in surviving_session(events):
         if record.get("event") == "submit_rejected":
             last_rejected_round = record["round"]
         elif record.get("event") == "run_complete":
             completed_round = record["rounds"]
 
     if last_rejected_round is None or completed_round is None:
-        raise EvalFailure("recovery check needs both a submit_rejected and a run_complete event in the transcript")
+        raise EvalFailure(
+            "recovery check needs both a submit_rejected and a run_complete event from the session "
+            "that produced the artifact; a rejection burned in a session that then died proves no "
+            "recovery"
+        )
     taken = completed_round - last_rejected_round
     if taken > max_rounds_after:
         raise EvalFailure(

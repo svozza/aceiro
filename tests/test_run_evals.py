@@ -61,6 +61,52 @@ class TestMakeInjectedVerify:
             second(VALID_ARTIFACT, "", [], POLICY)
 
 
+class TestTheInjectionBudgetIsPerSession:
+    """cc_loop restarts the CLI on an api_error, and the property under test is
+    a property of the session that produced the artifact. A budget spent in a
+    session that then died would leave the next session's first submission
+    accepted, and the scenario would grade a model that never saw feedback."""
+
+    def submit(self, verify_fn):
+        try:
+            verify_fn({}, "", [], POLICY)
+        except Rejection:
+            return "rejected"
+        return "accepted"
+
+    def test_the_budget_is_restored_for_a_new_session(self):
+        verify_fn = run_evals.make_injected_verify(1)
+        assert self.submit(verify_fn) == "rejected"
+        verify_fn.new_session()
+        assert self.submit(verify_fn) == "rejected", "the retried session must also see the fault"
+
+    def test_within_one_session_the_budget_is_still_finite(self):
+        verify_fn = run_evals.make_injected_verify(1)
+        assert self.submit(verify_fn) == "rejected"
+        # verify() runs on the second submission; an empty artifact fails it,
+        # which is not the injected rejection.
+        with pytest.raises(Rejection, match="missing keys"):
+            verify_fn({}, "", [], POLICY)
+
+    def test_the_generator_starts_each_session_through_this_hook(self):
+        # Asserted through cc_loop rather than against the closure alone:
+        # "make_injected_verify exposes a reset nobody calls" is the failure the
+        # closure's own test cannot see.
+        import cc_loop
+
+        assert hasattr(cc_loop, "start_session_on"), "cc_loop has no per-session hook to call"
+        verify_fn = run_evals.make_injected_verify(1)
+        self.submit(verify_fn)
+        cc_loop.start_session_on(verify_fn)
+        assert self.submit(verify_fn) == "rejected"
+
+    def test_a_production_verify_fn_without_the_hook_is_fine(self):
+        import cc_loop
+        from verify import verify
+
+        cc_loop.start_session_on(verify)  # must not raise
+
+
 class TestTranscriptEvents:
     def test_parses_jsonl(self, tmp_path):
         path = tmp_path / "transcript.jsonl"
@@ -104,12 +150,25 @@ class TestApiErrorStats:
         assert run_evals.api_error_stats(events) == {"api_errors": 0, "backoff_seconds": 0}
 
 
-def rejected(round_number):
-    return {"event": "submit_rejected", "round": round_number, "reason": "r"}
+def rejected(round_number, reason=None):
+    return {
+        "event": "submit_rejected",
+        "round": round_number,
+        "reason": reason if reason is not None else run_evals.INJECTED_REJECTION_REASON,
+    }
+
+
+def organic(round_number):
+    """A rejection the VERIFIER produced, not fault injection."""
+    return rejected(round_number, reason="findings[0]: line 5 is not inside a diff hunk")
 
 
 def complete(rounds):
     return {"event": "run_complete", "rounds": rounds}
+
+
+def api_error(attempt, retrying=True):
+    return {"event": "api_error", "round": attempt, "retrying": retrying}
 
 
 class TestCheckRejectionBudget:
@@ -133,12 +192,39 @@ class TestCheckRejectionBudget:
 
     def test_missing_injected_rejection_fails(self):
         # If injection didn't take effect the scenario tested nothing.
-        with pytest.raises(run_evals.EvalFailure, match="did not take effect"):
+        with pytest.raises(run_evals.EvalFailure, match="fault injection did not reach"):
             run_evals.check_rejection_budget([complete(2)], {"inject_rejections": 1})
 
     def test_explicit_max_overrides_default(self):
         with pytest.raises(run_evals.EvalFailure, match="not recovering"):
             run_evals.check_rejection_budget([rejected(2), rejected(3)], {"max_submit_rejections": 1})
+
+    def test_an_injected_rejection_burned_in_a_dead_session_does_not_count(self):
+        # The scenario's whole question is whether the model recovers from
+        # rejection feedback. A rejection delivered to a session that then died
+        # on an upstream error reached no surviving submission, so counting it
+        # grades a model that never saw feedback.
+        events = [rejected(1), api_error(1), complete(1)]
+        with pytest.raises(run_evals.EvalFailure, match="did not reach"):
+            run_evals.check_rejection_budget(events, {"inject_rejections": 1})
+
+    def test_a_rejection_in_the_surviving_session_counts(self):
+        events = [rejected(1), api_error(1), rejected(1), complete(2)]
+        run_evals.check_rejection_budget(events, {"inject_rejections": 1})
+
+    def test_the_budget_counts_organic_rejections_across_the_whole_run(self):
+        # The spiral tripwire is about total model cost, so it must NOT be
+        # scoped to one attempt: 4 rejections spread over two sessions is the
+        # same regression as 4 in one.
+        events = [organic(1), organic(2), api_error(1), organic(3), organic(4), complete(4)]
+        with pytest.raises(run_evals.EvalFailure, match="not recovering"):
+            run_evals.check_rejection_budget(events, {})
+
+    def test_an_injected_reason_is_matched_not_merely_counted(self):
+        # An organic rejection must not satisfy the injection budget: that would
+        # report "fault injection took effect" for a run where it did not.
+        with pytest.raises(run_evals.EvalFailure, match="did not"):
+            run_evals.check_rejection_budget([organic(1), complete(2)], {"inject_rejections": 1})
 
 
 def make_review(**overrides):
@@ -650,3 +736,17 @@ class TestCheckRecoveryPromptness:
     def test_missing_events_fail(self):
         with pytest.raises(run_evals.EvalFailure, match="needs both"):
             run_evals.check_recovery_promptness([complete(2)], max_rounds_after=2)
+
+    def test_a_rejection_from_a_dead_session_cannot_prove_recovery(self):
+        # `round` on submit_rejected is the submission counter, and run_complete's
+        # `rounds` is the same counter — but a rejection in a session that died
+        # was never recovered FROM, so the arithmetic between them is measuring
+        # nothing. Left uncaught, the surviving session's numbering makes the
+        # recovery look instantaneous.
+        events = [rejected(1), api_error(1), complete(1)]
+        with pytest.raises(run_evals.EvalFailure, match="needs both"):
+            run_evals.check_recovery_promptness(events, max_rounds_after=2)
+
+    def test_recovery_within_the_surviving_session_passes(self):
+        events = [rejected(1), api_error(1), rejected(1), complete(2)]
+        run_evals.check_recovery_promptness(events, max_rounds_after=2)

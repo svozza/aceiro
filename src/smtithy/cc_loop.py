@@ -333,8 +333,20 @@ def fail(transcript: Transcript, reason: str, **fields) -> int:
     return 1
 
 
+def start_session_on(verify_fn) -> None:
+    """Tell a verify_fn a new session is starting, if it cares.
+
+    The eval harness's fault injector has a per-session budget and needs to know
+    where a session begins; production's verify() has no state and no hook. The
+    notification lives here rather than in the harness because only this loop
+    knows when it restarts the CLI.
+    """
+    if new_session := getattr(verify_fn, "new_session", None):
+        new_session()
+
+
 def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, user_message: str,
-                  base_root: Path, pr_root: Path, output_dir: Path, make_tool,
+                  base_root: Path, pr_root: Path, output_dir: Path, make_tool, verify_fn,
                   server_name: str = "review", submit_tool_name: str = SUBMIT_TOOL,
                   artifact_filename: str = "review.json", tool_display_name: str = "submit_review") -> int:
     """The generator-agnostic session loop: attempts, backoff, failure naming,
@@ -342,7 +354,11 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     a channel — what the tool verifies, what the artifact is called — arrives
     through the parameters, so the plan generator runs THIS loop rather than a
     diverging copy of it. `make_tool` is called once per attempt with the run's
-    state dict and returns the submit tool."""
+    state dict and returns the submit tool.
+
+    `verify_fn` is passed in addition to being closed over by `make_tool`
+    because this loop is what decides where a session begins, and a stateful
+    verifier (the eval harness's fault injector) has to be told."""
     # The submission breaker is scoped to the RUN, not to a session: its budget
     # and its abort verdict are properties of the one artifact being produced,
     # so an api_error retry inherits them rather than being forgiven them.
@@ -355,6 +371,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # its tool calls are counted against it alone.
         state["accepted"] = None
         state["tool_calls"] = 0
+        start_session_on(verify_fn)
         submit = make_tool(state)
         server = build_review_server(submit, server_name)
         options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
@@ -568,6 +585,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         make_tool=lambda state: make_submit_tool(
             schema, state, transcript, verify_fn, diff_text, changed_files, policy, guidance
         ),
+        verify_fn=verify_fn,
     )
 
 
