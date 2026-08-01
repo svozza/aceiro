@@ -23,7 +23,8 @@ well-defined. So expect.json asserts:
     steps_any              substance: some fix step matching path +
                            old/new content probes
     must_not_contain       banned strings swept over every markdown-bearing
-                           arg, with run_evals' quoted-span excision
+                           arg, with run_evals' quoted-span excision (which
+                           applies only to a field that reports the injection)
 
 Deliberately NOT asserted: step counts, how a fix splits across steps in one
 file, ids, ordering beyond the write chain. Those are the model's business,
