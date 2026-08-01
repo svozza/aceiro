@@ -24,6 +24,7 @@ from artifact import (
     escape_fence,
     fence,
     redact_secrets,
+    redact_text,
     render_constraints,
 )
 from conftest import CHANGED_FILES, HARNESS_DIR, POLICY, SAMPLE_DIFF
@@ -314,6 +315,46 @@ class TestRedactSecrets:
         redacted = redact_secrets(artifact, POLICY)
         assert redacted["aws_secret_access_key"] == "[REDACTED]"
         assert "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY123" not in json.dumps(redacted)
+
+    @pytest.mark.parametrize(
+        "invisible",
+        [
+            pytest.param("͏", id="U+034F-cgj"),
+            pytest.param("​", id="U+200B-zwsp"),
+            pytest.param("️", id="U+FE0F-vs16"),
+            pytest.param("ㅤ", id="U+3164-hangul-filler"),
+            pytest.param("\U000e0001", id="U+E0001-tag"),
+        ],
+    )
+    def test_an_invisible_split_secret_does_not_survive_redaction(self, invisible):
+        # be292ac centralised the invisible table so a code point added there
+        # closes the hole everywhere at once, and ADR-0011 says "one table, three
+        # readers". Both verifier scans strip before matching; redaction did not,
+        # so a credential the READER sees whole was written verbatim into the
+        # uploaded transcript and stream -- the artifacts whose 30/90-day
+        # retention is justified in the workflows BY their being redacted.
+        payload = {"summary": f"leaked AKIA{invisible}IOSFODNN7EXAMPLE here"}
+        blob = json.dumps(redact_secrets(payload, POLICY), ensure_ascii=False)
+        assert "IOSFODNN7EXAMPLE" not in blob, (
+            "the credential reaches the uploaded transcript; a reader sees it whole because the "
+            "code point between AKIA and the rest renders as nothing"
+        )
+
+    @pytest.mark.parametrize(
+        "invisible",
+        [pytest.param("͏", id="U+034F-cgj"), pytest.param("​", id="U+200B-zwsp")],
+    )
+    def test_redact_text_strips_before_matching_too(self, invisible):
+        # The stream capture's own entry point, cc_loop's only caller.
+        line = json.dumps({"message": f"AKIA{invisible}IOSFODNN7EXAMPLE"}, ensure_ascii=False)
+        assert "IOSFODNN7EXAMPLE" not in redact_text(line, POLICY)
+
+    def test_a_clean_invisible_bearing_string_is_left_alone(self):
+        # False-positive guard: an invisible code point is not itself a secret,
+        # and redaction must not start withholding ordinary records that carry
+        # one. The transcript is an audit log; over-withholding blinds it.
+        payload = {"summary": f"an emoji flag \U0001f1ec\U0001f1e7 and a joiner{chr(0x200d)}here"}
+        assert redact_secrets(payload, POLICY) == payload
 
     def test_unlocalizable_serialized_match_withholds_whole_value(self):
         # Leaf/key/bridge redaction localize the known representations. The

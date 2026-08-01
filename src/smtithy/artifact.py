@@ -204,9 +204,17 @@ def redact_text(text: str, policy: dict) -> str:
 
 
 def _redact_patterns(text: str, policy: dict) -> str:
-    """The bare pattern sweep, for text with no structure to exploit."""
-    for pattern in policy["secret_scan_patterns"]:
+    """The bare pattern sweep, for text with no structure to exploit.
+
+    Withholds the line when only the invisible-stripped form matches, for
+    redact_secrets' reason: the match has no span in these bytes to replace.
+    """
+    patterns = policy["secret_scan_patterns"]
+    for pattern in patterns:
         text = re.sub(pattern, "[REDACTED]", text)
+    stripped = strip_invisible(text)
+    if stripped != text and any(re.search(pattern, stripped) for pattern in patterns):
+        return WITHHELD
     return text
 
 
@@ -224,9 +232,27 @@ def redact_secrets(value, policy: dict):
     """
     patterns = policy["secret_scan_patterns"]
 
+    def matches_stripped(text: str) -> bool:
+        """A pattern matches only once the invisible code points are removed.
+
+        The reader sees the stripped form -- that is what "invisible" means -- so
+        a credential split by one is a leak even though no pattern matches the
+        bytes. Both verifier secret scans test this representation
+        (canonicalize.strip_invisible, the same table the input fence uses); this
+        is the third reader ADR-0011 names.
+        """
+        stripped = strip_invisible(text)
+        return stripped != text and any(re.search(pattern, stripped) for pattern in patterns)
+
     def redact_str(text: str) -> str:
         for pattern in patterns:
             text = re.sub(pattern, "[REDACTED]", text)
+        # Withheld rather than substituted: the match exists in a representation
+        # this string does not have, so there is no span here to replace. The
+        # value goes, not the record -- and only when the stripped form matches,
+        # so an invisible code point on its own is never cause to withhold.
+        if matches_stripped(text):
+            return WITHHELD
         return text
 
     def bridges(label: str, text: str) -> bool:
@@ -235,7 +261,12 @@ def redact_secrets(value, policy: dict):
         Both separators are tried because the patterns accept either, and the
         serialization the reader eventually sees may use either.
         """
-        return any(re.search(p, f"{label}={text}") or re.search(p, f"{label}:{text}") for p in patterns)
+        joined = (f"{label}={text}", f"{label}:{text}")
+        return any(
+            re.search(p, form) or re.search(p, strip_invisible(form))
+            for p in patterns
+            for form in joined
+        )
 
     def redact(value, labels: tuple[str, ...] = ()):
         """`labels` is EVERY enclosing dict key on the path to `value`, not just
@@ -270,7 +301,9 @@ def redact_secrets(value, policy: dict):
 
     redacted = redact(value)
     blob = json.dumps(redacted, ensure_ascii=False)
-    if any(re.search(pattern, blob) for pattern in patterns):
+    # The backstop reads both representations too: a match that only appears once
+    # the structure is serialized can equally only appear once it is stripped.
+    if any(re.search(pattern, blob) for pattern in patterns) or matches_stripped(blob):
         return WITHHELD
     return redacted
 
