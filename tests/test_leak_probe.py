@@ -90,3 +90,53 @@ class TestSubmissions:
         first, second = leak_probe.submissions(stream)
         assert first["leaked"] is True  # no findings key in an empty input
         assert second["summary_length"] == 0
+
+
+def probe_result(leaked=False, exit_code=0, retry_submissions=None, summary_length=100, keys=None):
+    return {
+        "scenario": "lru_eviction_bug",
+        "index": 0,
+        "exit_code": exit_code,
+        "retry_submissions": retry_submissions or [],
+        "leaked": leaked,
+        "summary_length": summary_length,
+        "keys": keys or ["summary", "findings"],
+    }
+
+
+class TestExitStatus:
+    """The gate reads clean precisely when it measured nothing, unless "no data"
+    is distinguishable from "no leaks". The docstring says the exit code exists
+    to gate a loop, and a prompt-change loop gated on this would treat an
+    unmeasured change as verified leak-free."""
+
+    def test_clean_measured_runs_exit_zero(self):
+        assert leak_probe.exit_status([probe_result(), probe_result()]) == 0
+
+    def test_a_first_submission_leak_exits_non_zero(self):
+        assert leak_probe.exit_status([probe_result(leaked=True)]) != 0
+
+    def test_a_retry_leak_exits_non_zero(self):
+        results = [probe_result(retry_submissions=[{"leaked": True, "summary_length": 9, "keys": []}])]
+        assert leak_probe.exit_status(results) != 0
+
+    def test_measuring_nothing_exits_non_zero(self):
+        # Upstream throttling: every session died, no submit_review block was
+        # captured, `valid` is empty. "0 leaks / 0 calls" is not a clean bill.
+        results = [{"leaked": None, "retry_submissions": [], "exit_code": 1}] * 3
+        assert leak_probe.exit_status(results) != 0
+
+    def test_a_failed_run_exits_non_zero_even_with_a_clean_submission(self):
+        # probe_once records exit_code and nothing read it. A run that captured
+        # a first submission and then failed is not a measurement to trust.
+        assert leak_probe.exit_status([probe_result(exit_code=1)]) != 0
+
+    def test_no_results_at_all_exits_non_zero(self):
+        assert leak_probe.exit_status([]) != 0
+
+    def test_the_reason_is_stated_not_just_the_code(self, capsys):
+        # The loop operator must be able to tell "measured nothing" from "clean".
+        leak_probe.exit_status([{"leaked": None, "retry_submissions": [], "exit_code": 1}])
+        printed = capsys.readouterr().out.lower()
+        assert "measured nothing" in printed
+        assert "not the same as 'no leaks'" in printed

@@ -18,7 +18,9 @@ failure before believing its absence.
 Usage:
     python leak_probe.py --out "$OUT" [--n 7] [--scenarios a,b] [--cache-dir DIR]
 
-Exits non-zero if any submission leaked, so it can gate a loop.
+Exits non-zero if any submission leaked, so it can gate a loop — and also when
+it measured nothing or a probe run failed, since a gate that reads clean on no
+data would let a prompt-change loop treat an unmeasured change as verified.
 """
 
 from __future__ import annotations
@@ -104,6 +106,40 @@ def probe_once(scenario: str, index: int, out_root: Path, cache_root: Path) -> d
     }
 
 
+def exit_status(results: list[dict]) -> int:
+    """0 only when the probe measured something and that something was clean.
+
+    Three ways to be non-zero, because the exit code gates a prompt-change loop
+    and "clean" has to mean clean. A leak in a first submission or a retry is the
+    signal the probe exists for. A run that captured no submission at all
+    measured nothing, and a run that failed measured something unreliable: both
+    print "0 leaks / 0 calls", which reads as a pass. Every reason is printed,
+    since the operator's next action differs — fix the prompt, or re-run when
+    upstream recovers.
+    """
+    valid = [r for r in results if r["leaked"] is not None]
+    leaks = [r for r in valid if r["leaked"]]
+    retry_leaks = [s for r in results for s in r["retry_submissions"] if s["leaked"]]
+    failed = [r for r in results if r.get("exit_code")]
+
+    if not results:
+        print("::error::no probe runs at all; nothing was measured")
+        return 1
+    if not valid:
+        print(
+            f"::error::{len(results)} runs, none with a captured submission: the probe measured "
+            "nothing. This is not the same as 'no leaks' — re-run when upstream is healthy."
+        )
+        return 1
+    if failed:
+        print(
+            f"::error::{len(failed)}/{len(results)} probe runs exited non-zero; their submissions "
+            "are not a measurement to trust"
+        )
+        return 1
+    return 1 if leaks or retry_leaks else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -148,7 +184,7 @@ def main() -> int:
         print(f"  FIRST-LEAK {r['scenario']} #{r['index']} summary_length={r['summary_length']} keys={r['keys']}")
     for s in retry_leaks:
         print(f"  RETRY-LEAK summary_length={s['summary_length']} keys={s['keys']}")
-    return 1 if leaks or retry_leaks else 0
+    return exit_status(results)
 
 
 if __name__ == "__main__":
