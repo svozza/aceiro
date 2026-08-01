@@ -314,6 +314,44 @@ def stub_pr_shas(monkeypatch, *responses):
 UNMOVED = ("reviewed-sha", "reviewed-base")
 
 
+def stub_comment_store(monkeypatch, *responses, after_write=None):
+    """Like stub_pr_shas, but backed by a mutable comment list so the REAL
+    upsert_comment and withdraw_own_review run against it.
+
+    Returns the store, so a test can assert what the PR ends up showing rather
+    than what a stubbed upsert was handed. `after_write` is called with the store
+    once this run's review has landed — the window a concurrent run's write
+    occupies, which is the only place one can interleave.
+    """
+    store: list[dict] = []
+    remaining = list(responses)
+    writes = {"n": 0}
+
+    def note_write():
+        writes["n"] += 1
+        if writes["n"] == 1 and after_write is not None:
+            after_write(store)
+
+    def fake_api_json(path, method="GET", payload=None):
+        if path == "/graphql":
+            return {"data": {"viewer": {"login": BOT_LOGIN}}}
+        if method == "PATCH":
+            cid = int(path.rsplit("/", 1)[1])
+            next(c for c in store if c["id"] == cid)["body"] = payload["body"]
+            note_write()
+            return {}
+        if method == "POST":
+            store.append(comment(len(store) + 1, payload["body"]))
+            note_write()
+            return {}
+        head, base = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return {"head": {"sha": head}, "base": {"sha": base}}
+
+    monkeypatch.setattr(post, "api_json", fake_api_json)
+    monkeypatch.setattr(post, "paginate", lambda _p: iter([list(store)]))
+    return store
+
+
 class TestMain:
     def test_happy_path_posts_rendered_body(self, main_env, monkeypatch, valid_artifact):
         stub_pr_shas(monkeypatch, UNMOVED)
@@ -413,31 +451,55 @@ class TestMain:
         # The pre-check and the write are not atomic: a push landing between
         # them is caught by the post-write recheck, which overwrites the
         # just-posted review with a stale notice and fails the job.
-        stub_pr_shas(monkeypatch, UNMOVED, ("pushed-sha", "reviewed-base"))
-        posted = []
-        monkeypatch.setattr(
-            post, "upsert_comment", lambda repo, pr, body, marker=None, bot_login=None: posted.append(body),
-        )
+        store = stub_comment_store(monkeypatch, UNMOVED, ("pushed-sha", "reviewed-base"))
 
         with pytest.raises(SystemExit):
             post.main()
 
-        assert len(posted) == 2  # the review, then its withdrawal
-        assert "withdrawn" in posted[1]
-        assert posted[1].splitlines()[0] == post.MARKER  # upsert finds and replaces it
+        assert len(store) == 1, "the review was posted, then withdrawn in place"
+        assert "withdrawn" in store[0]["body"]
+        assert store[0]["body"].splitlines()[0] == post.MARKER
 
     def test_base_retarget_during_post_withdraws_comment(self, main_env, monkeypatch):
-        stub_pr_shas(monkeypatch, UNMOVED, ("reviewed-sha", "retargeted-base"))
-        posted = []
-        monkeypatch.setattr(
-            post, "upsert_comment", lambda repo, pr, body, marker=None, bot_login=None: posted.append(body),
+        store = stub_comment_store(monkeypatch, UNMOVED, ("reviewed-sha", "retargeted-base"))
+
+        with pytest.raises(SystemExit):
+            post.main()
+
+        assert "withdrawn" in store[0]["body"]
+
+    def test_a_withdrawal_will_not_clobber_a_newer_revisions_review(self, main_env, monkeypatch):
+        # Runs for the same PR share the marker and the bot login. Between this
+        # run's write and its recheck, the run for the new head replaces the
+        # sticky comment with ITS review -- withdrawing that would leave the PR
+        # showing a withdrawal for a review that was never stale, and no further
+        # event exists to correct it.
+        newer = (
+            f"{post.MARKER}\nthe pushed-sha run's review\n"
+            f"<sub>{post.sha_stamp('pushed-sha')} · [run](u)</sub>"
+        )
+
+        def concurrent_run_wins(store):
+            store[0]["body"] = newer
+
+        store = stub_comment_store(
+            monkeypatch, UNMOVED, ("pushed-sha", "reviewed-base"),
+            after_write=concurrent_run_wins,
         )
 
         with pytest.raises(SystemExit):
             post.main()
 
-        assert len(posted) == 2
-        assert "withdrawn" in posted[1]
+        assert "withdrawn" not in store[0]["body"]
+        assert "the pushed-sha run's review" in store[0]["body"]
+
+    def test_the_footer_carries_the_stamp_the_withdrawal_searches_for(self, valid_artifact):
+        # The two must not drift: a rendered footer the withdrawal cannot
+        # recognise makes every withdrawal a silent no-op.
+        metadata = {"model": "m", "prompt": "p", "policy": "c", "sha": "abc123",
+                    "run_url": "https://example.invalid/run"}
+        body = post.render(valid_artifact, metadata, {"medium": 0, "high": 1, "low": 2, "critical": 3})
+        assert post.sha_stamp("abc123") in body
 
     def test_stale_notice_passes_the_markdown_policy(self):
         # The withdrawal body is static, but it must never be the one piece

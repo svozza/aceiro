@@ -214,6 +214,25 @@ class TestQuarantineIsStrippedOfSymlinks:
         assert "-delete" in quarantine
 
 
+class TestRunsAreSerializedPerPullRequest:
+    """Two runs for one PR share the sticky comment's marker and bot login, so
+    without a per-PR group they contend for one comment and the loser writes
+    last. post.py's withdrawal is revision-scoped for the same reason; this is
+    the half that stops the contention arising."""
+
+    def test_the_review_workflow_serializes_per_pull_request(self):
+        text = (WORKFLOWS / "ai-pr-review.yml").read_text()
+        group = next(
+            (line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("  group:")),
+            None,
+        )
+        assert group is not None, "ai-pr-review.yml declares no concurrency group"
+        assert "pull_request.number" in group, (
+            f"the concurrency group must be per-PR, got {group!r}; a repository-wide or "
+            "ref-wide group would let two head SHAs' runs contend for one sticky comment"
+        )
+
+
 class TestOtherWorkflowsStayCorrect:
     """The two workflows that got this right, pinned so a copy-paste of the
     evals fix does not 'fix' them into something worse."""

@@ -14,6 +14,11 @@ a configured login can drift from the token actually posting, and this value
 decides which prior comments the executor may edit. Unresolvable identity is
 also fail-closed.
 
+Ownership is per-generator, not per-run: every run for a PR shares the marker
+and the login, so the withdrawal is additionally scoped to the reviewed-SHA
+stamp in the body it is about to replace. The workflow serializes runs per PR,
+and this is what holds when serialization does not.
+
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA,
 RUN_URL, BEDROCK_INFERENCE_PROFILE (attribution stamp only).
 Arguments: --artifact-dir (review.json + context files), --policy, --prompt, and
@@ -52,6 +57,13 @@ SEVERITY_LABEL = {
     "medium": "🟡 Medium",
     "low": "🔵 Low",
 }
+
+
+def sha_stamp(sha: str) -> str:
+    """The footer's reviewed-SHA clause, which is also what identifies a posted
+    comment as THIS run's. Rendered by one function so the withdrawal's search
+    string cannot drift from what render() wrote."""
+    return f"reviewed SHA: `{sha}`"
 
 
 def render(
@@ -102,7 +114,7 @@ def render(
     lines += [
         "---",
         "<sub>model: `{model}` · prompt: `{prompt}` · policy: `{policy}` · "
-        "reviewed SHA: `{sha}` · [run]({run_url})</sub>".format(**metadata),
+        "{stamp} · [run]({run_url})</sub>".format(stamp=sha_stamp(metadata["sha"]), **metadata),
     ]
     return "\n".join(lines)
 
@@ -138,19 +150,15 @@ def resolve_bot_login() -> str:
     return login
 
 
-def upsert_comment(repo: str, pr_number: int, body: str, marker: str = MARKER, *, bot_login: str) -> None:
-    """Update this generator's own sticky comment, or create it.
+def find_own_comment(repo: str, pr_number: int, marker: str, bot_login: str) -> dict | None:
+    """This generator's own sticky comment, or None.
 
-    Matched on `marker` AND author. The marker must be the SAME one render() wrote,
-    or a reviewer would search for a comment it never posts and create a new one
-    every run -- so callers pass one value to both. `bot_login` is keyword-only
-    and has no default because it is the security half of the match: the one
-    valid source is resolve_bot_login(), and a hardcoded fallback would be the
-    coupling this parameter replaced.
+    Matched on `marker` AND author: anyone can paste the marker into their own
+    comment, so the author half is what makes a match ours to edit.
     """
-    existing_id = next(
+    return next(
         (
-            comment["id"]
+            comment
             for page in paginate(f"/repos/{repo}/issues/{pr_number}/comments?")
             for comment in page
             if marker in (comment.get("body") or "") and (comment.get("user") or {}).get("login") == bot_login
@@ -158,12 +166,27 @@ def upsert_comment(repo: str, pr_number: int, body: str, marker: str = MARKER, *
         None,
     )
 
-    if existing_id is not None:
-        api_json(f"/repos/{repo}/issues/comments/{existing_id}", method="PATCH", payload={"body": body})
-        print(f"updated existing comment {existing_id}")
-    else:
-        api_json(f"/repos/{repo}/issues/{pr_number}/comments", method="POST", payload={"body": body})
-        print("created new comment")
+
+def upsert_comment(repo: str, pr_number: int, body: str, marker: str = MARKER, *, bot_login: str) -> int | None:
+    """Update this generator's own sticky comment, or create it. Returns the id
+    of the comment it updated, or None when it created one.
+
+    The marker must be the SAME one render() wrote, or a reviewer would search
+    for a comment it never posts and create a new one every run -- so callers
+    pass one value to both. `bot_login` is keyword-only and has no default
+    because it is the security half of the match: the one valid source is
+    resolve_bot_login(), and a hardcoded fallback would be the coupling this
+    parameter replaced.
+    """
+    existing = find_own_comment(repo, pr_number, marker, bot_login)
+
+    if existing is not None:
+        api_json(f"/repos/{repo}/issues/comments/{existing['id']}", method="PATCH", payload={"body": body})
+        print(f"updated existing comment {existing['id']}")
+        return cast("int", existing["id"])
+    api_json(f"/repos/{repo}/issues/{pr_number}/comments", method="POST", payload={"body": body})
+    print("created new comment")
+    return None
 
 
 # Kept inside the model-field safe grammar (no blockquote/heading — those are
@@ -174,6 +197,30 @@ STALE_NOTICE = (
     "was being posted, so it described a different diff. A new review will be "
     "posted by the run for the current revision."
 )
+
+
+def withdraw_own_review(repo: str, pr_number: int, marker: str, reviewed_sha: str, *, bot_login: str) -> bool:
+    """Replace this run's own posted review with STALE_NOTICE. Returns whether
+    a withdrawal was written.
+
+    Scoped to the comment still carrying THIS run's reviewed-SHA stamp. Every
+    run for the same PR shares the marker and the bot login, so an unscoped
+    upsert would withdraw whatever is there — and the run that loses the race
+    is the OLD one, whose withdrawal would land on top of the newer revision's
+    valid review, leaving the PR with a withdrawal notice for a review that was
+    never stale and no event to correct it.
+    """
+    existing = find_own_comment(repo, pr_number, marker, bot_login)
+    if existing is None or sha_stamp(reviewed_sha) not in (existing.get("body") or ""):
+        print(f"our review for {reviewed_sha} is no longer the posted comment; nothing withdrawn")
+        return False
+    api_json(
+        f"/repos/{repo}/issues/comments/{existing['id']}",
+        method="PATCH",
+        payload={"body": f"{marker}\n{STALE_NOTICE}"},
+    )
+    print(f"withdrew comment {existing['id']}")
+    return True
 
 
 def check_pr_unmoved(repo: str, pr_number: int, reviewed_head: str, reviewed_base: str) -> str | None:
@@ -246,7 +293,7 @@ def main() -> None:
     # attacker cancels the new revision's workflow. Recheck after the write;
     # if the PR moved, overwrite our comment with a stale notice and fail.
     if moved := check_pr_unmoved(repo, pr_number, reviewed_sha, reviewed_base):
-        upsert_comment(repo, pr_number, f"{args.marker}\n{STALE_NOTICE}", args.marker, bot_login=bot_login)
+        withdraw_own_review(repo, pr_number, args.marker, reviewed_sha, bot_login=bot_login)
         fail(f"{moved} while posting; review withdrawn")
 
 

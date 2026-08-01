@@ -98,6 +98,16 @@ on:
 
 permissions: {}
 
+# One run per PR. Two runs for different head SHAs share the sticky comment's
+# marker and bot login, so they contend for one comment and the loser writes
+# last -- post.py's withdrawal is scoped to its own reviewed SHA for the same
+# reason, and this is what stops the contention arising. Cancelling in progress
+# also stops four pushes in two minutes from queueing four approval requests and
+# four Bedrock-billed review jobs, three of which could only fail at post.
+concurrency:
+  group: ai-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 env:
   HEAD_SHA: ${{ github.event.pull_request.head.sha }}
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
