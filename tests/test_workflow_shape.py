@@ -208,6 +208,21 @@ def job_names(text: str) -> list[str]:
     return names
 
 
+class TestQuarantineIsStrippedOfSymlinks:
+    """git materialises mode-120000 entries from the head tree verbatim, and the
+    generator is granted Read/Grep/Glob over the quarantine. Stripping happens
+    where the tree is materialised; cc_loop asserts it independently."""
+
+    def test_the_quarantine_step_strips_symlinks(self):
+        text = (WORKFLOWS / "ai-pr-review.yml").read_text()
+        quarantine = text.split("Quarantine-fetch PR head")[1].split("- name:")[0]
+        assert "-type l" in quarantine, (
+            "the quarantine step does not strip symlinks; a PR can plant a link to "
+            "~/.aws/credentials inside a directory the generator may Read"
+        )
+        assert "-delete" in quarantine
+
+
 class TestOtherWorkflowsStayCorrect:
     """The two workflows that got this right, pinned so a copy-paste of the
     evals fix does not 'fix' them into something worse."""

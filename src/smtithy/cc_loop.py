@@ -443,6 +443,54 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     return fail(transcript, "attempt budget exhausted without a verified artifact")
 
 
+def find_symlinks(root: Path) -> list[Path]:
+    """Every symlink at or under `root`, however deep.
+
+    The quarantine is contributor-authored: git materialises mode-120000 entries
+    from the head tree verbatim, so a PR can plant a link to ~/.aws/credentials,
+    the CLI's own config dir, or $GITHUB_ENV. The generator is granted
+    Read/Grep/Glob over the quarantine, and a permission check on the REQUESTED
+    path cannot see where a link points — a path textually inside the tree would
+    serve bytes from outside it.
+
+    Directories are walked without following links, so a link to a directory is
+    reported rather than descended into.
+    """
+    found: list[Path] = []
+    for parent, directories, files in os.walk(root, followlinks=False):
+        base = Path(parent)
+        for name in (*directories, *files):
+            if (base / name).is_symlink():
+                found.append(base / name)
+    return found
+
+
+def assert_no_symlinks(pr_root: Path, transcript: Transcript) -> None:
+    """Refuse to run the generator over a quarantine containing symlinks.
+
+    Defence in depth, and deliberately not a fix by widening the secret patterns:
+    the containment property is what is wrong when a link is present, and no
+    pattern set covers every credential shape (an AWS session token, an OAuth
+    blob). The workflow strips links when it materialises the tree; this is the
+    in-code assertion that the stripping happened, in the process that is about
+    to hand the directory to the model — the same posture post.py and
+    execute_plan.py take toward work another job claims to have done.
+
+    Mirrors plan_verify.tree_content_source's discipline: a declared path must
+    name its own bytes.
+    """
+    links = find_symlinks(pr_root)
+    if not links:
+        return
+    relative = sorted(str(link.relative_to(pr_root)) for link in links)
+    transcript.log("quarantine_rejected", reason="symlinks in the reviewed tree", paths=relative)
+    raise Rejection(
+        f"quarantine contains {len(relative)} symlink(s) ({relative[:5]}): the reviewed tree is "
+        "contributor-authored and a link would serve bytes from outside it to the generator. "
+        "The workflow strips these when it materialises the quarantine."
+    )
+
+
 def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify) -> int:
     """Return 0 with a verified review.json written, or non-zero with none.
 
@@ -472,6 +520,12 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         policy_sha256=sha256(policy_text),
         max_rounds=MAX_SUBMISSIONS,
     )
+
+    # Before the model is granted Read/Grep/Glob over the quarantine.
+    try:
+        assert_no_symlinks(pr_root, transcript)
+    except Rejection as exc:
+        return fail(transcript, str(exc))
 
     user_message = build_user_message(context_dir)
     transcript.log("context", sha256=sha256(user_message), bytes=len(user_message.encode()))

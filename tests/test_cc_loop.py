@@ -476,6 +476,73 @@ class TestBundledCli:
         assert __cli_version__ == "2.1.220"
 
 
+class TestQuarantineContainment:
+    """The quarantine handed to the generator carries no symlinks.
+
+    git materialises mode-120000 entries from the head tree verbatim (verified
+    against a real fetch+checkout), and the generator is granted Read/Grep/Glob
+    over the directory. A permission check on the REQUESTED path cannot see where
+    a link points, so a path textually inside the quarantine would serve bytes
+    from outside it — into the captured stream (an uploaded artifact) and into
+    the submitted summary, where only the regex secret scan stands between it and
+    a posted comment. Fix containment, not the patterns: no pattern set covers
+    every credential shape.
+    """
+
+    def test_no_symlinks_found_in_a_clean_tree(self, tmp_path):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "a.py").write_text("x")
+        assert cc_loop.find_symlinks(tmp_path) == []
+
+    def test_a_symlink_to_a_file_outside_is_found(self, tmp_path):
+        outside = tmp_path / "secret"
+        outside.write_text("credentials")
+        root = tmp_path / "pr_root"
+        (root / "docs").mkdir(parents=True)
+        (root / "docs" / "NOTES.md").symlink_to(outside)
+        assert [p.name for p in cc_loop.find_symlinks(root)] == ["NOTES.md"]
+
+    def test_a_symlinked_directory_is_found_and_not_descended(self, tmp_path):
+        outside = tmp_path / "elsewhere"
+        (outside / "nested").mkdir(parents=True)
+        (outside / "nested" / "deep.txt").write_text("x")
+        root = tmp_path / "pr_root"
+        root.mkdir()
+        (root / "alias").symlink_to(outside, target_is_directory=True)
+        found = cc_loop.find_symlinks(root)
+        assert [p.name for p in found] == ["alias"]
+
+    def test_a_deeply_nested_symlink_is_found(self, tmp_path):
+        root = tmp_path / "pr_root"
+        (root / "a" / "b" / "c").mkdir(parents=True)
+        (root / "a" / "b" / "c" / "link").symlink_to(tmp_path / "target")
+        assert [p.name for p in cc_loop.find_symlinks(root)] == ["link"]
+
+    def test_assert_no_symlinks_passes_a_clean_tree(self, tmp_path):
+        root = tmp_path / "pr_root"
+        root.mkdir()
+        (root / "a.py").write_text("x")
+        transcript = cc_loop.Transcript(tmp_path / "t.jsonl", POLICY)
+        cc_loop.assert_no_symlinks(root, transcript)  # must not raise
+        transcript.close()
+
+    def test_assert_no_symlinks_refuses_and_logs(self, tmp_path):
+        root = tmp_path / "pr_root"
+        (root / "docs").mkdir(parents=True)
+        (root / "docs" / "NOTES.md").symlink_to(tmp_path / "outside")
+        transcript = cc_loop.Transcript(tmp_path / "t.jsonl", POLICY)
+        with pytest.raises(cc_loop.Rejection, match="symlink"):
+            cc_loop.assert_no_symlinks(root, transcript)
+        transcript.close()
+        events = [
+            json.loads(line)
+            for line in (tmp_path / "t.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        rejected = [e for e in events if e["event"] == "quarantine_rejected"]
+        assert rejected and rejected[0]["paths"] == ["docs/NOTES.md"]
+
+
 class TestOptions:
     """The security-relevant invariants of the session configuration."""
 
