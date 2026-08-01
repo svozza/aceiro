@@ -286,12 +286,18 @@ export async function proveFrame(
   for (const path of changedFiles) solver.add(touchedByPr.call(idOf(path)));
   for (const path of patchedPaths) solver.add(modifiedByPlan.call(idOf(path)));
 
-  // Facts over the SAME intern table, so both obligations are decided against one
-  // identity per file. Every interned path is pinned either way, or the solver
-  // could pick a value and invent a violation no plan expresses.
+  // Facts over the SAME intern table, so every obligation is decided against one
+  // identity per file. Each interned path is pinned either way for BOTH
+  // predicates: interning happens from changedFiles as well as from the plan's
+  // own paths, so a changed-but-unpatched file is in the domain the negated
+  // query ranges over. Leaving its modified_by_plan free lets the solver elect
+  // it as modified and satisfy the denylist disjunct, which reports a violation
+  // no plan expresses and hands the counterexample builder no step to name.
+  const patchedSet = new Set(patchedPaths);
   for (const [path, id] of intern) {
     const denied = matchesAny(path, policy.path_denylist);
     solver.add(denied ? deniedByPolicy.call(id) : Not(deniedByPolicy.call(id)));
+    if (!patchedSet.has(path)) solver.add(Not(modifiedByPlan.call(id)));
   }
 
   // Everything outside the two sets is pinned false, so the quantifier ranges

@@ -215,6 +215,24 @@ describe('proveFrame', () => {
   // denylisted path that IS in changed_files made the query unsat, and the
   // prover printed 'frame: holds' for the file the Python gate rejects.
 
+  it('holds when the PR touched a denylisted file the plan leaves alone', async () => {
+    // The denylist binds what the PLAN modifies, not what the PR changed. Any PR
+    // that edits a workflow or a dependabot config has a denylisted path in its
+    // changed set, and remediating some other file in it is legal -- so this
+    // admitting case is what keeps such PRs remediable at all.
+    const result = await proveFrame(
+      plan(patch('src/a.py'), pushBranch(), openPr()),
+      POLICY,
+      ['src/a.py', '.github/dependabot.yml'],
+    );
+    assert.equal(result.holds, true, `unexpected ${JSON.stringify(result.counterexample?.path)}`);
+  });
+
+  it('holds when the PR touched a denylisted file and the plan suggests on another', async () => {
+    const result = await proveFrame(plan(suggest('src/a.py')), POLICY, ['src/a.py', 'deploy/key.pem']);
+    assert.equal(result.holds, true, `unexpected ${JSON.stringify(result.counterexample?.path)}`);
+  });
+
   it('CATCHES a denylisted path that IS a changed file', async () => {
     const result = await proveFrame(
       plan(patch('.github/workflows/ai-pr-review.yml')),
