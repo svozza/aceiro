@@ -236,6 +236,46 @@ class TestAnchorSignatures:
         indented = self.SHIFT_BEFORE.replace("+target()", "+    target()")
         assert anchor_signatures(self.SHIFT_BEFORE)[("x.py", 2)] == anchor_signatures(indented)[("x.py", 2)]
 
+    # ADR-0009's addendum specifies the fingerprint as "a whitespace-normalized,
+    # NFC'd signature of the anchored line and its neighbours". Both halves are
+    # load-bearing and neither was implemented: the identity key decides whether
+    # the executor keeps a live comment thread or deletes it and reposts, which
+    # is the churn the anchor design exists to avoid.
+
+    def test_a_canonically_equivalent_line_has_the_same_signature(self):
+        # An editor rewriting café from NFC to NFD on save is no semantic change,
+        # and GitHub renders both identically. Without normalization the anchor
+        # moves, so the executor deletes the thread (losing human replies and
+        # resolution state) and reposts the same comment.
+        composed = self.SHIFT_BEFORE.replace("+target()", "+café = 1")
+        decomposed = self.SHIFT_BEFORE.replace("+target()", "+café = 1")
+        assert anchor_signatures(composed)[("x.py", 2)] == anchor_signatures(decomposed)[("x.py", 2)]
+
+    def test_normalization_reaches_the_neighbours_too(self):
+        # The window is part of the signature, so a neighbour's re-encoding moves
+        # the anchor exactly as the anchored line's would.
+        composed = self.SHIFT_BEFORE.replace("+omega", "+café")
+        decomposed = self.SHIFT_BEFORE.replace("+omega", "+café")
+        assert anchor_signatures(composed)[("x.py", 2)] == anchor_signatures(decomposed)[("x.py", 2)]
+
+    @pytest.mark.parametrize("separator", [" ", " ", " ", "", "\v", "\f"])
+    def test_non_ascii_whitespace_is_not_folded_into_a_space(self, separator):
+        # str.split() folds every Unicode whitespace code point, so two DIFFERENT
+        # lines collapse to one signature — and the folded set includes the very
+        # separators split_diff_lines refuses to treat as line breaks. Whitespace
+        # normalization exists to survive reindentation, not to erase a line's
+        # content: a collision hands one comment's identity to another anchor.
+        spaced = self.SHIFT_BEFORE.replace("+target()", "+a b")
+        exotic = self.SHIFT_BEFORE.replace("+target()", f"+a{separator}b")
+        assert anchor_signatures(spaced)[("x.py", 2)] != anchor_signatures(exotic)[("x.py", 2)]
+
+    def test_indentation_by_space_or_tab_still_normalizes(self):
+        # The property the normalization is FOR, pinned alongside the narrowing
+        # above so the fix cannot be read as "stop normalizing".
+        tabbed = self.SHIFT_BEFORE.replace("+target()", "+\t\ttarget()")
+        spaced = self.SHIFT_BEFORE.replace("+target()", "+    target()")
+        assert anchor_signatures(tabbed)[("x.py", 2)] == anchor_signatures(spaced)[("x.py", 2)]
+
     def test_hunk_edges_are_marked_absent_not_wrapped(self):
         # The first line has no predecessor. It must not silently borrow the last
         # line of the file, which would make two different anchors collide.

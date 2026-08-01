@@ -21,6 +21,7 @@ The rules, encoded once:
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import NamedTuple
 
 HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -103,22 +104,54 @@ class DiffPosition(NamedTuple):
     text: str  # the physical diff line, verbatim (no trailing newline)
 
 
+# Indentation the signature deliberately ignores, and nothing else. `str.split()`
+# would be wrong here: it folds every Unicode whitespace code point, including
+# U+2028/U+2029/U+000B/U+000C/U+0085 — the very separators split_diff_lines
+# refuses to treat as line ends — so two different lines could collapse to one
+# signature and hand one comment's identity to another anchor. Whitespace
+# normalization exists to survive reindentation, not to erase content.
+_INDENT_RE = re.compile(r"[ \t]+")
+
+
+def normalize_signature_line(text: str) -> str:
+    """One line's contribution to a signature: NFC, then indentation-folded.
+
+    NFC first, because a canonically equivalent re-encoding (an editor rewriting
+    `café` from NFC to NFD on save) is no semantic change and GitHub renders both
+    identically — an anchor that moves for it would make the executor delete a
+    live comment thread and repost the same comment, which is the churn the
+    anchor design exists to prevent. NFC also composes before the fold, so a
+    decomposed sequence cannot hide a separator from it.
+    """
+    return _INDENT_RE.sub(" ", unicodedata.normalize("NFC", text)).strip()
+
+
 def anchor_signatures(diff_text: str, window: int = 1) -> dict[tuple[str, int], str]:
     """Map (path, new-side line) -> a signature of the CODE at that anchor.
 
     The signature is the anchored line's text plus `window` new-side lines either
-    side of it, whitespace-normalized. It exists to give the executor an identity
-    key for a finding that does not depend on the model's prose:
+    side of it, each canonicalized by normalize_signature_line. It exists to give
+    the executor an identity key for a finding that does not depend on the model's
+    prose:
 
     - stable when the model rewords the same finding (observed: it rewords on
       essentially every run, so a prose-derived key almost never matches);
     - stable when the code moves, since the window moves with it;
+    - stable when a line is re-encoded without changing (ADR-0009 addendum
+      specifies the fingerprint as NFC'd);
     - changes when the anchored code changes — at which point the finding really
       is about something new.
 
     The window matters: a bare line is often not unique (a file can hold two
     identical `return True` lines, one correct and one the defect), so the
     neighbours are what keep two findings on similar lines distinct.
+
+    The window is over lines the DIFF makes visible, so a neighbour outside every
+    hunk reads as absent rather than as its real text. A signature is therefore
+    comparable across runs only for diffs whose hunk boundaries fall in the same
+    place; growing a hunk around an unchanged line changes that line's signature.
+    A consumer needing boundary-independent identity must take the window from
+    file content at the head SHA instead.
     """
     # new-side content per path, in order, so a window can be taken around a line
     by_path: dict[str, dict[int, str]] = {}
@@ -132,7 +165,7 @@ def anchor_signatures(diff_text: str, window: int = 1) -> dict[tuple[str, int], 
     for path, numbered in by_path.items():
         for number in numbered:
             parts = [
-                " ".join(numbered.get(number + offset, "\x00absent").split())
+                normalize_signature_line(numbered[key]) if (key := number + offset) in numbered else "\x00absent"
                 for offset in range(-window, window + 1)
             ]
             signatures[(path, number)] = "\x00".join(parts)

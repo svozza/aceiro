@@ -101,6 +101,18 @@ load-bearing lessons, each verified on a real PR there:
   code, so the fingerprint is the anchor signature, not a hash of prose.
   Severity and wording deliberately excluded — a re-graded finding keeps its
   comment and its thread.
+  **The window's source is part of the contract.** `anchor_signatures` takes
+  its window from lines the DIFF makes visible, so a neighbour outside every
+  hunk reads as `absent` rather than as its real text. An unrelated push that
+  grows a hunk around an unchanged line therefore changes that line's
+  signature — the executor sees an unknown fingerprint plus an orphaned old
+  one, and deletes a live thread to repost the same comment. No function of
+  the diff alone can close this: in the narrow-hunk run the neighbour's text
+  is not in the input, so clamping or dropping `absent` cannot recover it. The
+  port must take the window from **file content at the head SHA** — which it
+  already reads, for anchoring — and keep the diff-derived signatures for
+  choosing WHICH lines are anchorable. Until then the identity key is
+  hunk-boundary-sensitive, which is a churn bug and not a containment one.
 - **Group by anchor; never an ordinal suffix.** A `#2` suffix is "the 2nd
   finding on this anchor", stable only while the set is: observed on PR
   #514, one finding split into two produced a matched comment plus a
