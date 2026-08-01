@@ -285,6 +285,7 @@ def main_env(tmp_path, monkeypatch, artifact_dir):
     monkeypatch.setenv("PR_NUMBER", "1")
     monkeypatch.setenv("HEAD_SHA", "reviewed-sha")
     monkeypatch.setenv("BASE_SHA", "reviewed-base")
+    monkeypatch.setenv("BASE_REF", "main")
     monkeypatch.setenv("RUN_URL", "https://github.com/o/r/actions/runs/1")
     monkeypatch.setenv("BEDROCK_INFERENCE_PROFILE", "global.anthropic.claude-opus-4-8")
     monkeypatch.setattr(
@@ -304,20 +305,22 @@ def main_env(tmp_path, monkeypatch, artifact_dir):
 def stub_pr_shas(monkeypatch, *responses):
     """Stub the API calls main() makes before posting: the identity resolution
     (any /graphql call answers with the bot's viewer login) and the PR fetches
-    for the TOCTOU checks — one (head, base) pair per expected call, the last
-    pair reused if more calls arrive."""
+    for the TOCTOU checks — one (head sha, base ref) pair per expected call, the
+    last pair reused if more calls arrive. base.sha is present but never equal to
+    BASE_SHA: it is live, so a check reading it would be reading the wrong thing.
+    """
     remaining = list(responses)
 
     def fake_api_json(path, method="GET", payload=None):
         if path == "/graphql":
             return {"data": {"viewer": {"login": BOT_LOGIN}}}
-        head, base = remaining.pop(0) if len(remaining) > 1 else remaining[0]
-        return {"head": {"sha": head}, "base": {"sha": base}}
+        head, base_ref = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return {"head": {"sha": head}, "base": {"ref": base_ref, "sha": "live-base-tip"}}
 
     monkeypatch.setattr(post, "api_json", fake_api_json)
 
 
-UNMOVED = ("reviewed-sha", "reviewed-base")
+UNMOVED = ("reviewed-sha", "main")
 
 
 def stub_comment_store(monkeypatch, *responses, after_write=None):
@@ -350,8 +353,8 @@ def stub_comment_store(monkeypatch, *responses, after_write=None):
             store.append(comment(len(store) + 1, payload["body"]))
             note_write()
             return {}
-        head, base = remaining.pop(0) if len(remaining) > 1 else remaining[0]
-        return {"head": {"sha": head}, "base": {"sha": base}}
+        head, base_ref = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return {"head": {"sha": head}, "base": {"ref": base_ref, "sha": "live-base-tip"}}
 
     monkeypatch.setattr(post, "api_json", fake_api_json)
     monkeypatch.setattr(post, "paginate", lambda _p: iter([list(store)]))
@@ -388,7 +391,7 @@ class TestMain:
         def fake_api_json(path, method="GET", payload=None):
             if path == "/graphql":
                 return {"errors": [{"message": "something upstream broke"}]}
-            return {"head": {"sha": "reviewed-sha"}, "base": {"sha": "reviewed-base"}}
+            return {"head": {"sha": "reviewed-sha"}, "base": {"ref": "main", "sha": "live-base-tip"}}
 
         monkeypatch.setattr(post, "api_json", fake_api_json)
         posted = []
@@ -434,7 +437,7 @@ class TestMain:
 
     def test_head_moved_posts_nothing(self, main_env, monkeypatch):
         # TOCTOU guard: head advanced since the review ran.
-        stub_pr_shas(monkeypatch, ("different-sha", "reviewed-base"))
+        stub_pr_shas(monkeypatch, ("different-sha", "main"))
         posted = []
         monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
 
@@ -445,7 +448,7 @@ class TestMain:
     def test_base_retargeted_posts_nothing(self, main_env, monkeypatch):
         # A base retarget (head unchanged) changes the diff the review
         # describes just as surely as a push; it must also block posting.
-        stub_pr_shas(monkeypatch, ("reviewed-sha", "different-base"))
+        stub_pr_shas(monkeypatch, ("reviewed-sha", "release/2"))
         posted = []
         monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
 
@@ -453,11 +456,25 @@ class TestMain:
             post.main()
         assert posted == []
 
+    def test_a_base_branch_advance_still_posts(self, main_env, monkeypatch):
+        # The reviewed diff was computed as EVENT_BASE...HEAD, so an unrelated
+        # merge into the base branch while the run sat at the approval gate
+        # leaves it exactly correct. base.sha is live and moves with that merge
+        # (probed: a 2016 vscode PR reports a 2026 base.sha), so a SHA
+        # comparison would post nothing for most PRs on a busy repository.
+        stub_comment_store(monkeypatch, UNMOVED)
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a) or 1)
+
+        post.main()
+
+        assert len(posted) == 1, "a benign base-branch advance must not block the review"
+
     def test_head_moved_during_post_withdraws_comment(self, main_env, monkeypatch):
         # The pre-check and the write are not atomic: a push landing between
         # them is caught by the post-write recheck, which overwrites the
         # just-posted review with a stale notice and fails the job.
-        store = stub_comment_store(monkeypatch, UNMOVED, ("pushed-sha", "reviewed-base"))
+        store = stub_comment_store(monkeypatch, UNMOVED, ("pushed-sha", "main"))
 
         with pytest.raises(SystemExit):
             post.main()
@@ -467,7 +484,7 @@ class TestMain:
         assert store[0]["body"].splitlines()[0] == post.MARKER
 
     def test_base_retarget_during_post_withdraws_comment(self, main_env, monkeypatch):
-        store = stub_comment_store(monkeypatch, UNMOVED, ("reviewed-sha", "retargeted-base"))
+        store = stub_comment_store(monkeypatch, UNMOVED, ("reviewed-sha", "release/2"))
 
         with pytest.raises(SystemExit):
             post.main()
@@ -489,7 +506,7 @@ class TestMain:
             store[0]["body"] = newer
 
         store = stub_comment_store(
-            monkeypatch, UNMOVED, ("pushed-sha", "reviewed-base"),
+            monkeypatch, UNMOVED, ("pushed-sha", "main"),
             after_write=concurrent_run_wins,
         )
 

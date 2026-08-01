@@ -28,7 +28,8 @@ things: exit 1 carries a counterexample (an audit record — the model produced
 a plan a policy disproves), exit 2 means nothing was proved at all (an
 operational failure of the run, not evidence about the plan).
 
-Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA.
+Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_REF
+(the reviewed base BRANCH, which is what a retarget changes).
 Arguments: --artifact-dir (plan.json + diff.patch + changed_files.json),
 --pr-root (the quarantine-fetched reviewed head, the anchor tree), --policy,
 and --prover (the built prove-cli.js).
@@ -43,7 +44,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple, cast
 
-from github_api import api_json, fail
+from github_api import api_json, fail, pr_moved
 from canonicalize import read_contributor_text, read_harness_text
 from plan_verify import tree_content_source, verify_plan
 from verify import Rejection
@@ -166,7 +167,7 @@ def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, polic
     )
 
 
-def pr_snapshot(repo: str, pr_number: int, reviewed_head: str, reviewed_base: str) -> dict:
+def pr_snapshot(repo: str, pr_number: int, reviewed_head: str, reviewed_base_ref: str) -> dict:
     """Fetch the live PR, enforce the TOCTOU precondition, and return the
     delivery context in one call.
 
@@ -174,13 +175,13 @@ def pr_snapshot(repo: str, pr_number: int, reviewed_head: str, reviewed_base: st
     fork-ness used for the delivery MUST describe the same PR state the
     unmoved check accepted, or a retarget between two fetches could pass the
     check with one state and deliver against another.
+
+    The precondition is github_api.pr_moved, shared with post.py: the two
+    executors must not disagree about what "moved" means.
     """
     pr = cast("dict", api_json(f"/repos/{repo}/pulls/{pr_number}"))
-    head, base = pr["head"]["sha"], pr["base"]["sha"]
-    if head != reviewed_head:
-        fail(f"head moved since review ({head} != {reviewed_head}); nothing executed")
-    if base != reviewed_base:
-        fail(f"base changed since review ({base} != {reviewed_base}); nothing executed")
+    if moved := pr_moved(pr, reviewed_head, reviewed_base_ref):
+        fail(f"{moved}; nothing executed")
     return pr
 
 
@@ -205,7 +206,7 @@ def main() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     pr_number = int(os.environ["PR_NUMBER"])
     reviewed_sha = os.environ["HEAD_SHA"]
-    reviewed_base = os.environ["BASE_SHA"]
+    reviewed_base_ref = os.environ["BASE_REF"]
 
     plan_path = args.artifact_dir / "plan.json"
     plan = json.loads(read_harness_text(plan_path))
@@ -236,7 +237,7 @@ def main() -> None:
     # TOCTOU precondition and delivery context in one fetch. For a stacked PR
     # the base is the reviewed PR's own head BRANCH — from this context, never
     # from the plan (open_pr has no base argument, and both gates pin that).
-    pr = pr_snapshot(repo, pr_number, reviewed_sha, reviewed_base)
+    pr = pr_snapshot(repo, pr_number, reviewed_sha, reviewed_base_ref)
     if delivery.mode == "stacked_pr" and is_fork(pr):
         fail(
             "stacked PR refused: the reviewed PR is from a fork, so its head branch "

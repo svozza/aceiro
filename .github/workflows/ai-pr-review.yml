@@ -110,7 +110,14 @@ concurrency:
 
 env:
   HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  # The event's base SHA: what the diff is anchored to, and what the review job
+  # checks out. Frozen at event time on purpose — a base-branch advance during
+  # the approval gate must not change the comparison under review.
   BASE_SHA: ${{ github.event.pull_request.base.sha }}
+  # The base BRANCH, which is what a retarget changes. The executors' TOCTOU
+  # check compares this and not BASE_SHA, because the PR object's live base.sha
+  # tracks the branch tip and advances with it.
+  BASE_REF: ${{ github.event.pull_request.base.ref }}
 
 jobs:
   # Resolves the author's REAL repo permission (write-or-above), never

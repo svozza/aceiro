@@ -24,6 +24,7 @@ stamp in the body it is about to replace. The workflow serializes runs per PR,
 and this is what holds when serialization does not.
 
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA,
+BASE_REF (the reviewed base BRANCH, which is what a retarget changes),
 RUN_URL, BEDROCK_INFERENCE_PROFILE (attribution stamp only).
 Arguments: --artifact-dir (review.json + context files), --policy, --prompt, and
 optionally --marker/--title to identify which generator's comment this is.
@@ -44,7 +45,7 @@ import os
 from pathlib import Path
 from typing import cast
 
-from github_api import api_json, fail, paginate
+from github_api import api_json, fail, paginate, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from prepare_context import fetch_anchored_pair
 from verify import Rejection, verify
@@ -228,18 +229,13 @@ def withdraw_own_review(repo: str, pr_number: int, marker: str, reviewed_sha: st
     return True
 
 
-def check_pr_unmoved(repo: str, pr_number: int, reviewed_head: str, reviewed_base: str) -> str | None:
-    """Return None if the PR still points at the reviewed head AND base,
-    else a human-readable description of what moved. The base matters too:
-    a retarget (head unchanged, base edited) changes the diff the review
-    claims to describe just as surely as a push does."""
-    pr = cast("dict", api_json(f"/repos/{repo}/pulls/{pr_number}"))
-    head, base = pr["head"]["sha"], pr["base"]["sha"]
-    if head != reviewed_head:
-        return f"head moved since review ({head} != {reviewed_head})"
-    if base != reviewed_base:
-        return f"base changed since review ({base} != {reviewed_base})"
-    return None
+def check_pr_unmoved(repo: str, pr_number: int, reviewed_head: str, reviewed_base_ref: str) -> str | None:
+    """Return None if the PR still points at the reviewed head AND base branch,
+    else a human-readable description of what moved. The base matters too: a
+    retarget (head unchanged, base edited) changes the diff the review claims to
+    describe just as surely as a push does. See github_api.pr_moved for why the
+    base half is a ref comparison and not a SHA one."""
+    return pr_moved(cast("dict", api_json(f"/repos/{repo}/pulls/{pr_number}")), reviewed_head, reviewed_base_ref)
 
 
 def main() -> None:
@@ -255,7 +251,10 @@ def main() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     pr_number = int(os.environ["PR_NUMBER"])
     reviewed_sha = os.environ["HEAD_SHA"]
+    # Two roles, deliberately separate: the SHA anchors the diff, the ref
+    # detects a retarget. BASE_SHA is unusable for the second (github_api.pr_moved).
     reviewed_base = os.environ["BASE_SHA"]
+    reviewed_base_ref = os.environ["BASE_REF"]
 
     artifact = json.loads(read_harness_text(args.artifact_dir / "review.json"))
     policy_text = read_harness_text(args.policy)
@@ -279,7 +278,7 @@ def main() -> None:
 
     # TOCTOU guard, first half: the PR must still point at the reviewed head
     # and base before we render anything.
-    if moved := check_pr_unmoved(repo, pr_number, reviewed_sha, reviewed_base):
+    if moved := check_pr_unmoved(repo, pr_number, reviewed_sha, reviewed_base_ref):
         fail(f"{moved}; nothing posted")
 
     # Resolved before the first write and reused for the withdrawal: the two
@@ -304,7 +303,7 @@ def main() -> None:
     # the OLD diff attached to the new one, with no run to correct it if the
     # attacker cancels the new revision's workflow. Recheck after the write;
     # if the PR moved, overwrite our comment with a stale notice and fail.
-    if moved := check_pr_unmoved(repo, pr_number, reviewed_sha, reviewed_base):
+    if moved := check_pr_unmoved(repo, pr_number, reviewed_sha, reviewed_base_ref):
         withdraw_own_review(repo, pr_number, args.marker, reviewed_sha, bot_login=bot_login)
         fail(f"{moved} while posting; review withdrawn")
 

@@ -290,3 +290,32 @@ class TestReviewMutations:
             lambda path, method="GET", payload=None: b'{"data": {"ok": true}}',
         )
         assert github_api.graphql("query {}", {}) == {"ok": True}
+
+
+class TestPrMoved:
+    """The TOCTOU predicate both executors share. `base.sha` is live — it
+    tracks the base branch's tip and moves forward with it — so a SHA
+    comparison would refuse to post on any repository with merge traffic,
+    while the artifact it is protecting was anchored to the event base
+    precisely so an advance could not invalidate it."""
+
+    def pr(self, head="reviewed-sha", base_ref="main", base_sha="base-tip"):
+        return {"head": {"sha": head}, "base": {"ref": base_ref, "sha": base_sha}}
+
+    def test_an_unmoved_pr_has_moved_nothing(self):
+        assert github_api.pr_moved(self.pr(), "reviewed-sha", "main") is None
+
+    def test_a_pushed_head_has_moved(self):
+        moved = github_api.pr_moved(self.pr(head="pushed-sha"), "reviewed-sha", "main")
+        assert moved and "head moved" in moved
+
+    def test_a_retargeted_base_has_moved(self):
+        moved = github_api.pr_moved(self.pr(base_ref="release/2"), "reviewed-sha", "main")
+        assert moved and "retargeted" in moved
+
+    def test_a_base_branch_advance_has_not_moved(self):
+        # An unrelated PR merged to main while this run sat at the approval
+        # gate, so base.sha is a commit the review never saw. The diff was
+        # computed as EVENT_BASE...HEAD and is still exactly correct.
+        pr = self.pr(base_sha="a-commit-that-landed-during-the-gate")
+        assert github_api.pr_moved(pr, "reviewed-sha", "main") is None

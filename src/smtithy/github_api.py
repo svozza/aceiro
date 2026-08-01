@@ -81,6 +81,33 @@ def fail(message: str) -> None:
     sys.exit(1)
 
 
+# --------------------------------------------------------- TOCTOU predicate --
+
+
+def pr_moved(pr: dict, reviewed_head: str, reviewed_base_ref: str) -> str | None:
+    """What moved since the artifact was produced, or None. Shared by both
+    executors, which must not disagree about what "moved" means.
+
+    Head is compared by SHA: a push is exactly what invalidates the review.
+
+    Base is compared by REF, not by SHA. `base.sha` on the PR object tracks the
+    tip of the base branch and moves forward with it (probed live: a
+    microsoft/vscode PR opened in 2016 reports a base.sha dated 2026, with its
+    head 90032 commits behind that sha), so a SHA comparison rejects every
+    routine merge into the base branch. That is not a false alarm the caller can
+    tolerate — nothing is posted and no later event retries — and it is not what
+    the check is for: the artifact is anchored to the EVENT's base SHA precisely
+    so a base advance cannot invalidate it (prepare_context.fetch_anchored_pair).
+    A retarget changes the ref, which is what genuinely changes the comparison
+    the artifact claims to describe.
+    """
+    if (head := pr["head"]["sha"]) != reviewed_head:
+        return f"head moved since review ({head} != {reviewed_head})"
+    if (base_ref := pr["base"]["ref"]) != reviewed_base_ref:
+        return f"base retargeted since review ({base_ref} != {reviewed_base_ref})"
+    return None
+
+
 # ------------------------------------------------------- pull request reviews --
 
 # The reviews API is the one endpoint family in this client that can gate a

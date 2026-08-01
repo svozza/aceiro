@@ -192,12 +192,12 @@ class TestRunProver:
 # --------------------------------------------------- pr_snapshot / fork ---
 
 
-def pr_payload(head="reviewed-sha", base="reviewed-base",
+def pr_payload(head="reviewed-sha", base_ref="main", base_sha="base-tip",
                head_repo="o/r", base_repo="o/r", head_ref="feature/x"):
     return {
         "head": {"sha": head, "ref": head_ref,
                  "repo": {"full_name": head_repo} if head_repo else None},
-        "base": {"sha": base, "repo": {"full_name": base_repo}},
+        "base": {"ref": base_ref, "sha": base_sha, "repo": {"full_name": base_repo}},
     }
 
 
@@ -209,22 +209,30 @@ class TestPrSnapshot:
 
     def test_unmoved_pr_returns_the_snapshot(self, monkeypatch):
         self.stub(monkeypatch, pr_payload())
-        pr = execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "reviewed-base")
+        pr = execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
         assert pr["head"]["ref"] == "feature/x"
 
     def test_moved_head_fails(self, monkeypatch, capsys):
         self.stub(monkeypatch, pr_payload(head="new-sha"))
         with pytest.raises(SystemExit):
-            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "reviewed-base")
+            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
         assert "head moved" in capsys.readouterr().err
 
     def test_retargeted_base_fails(self, monkeypatch, capsys):
         # A retarget changes the diff the plan claims to fix just as surely
         # as a push does — post.py's rule, inherited.
-        self.stub(monkeypatch, pr_payload(base="other-base"))
+        self.stub(monkeypatch, pr_payload(base_ref="release/2"))
         with pytest.raises(SystemExit):
-            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "reviewed-base")
-        assert "base changed" in capsys.readouterr().err
+            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
+        assert "retargeted" in capsys.readouterr().err
+
+    def test_a_base_branch_advance_still_executes(self, monkeypatch):
+        # The plan was anchored to the event base, so an unrelated merge into
+        # the base branch does not invalidate it. base.sha is live and moves
+        # with that merge, which is why the retarget test above is on the ref.
+        self.stub(monkeypatch, pr_payload(base_sha="landed-during-the-gate"))
+        pr = execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
+        assert pr["head"]["ref"] == "feature/x"
 
 
 class TestIsFork:
@@ -273,7 +281,7 @@ def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
     monkeypatch.setenv("PR_NUMBER", "1")
     monkeypatch.setenv("HEAD_SHA", "reviewed-sha")
-    monkeypatch.setenv("BASE_SHA", "reviewed-base")
+    monkeypatch.setenv("BASE_REF", "main")
     monkeypatch.setattr(sys, "argv", [
         "execute_plan.py",
         "--artifact-dir", str(artifact_dir),
