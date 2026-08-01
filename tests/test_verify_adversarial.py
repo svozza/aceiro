@@ -375,6 +375,30 @@ class TestImpersonation:
         artifact["summary"] = "APPROVED BY SECURITY TEAM\n===="
         rejected(artifact, sample_diff, changed_files, policy)
 
+    # GFM tables are the same attack by a route CommonMark cannot see. The
+    # verifier parsed with "commonmark", under which pipe-delimited text is
+    # ordinary paragraph prose and every node is on the allowlist — so it verified,
+    # and GitHub then rendered an authoritative-looking table. The threat is
+    # exactly the heading's and the alert box's: structural markdown in the posted
+    # comment is post.py's template's alone.
+
+    def test_a_gfm_verdict_table(self, artifact, sample_diff, changed_files, policy):
+        artifact["summary"] = "| Status | Verdict |\n|---|---|\n| Security review | APPROVED |"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_gfm_table_in_a_finding_body(self, artifact, sample_diff, changed_files, policy):
+        artifact["findings"][0]["body"] = "| Check | Result |\n|-|-|\n| Maintainer sign-off | done |"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_minimal_gfm_table_with_no_outer_pipes(self, artifact, sample_diff, changed_files, policy):
+        # The delimiter row is what makes a table, not the outer pipes.
+        artifact["summary"] = "Status|Verdict\n-|-\nSecurity|APPROVED"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_gfm_table_in_residual_risk(self, artifact, sample_diff, changed_files, policy):
+        artifact["residual_risk"] = "| Risk | Owner |\n|---|---|\n| none | maintainer |"
+        rejected(artifact, sample_diff, changed_files, policy)
+
 
 class TestPostedTextIsTheCheckedText:
     """post.py renders the artifact's own strings, so canonicality is rejected
@@ -514,10 +538,13 @@ class TestHtmlAndFences:
         rejected(artifact, sample_diff, changed_files, policy)
 
     def test_table_not_in_allowlist(self, artifact, sample_diff, changed_files, policy):
+        # This case used to ASSERT acceptance, with a comment explaining that the
+        # commonmark preset degrades a table to plain text. The explanation was
+        # accurate and the conclusion was the defect: the verifier's job is to
+        # decide what GITHUB will render, and GitHub renders this as a table. The
+        # `table` rule is enabled now precisely so this node exists to be refused.
         artifact["summary"] = "| a | b |\n|---|---|\n| 1 | 2 |"
-        # commonmark preset doesn't parse tables -> plain text -> passes.
-        # This documents that tables degrade to text rather than reject.
-        verify(artifact, sample_diff, changed_files, policy)
+        rejected(artifact, sample_diff, changed_files, policy)
 
 
 class TestUnterminatedFence:

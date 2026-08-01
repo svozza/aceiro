@@ -34,6 +34,14 @@ from github_api import api_json, api_request, fail
 MAX_CHANGED_FILES = 300
 MAX_DIFF_BYTES = 1_500_000
 
+# The file list's own byte ceiling, because a COUNT does not bound bytes. The list
+# is fenced into the prompt as its own block, and no path-length limit is worth
+# relying on: 300 deeply nested paths serialise to ~150 KB on top of the diff,
+# which MAX_DIFF_BYTES cannot see (a rename of nested paths is a small diff and a
+# large list). Sized so an ordinary 300-file list passes with room to spare — this
+# refuses a pathological list, not a large PR.
+MAX_CHANGED_FILES_BYTES = 100_000
+
 # The quarantine's bounds, which the diff caps cannot supply: a binary addition
 # produces a tiny diff and retains its full blob cost (measured: a 200 KB binary
 # add is a 231-byte diff), so a PR adding 150 incompressible 99 MB files stays
@@ -160,8 +168,19 @@ def fetch_anchored_pair(repo: str, base_sha: str, head_sha: str) -> tuple[bytes,
     changed_files = [item["filename"] for item in compare.get("files", [])]
     # The endpoint returns at most 300 files per page, so a PR over the cap
     # yields a truncated list, which the assertion below also catches.
+    #
+    # Both dimensions, on the list ACTUALLY COLLECTED rather than on the PR
+    # object's count: the two are computed against different bases, so the count
+    # can read under the cap while this enumerates more. The byte ceiling is the
+    # dimension the count cannot express at all.
     if len(changed_files) > MAX_CHANGED_FILES:
         fail(f"compare lists {len(changed_files)} files (cap {MAX_CHANGED_FILES}); no review")
+    list_bytes = len(json.dumps(changed_files).encode())
+    if list_bytes > MAX_CHANGED_FILES_BYTES:
+        fail(
+            f"the changed-file list is {list_bytes} bytes across {len(changed_files)} files "
+            f"(cap MAX_CHANGED_FILES_BYTES {MAX_CHANGED_FILES_BYTES}); no review"
+        )
 
     assert_diff_and_list_agree(diff, changed_files)
     return diff, changed_files

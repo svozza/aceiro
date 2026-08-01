@@ -52,6 +52,7 @@ from typing import NamedTuple, cast
 
 from github_api import api_json, fail, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
+from plan_loop import check_commanded_finding
 from plan_verify import tree_content_source, verify_plan
 from prepare_context import fetch_anchored_pair
 from verify import Rejection
@@ -223,6 +224,23 @@ def main() -> None:
     plan = json.loads(read_harness_text(plan_path))
     policy = json.loads(read_harness_text(args.policy))
 
+    # The commanded finding, an INPUT to the scope gate rather than evidence, so
+    # it is read from the bundle and fail-closed like plan.json. It cannot be
+    # re-derived here: which finding a maintainer commanded is a fact about the
+    # command, and ADR-0007's "the command names one finding" is only a property
+    # if the process holding the write credential checks it.
+    finding_path = args.artifact_dir / "finding.json"
+    if not finding_path.is_file():
+        fail(
+            f"no finding.json in the bundle: the commanded finding is unknown, so the plan's "
+            f"scope cannot be verified and nothing is executed ({finding_path})"
+        )
+    commanded_finding = json.loads(read_harness_text(finding_path))
+    try:
+        check_commanded_finding(commanded_finding, policy)
+    except Rejection as exc:
+        fail(f"the bundle's commanded finding is not a review artifact's finding: {exc}")
+
     # The provenance inputs are re-fetched, not read from the bundle. The plan
     # must come from the plan job — it IS that job's output — but the diff and
     # the changed-file list are facts about the PR that this job's own token can
@@ -242,7 +260,10 @@ def main() -> None:
     # fetch of the reviewed head, so anchoring reads the same bytes the plan
     # session read.
     try:
-        verify_plan(plan, diff_text, changed_files, policy, tree_content_source(args.pr_root))
+        verify_plan(
+            plan, diff_text, changed_files, policy, tree_content_source(args.pr_root),
+            commanded_finding=commanded_finding,
+        )
     except Rejection as exc:
         fail(f"plan rejected, nothing executed: {exc}")
 

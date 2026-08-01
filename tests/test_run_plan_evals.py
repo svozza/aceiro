@@ -66,6 +66,19 @@ class TestMakeInjectedVerifyPlan:
         verify_fn = run_plan_evals.make_injected_verify_plan(0)
         verify_fn(suggest_plan(), PLAN_DIFF, PLAN_CHANGED_FILES, POLICY, tree_source())
 
+    def test_the_seam_forwards_what_plan_loop_pins(self):
+        # A dropped keyword here is silent and one-directional: it can only make
+        # the gate accept more, so the evals would grade a verifier weaker than
+        # production's. Checked on commanded_finding, whose whole point is to
+        # reject a plan every other phase admits.
+        verify_fn = run_plan_evals.make_injected_verify_plan(0)
+        finding = {"path": "src/util.py", "line": 1, "severity": "high", "title": "t", "body": "b"}
+        with pytest.raises(Rejection, match="commanded finding"):
+            verify_fn(
+                suggest_plan(), PLAN_DIFF, PLAN_CHANGED_FILES, POLICY, tree_source(),
+                commanded_finding=finding,
+            )
+
     def test_the_budget_is_per_session(self):
         # cc_loop restarts the CLI on an api_error, and the property under test
         # is a property of the session that produced the artifact. plan_loop

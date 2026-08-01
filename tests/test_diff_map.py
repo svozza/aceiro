@@ -6,6 +6,8 @@ number it copies into `line`). They share this walk precisely so a divergence is
 not expressible; these tests pin the walk's own rules.
 """
 
+import re
+
 import pytest
 
 from diff_map import anchor_signatures, split_diff_lines, walk_diff
@@ -18,6 +20,62 @@ def numbers_by_path(diff_text):
         if position.new_line is not None:
             mapping.setdefault(position.path, []).append(position.new_line)
     return mapping
+
+
+class TestTheSampleDiffIsCoherent:
+    """SAMPLE_DIFF is the reference fixture for provenance across the whole
+    suite, so its hunk headers must describe its own body.
+
+    The logger.py header declared 9 new-side lines over a body carrying 7. The
+    declared count is authoritative (deliberately — see
+    test_declared_count_wins_over_line_shape_inside_a_hunk), so walk_diff kept
+    numbering past the hunk and assigned lines 17 and 18 to `diff --git ...` and
+    `new file mode 100644` — DIFF METADATA, offered to the model as anchorable and
+    accepted by provenance. A finding on line 17 verified, and the executor would
+    have posted an inline comment on a line that is not code in the fixture's own
+    model of the file.
+
+    Worse for the suite than for production: a regression in over-declared-hunk
+    handling cannot be detected when the reference fixture already relies on it.
+    """
+
+    def test_the_hunk_map_is_exactly_the_hand_written_one(self):
+        # Hand-written from reading the fixture, the way test_run_evals pins
+        # scenario diffs against their pr_root. logger.py's hunk starts at 10 and
+        # carries 7 new-side lines; the new test file carries 4.
+        assert _hunk_lines(SAMPLE_DIFF) == {
+            "aws_lambda_powertools/logging/logger.py": {10, 11, 12, 13, 14, 15, 16},
+            "tests/unit/test_logger.py": {1, 2, 3, 4},
+        }
+
+    def test_no_anchorable_line_is_diff_metadata(self):
+        # The property the map above encodes, stated directly: nothing a finding
+        # may anchor to is a line git wrote about the diff rather than a line of
+        # the file.
+        for position in walk_diff(SAMPLE_DIFF):
+            if position.new_line is None:
+                continue
+            assert not position.text.startswith(("diff --git ", "index ", "new file mode ", "@@ ")), (
+                f"line {position.new_line} of {position.path} is diff metadata: {position.text!r}"
+            )
+
+    def test_every_declared_count_matches_its_body(self):
+        # The general rule over both hunks, so a future edit to either header
+        # fails here rather than silently extending the anchorable set.
+        lines = SAMPLE_DIFF.splitlines()
+        headers = [i for i, line in enumerate(lines) if line.startswith("@@ ")]
+        assert headers, "no hunk headers found; this assertion has gone stale"
+        for start in headers:
+            declared = int(re.match(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", lines[start]).group(2) or "1")
+            counted = 0
+            for line in lines[start + 1:]:
+                if line.startswith(("diff --git ", "@@ ")):
+                    break
+                if not line.startswith(("-", "\\")):
+                    counted += 1
+            assert counted == declared, (
+                f"header {lines[start]!r} declares {declared} new-side lines over a body of {counted}"
+            )
 
 
 class TestWalkDiff:

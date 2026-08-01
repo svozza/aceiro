@@ -98,11 +98,15 @@ def make_injected_verify_plan(reject_first_n: int):
     per-session budget and new_session hook."""
     state = {"remaining": reject_first_n}
 
-    def verify_fn(plan, diff_text, changed_files, policy, content_source):
+    # **kwargs, not a fixed list: the seam must forward whatever plan_loop pins
+    # (head_branch, commanded_finding), or the evals grade a verifier weaker than
+    # the one production runs — and the omission is silent, since a dropped
+    # keyword only makes the gate accept more.
+    def verify_fn(plan, diff_text, changed_files, policy, content_source, **pinned):
         if state["remaining"] > 0:
             state["remaining"] -= 1
             raise Rejection(INJECTED_REJECTION_REASON)
-        verify_plan(plan, diff_text, changed_files, policy, content_source)
+        verify_plan(plan, diff_text, changed_files, policy, content_source, **pinned)
 
     def new_session():
         state["remaining"] = reject_first_n

@@ -827,6 +827,60 @@ class TestWriteClassTargets:
                       policy_plan=policy)
 
 
+class TestCommandedFindingScope:
+    """ADR-0007: the command names ONE finding, and that scope was enforced by
+    the prompt alone — verify_plan never saw the finding.
+
+    So a generator steered by text in the head tree (or plain model error) into
+    patching the two OTHER files a PR changed, and none of the finding's own,
+    produced a plan that verified: every path is in changed_files, none is
+    denylisted, the write chain is ordered. The commander asked for auth.py and
+    got settings.py and ci_helper.py.
+
+    The property is that the finding's file is AMONG the fix's paths, not that it
+    is the only one: ADR-0009 explicitly supports a multi-file fix delivered as a
+    stacked PR, so requiring equality would refuse the case the ADR exists for.
+    A fix that touches the commanded file plus others is a judgement call a human
+    reviews; one that never touches it is not the commanded fix at all.
+    """
+
+    FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "title": "t", "body": "b"}
+
+    def test_a_fix_on_the_commanded_file_passes(self):
+        contained({"steps": [anchored_patch("s0")]}, commanded_finding=self.FINDING)
+
+    def test_a_fix_that_never_touches_the_commanded_file_rejects(self):
+        with pytest.raises(Rejection, match="commanded finding"):
+            contained(
+                {"steps": [anchored_patch("s0", path="src/util.py", old="def check(path):\n",
+                                          new="def check(path=None):\n")]},
+                commanded_finding=self.FINDING,
+            )
+
+    def test_a_multi_file_fix_including_the_commanded_file_passes(self):
+        # ADR-0009's stacked-PR case: the fix spans files, and one of them is the
+        # finding's. Refusing this would forbid the delivery mode the ADR adds.
+        contained(
+            {"steps": [
+                anchored_patch("s0"),
+                anchored_patch("s1", path="src/util.py", old="def check(path):\n",
+                               new="def check(path=None):\n"),
+            ]},
+            commanded_finding=self.FINDING,
+        )
+
+    def test_no_commanded_finding_refuses_nothing_extra(self):
+        # The review lane passes no finding; None must not start rejecting plans.
+        contained({"steps": [anchored_patch("s0", path="src/util.py", old="def check(path):\n",
+                                            new="def check(path=None):\n")]})
+
+    def test_a_plan_with_no_fix_step_is_not_scope_checked_here(self):
+        # A plan expressing no fix has no path set to compare, so scope has
+        # nothing to say about it; cardinality is what refuses one that does
+        # nothing useful (open_pr with no push_branch, and so on).
+        contained({"steps": [push_step("s0")]}, commanded_finding=self.FINDING)
+
+
 class TestWriteChainCardinality:
     """Ordering constrains the write chain's ORDER; nothing constrained how many
     times it appeared. Read from policy's write_class flags rather than a

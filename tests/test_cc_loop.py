@@ -780,10 +780,61 @@ class TestOptions:
         server = cc_loop.build_review_server(submit)
         return cc_loop.build_options("prompt", REPO_ROOT, SCENARIO / "pr_root", server)
 
-    def test_the_deny_list_survives_the_port(self):
-        options = self.options()
-        for name in ("Bash", "Write", "ReportFindings", "Workflow", "ToolSearch", "Task"):
-            assert name in options.disallowed_tools
+    # The denylist is load-bearing containment, not hygiene: allowed_tools does
+    # NOT bound the surface (cc_loop's comment records the probing that
+    # established this), so a name leaving DISALLOWED_TOOLS is a tool the model
+    # regains. It was pinned by a six-name SENTINEL over 24 entries — so `Skill`
+    # dropped in a refactor left the suite green while a managed skill stayed
+    # reachable under safe mode, able to provide shell or write behaviour to a
+    # model following contributor-authored instructions.
+
+    EFFECTFUL = frozenset({
+        # shell and filesystem
+        "Bash", "Write", "Edit", "MultiEdit", "NotebookEdit",
+        # network
+        "WebFetch", "WebSearch",
+        # subagents, which arrive with their own Bash/Write
+        "Task", "Agent", "Workflow", "SendMessage",
+        # looks like the reviewer's own reporting tool, writes to the CLI's UI
+        "ReportFindings",
+        # loaders: reach code and config this session is meant not to have
+        "Skill", "ToolSearch",
+        # state outside the run
+        "TodoWrite",
+        "TaskCreate", "TaskUpdate", "TaskStop", "TaskGet", "TaskList", "TaskOutput",
+        "CronCreate", "CronDelete", "CronList", "ScheduleWakeup",
+        "EnterWorktree", "ExitWorktree",
+    })
+
+    def test_the_whole_effectful_deny_list_is_pinned(self):
+        # Every name, not a sentinel: the set here is the claim, so removing one
+        # from cc_loop fails rather than passing on the survivors.
+        denied = set(self.options().disallowed_tools)
+        assert self.EFFECTFUL <= denied, f"no longer denied: {sorted(self.EFFECTFUL - denied)}"
+
+    def test_the_deny_list_carries_nothing_this_test_has_not_read(self):
+        # The other direction, so the two cannot drift: a name added to cc_loop
+        # without being classified here fails, which is where a reader decides
+        # whether it is effectful or a readonly tool that should be permitted.
+        unclassified = set(cc_loop.DISALLOWED_TOOLS) - self.EFFECTFUL
+        assert not unclassified, f"denied but unclassified here: {sorted(unclassified)}"
+
+    def test_the_permitted_surface_is_exactly_read_grep_glob_and_submit(self):
+        # The positive half. allowed_tools does not bound the surface, but it does
+        # say what the harness INTENDS to permit, and a fourth name appearing here
+        # is a decision someone made.
+        assert set(self.options().allowed_tools) == {"Read", "Grep", "Glob", cc_loop.SUBMIT_TOOL}
+
+    def test_no_readonly_tool_is_also_denied(self):
+        # A name on both lists is a contradiction the SDK resolves silently, and
+        # the resolution is not this harness's to guess.
+        assert not set(cc_loop.READONLY_TOOLS) & set(cc_loop.DISALLOWED_TOOLS)
+
+    def test_the_permission_mode_does_not_prompt(self):
+        # There is no human at this session; a mode that asks would hang the run
+        # to its wall clock, and one that auto-accepts writes would grant exactly
+        # what the denylist refuses.
+        assert self.options().permission_mode == "dontAsk"
 
     def test_no_ambient_configuration_is_loaded(self):
         options = self.options()

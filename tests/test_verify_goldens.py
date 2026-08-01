@@ -35,6 +35,21 @@ def test_allowed_markdown_passes(valid_artifact, sample_diff, changed_files, pol
     verify(valid_artifact, sample_diff, changed_files, policy)
 
 
+def test_prose_and_code_carrying_pipes_still_pass(valid_artifact, sample_diff, changed_files, policy):
+    """Calibration for the GFM-table rejection: enabling the table rule must
+    refuse a TABLE, not every pipe. A shell pipeline, a union type and a regex
+    alternation are ordinary things a review says, and none is a table — a table
+    needs the delimiter row."""
+    valid_artifact["summary"] = (
+        "`cat x | grep y` is run on every call, and the type is `int | None`.\n\n"
+        "```python\nre.compile(r\"a|b\")\n```\n\n"
+        "- the flag is `--a | --b`, so a | b in prose is fine too"
+    )
+    verify(valid_artifact, sample_diff, changed_files, policy)
+    valid_artifact["findings"][0]["body"] = "The guard is `x | y`; see line 13 | it matters."
+    verify(valid_artifact, sample_diff, changed_files, policy)
+
+
 def test_allowlisted_links_pass(valid_artifact, sample_diff, changed_files, policy):
     valid_artifact["summary"] = (
         "See [the docs](https://docs.powertools.aws.dev/lambda/python/latest/) and "

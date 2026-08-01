@@ -51,7 +51,16 @@ def _scalar_to_json_schema(spec: dict) -> dict:
             if spec.get("min_length"):
                 out["minLength"] = spec["min_length"]
             if "pattern" in spec:
-                out["pattern"] = spec["pattern"]
+                # ANCHORED, because JSON Schema's `pattern` is satisfied by a
+                # match anywhere while check_scalar uses re.fullmatch. Unanchored,
+                # the schema advertised '../base/settings.py' as a valid
+                # patch.path (it matches at 'base/settings.py') — so a generator
+                # trusting the tool's advertised input schema spends a submission
+                # to be rejected for an unrelated reason. This schema is
+                # documentation of what the verifier enforces; it has to say the
+                # same thing. Non-capturing group, so an alternation in the policy
+                # pattern cannot bind looser than it reads.
+                out["pattern"] = f"^(?:{spec['pattern']})$"
             return out
         case "integer":
             out = {"type": "integer"}

@@ -115,6 +115,49 @@ class TestMain:
         assert json.loads((env / "changed_files.json").read_text()) == ["a.py", "b.py"]
 
 
+class TestTheCollectedListIsBoundedItself:
+    """The 300-file cap is checked on `pr["changed_files"]` — a COUNT on the PR
+    object — and separately on the collected list, but nothing bounds the list's
+    SIZE.
+
+    A count does not bound bytes. GitHub imposes no path-length limit worth
+    relying on, so 300 files with very long paths serialise to ~150 KB of
+    changed_files.json, which is fenced into the prompt as its own block on top of
+    the 1.5 MB diff. The diff's byte cap cannot see it: a rename of deeply nested
+    paths produces a small diff and a large list.
+    """
+
+    def long_paths(self, count, segment=250):
+        return [f"{'a' * segment}/{'b' * segment}/f{i}.py" for i in range(count)]
+
+    def test_a_list_over_the_byte_ceiling_aborts(self, env, stubs):
+        paths = self.long_paths(300)
+        stubs["diff"] = diff_for(*paths)
+        stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
+        with pytest.raises(SystemExit):
+            prepare_context.main()
+        assert not (env / "changed_files.json").exists()
+
+    def test_the_refusal_names_the_ceiling(self, env, stubs, capsys):
+        paths = self.long_paths(300)
+        stubs["diff"] = diff_for(*paths)
+        stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
+        with pytest.raises(SystemExit):
+            prepare_context.main()
+        assert "MAX_CHANGED_FILES_BYTES" in capsys.readouterr().err or str(
+            prepare_context.MAX_CHANGED_FILES_BYTES
+        ) in capsys.readouterr().err
+
+    def test_an_ordinary_list_passes(self, env, stubs):
+        # Calibration: 300 files of ordinary path length is under the ceiling, so
+        # the byte bound must not become a second, tighter file-count cap.
+        paths = [f"src/module_{i}/file.py" for i in range(300)]
+        stubs["diff"] = diff_for(*paths)
+        stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
+        prepare_context.main()
+        assert len(json.loads((env / "changed_files.json").read_text())) == 300
+
+
 class TestChangedFilesAreAnchoredToTheEventBase:
     """The file list must come from the SAME anchored comparison as the diff.
 

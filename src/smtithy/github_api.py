@@ -178,6 +178,11 @@ def graphql(query: str, variables: dict) -> dict:
     explicitly or a denied mutation would look like a success.
     """
     response = json.loads(api_request("/graphql", method="POST", payload={"query": query, "variables": variables}))
+    # A GraphQL response is an object. Anything else cannot be inspected for
+    # `errors`, so it is a failure rather than a body to read `data` out of —
+    # otherwise the errors check is skipped by whatever shape arrived.
+    if not isinstance(response, dict):
+        raise RuntimeError(f"GraphQL answered with {type(response).__name__}, not an object")
     if errors := response.get("errors"):
         raise RuntimeError("; ".join(error.get("message", str(error)) for error in errors))
     return response.get("data") or {}

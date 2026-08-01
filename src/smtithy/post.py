@@ -46,7 +46,7 @@ import os
 from pathlib import Path
 from typing import cast
 
-from github_api import api_json, fail, paginate, pr_moved
+from github_api import api_json, fail, graphql, paginate, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from prepare_context import fetch_anchored_pair
 from verify import Rejection, verify
@@ -145,15 +145,23 @@ def resolve_bot_login() -> str:
     <app-slug>[bot]) -- byte-identical to the user.login on comments the token
     creates, so no mapping sits between resolution and the ownership check.
 
+    Through github_api.graphql, not api_json: GraphQL answers HTTP 200 with an
+    `errors` array rather than an error status, so a response can carry a usable
+    login AND an error. Calling api_json directly skipped that check, and the same
+    response was a clean success here and a raise through graphql() — so a
+    partially-errored 200 (login present, another requested field errored) was
+    consumed as identity. One helper, one errors check, both call sites.
+
     Fail-closed: anything but a non-empty login exits without posting. Guessing
     here means the executor may edit comments it does not own.
     """
-    response = api_json("/graphql", method="POST", payload={"query": VIEWER_LOGIN_QUERY})
-    login = None
-    if isinstance(response, dict):
-        login = (((response.get("data") or {}).get("viewer")) or {}).get("login")
+    try:
+        data = graphql(VIEWER_LOGIN_QUERY, {})
+    except (RuntimeError, OSError, ValueError) as exc:
+        fail(f"could not resolve the token's own login, nothing posted ({exc})")
+    login = ((data.get("viewer")) or {}).get("login") if isinstance(data, dict) else None
     if not isinstance(login, str) or not login:
-        fail(f"could not resolve the token's own login, nothing posted (response: {json.dumps(response)[:300]})")
+        fail(f"could not resolve the token's own login, nothing posted (response: {json.dumps(data)[:300]})")
     return login
 
 
@@ -177,21 +185,65 @@ def read_model_stamp(artifact_dir: Path) -> str:
     return model
 
 
+def check_marker(marker: str) -> None:
+    """Refuse a marker that cannot identify one comment.
+
+    An empty or whitespace-only marker made EVERY comment ours (`"" in body` is
+    always true), so a consumer passing --marker "" replaced the first bot
+    comment on the pull request with the review. A multi-line one is the mirror
+    failure: render() writes the marker on line 1, so a marker containing a
+    newline can never BE that line — it would search for a comment it does not
+    post and create a new one every run.
+
+    Refused rather than accommodated: there is no honest reading of "identify my
+    comment by nothing", and this value decides which comments the write token
+    may edit.
+    """
+    if not marker.strip():
+        fail("--marker is empty; an empty marker matches every comment, so nothing identifies ours")
+    if "\n" in marker or "\r" in marker:
+        fail(f"--marker spans lines ({marker!r}); the marker is the comment's first line, so it must be one line")
+
+
+def find_own_comments(repo: str, pr_number: int, marker: str, bot_login: str) -> list[dict]:
+    """Every comment this generator owns, oldest first.
+
+    Plural because there can be more than one and there should not be: two runs
+    that both paginated before either created a comment each POST, and the PR
+    keeps both with the loser stale forever. The pagination order is creation
+    order, so the first is the incumbent and the rest are duplicates to retire.
+    """
+    check_marker(marker)
+    return [
+        comment
+        for page in paginate(f"/repos/{repo}/issues/{pr_number}/comments?")
+        for comment in page
+        if (comment.get("body") or "").split("\n", 1)[0].strip() == marker
+        and (comment.get("user") or {}).get("login") == bot_login
+    ]
+
+
 def find_own_comment(repo: str, pr_number: int, marker: str, bot_login: str) -> dict | None:
     """This generator's own sticky comment, or None.
 
-    Matched on `marker` AND author: anyone can paste the marker into their own
-    comment, so the author half is what makes a match ours to edit.
+    Matched on the FIRST LINE being exactly `marker`, AND on author. Two
+    independent halves: anyone can paste the marker into their own comment, so
+    the author half is what makes a match ours to edit — and a substring match
+    owned any comment merely CONTAINING the marker, including one of ours
+    discussing it, so the first-line half is what makes the match the comment
+    render() wrote rather than one that mentions it.
     """
-    return next(
-        (
-            comment
-            for page in paginate(f"/repos/{repo}/issues/{pr_number}/comments?")
-            for comment in page
-            if marker in (comment.get("body") or "") and (comment.get("user") or {}).get("login") == bot_login
-        ),
-        None,
-    )
+    owned = find_own_comments(repo, pr_number, marker, bot_login)
+    return owned[0] if owned else None
+
+
+# What a retired duplicate says. It gives up the marker — the retirement has to
+# surrender OWNERSHIP, or the next run finds the same duplicate and the pull
+# request never converges — so it carries no marker line at all.
+DUPLICATE_NOTICE = (
+    "**Superseded AI review.** A concurrent run posted this alongside another "
+    "copy; the live review is the other comment. Nothing here is current."
+)
 
 
 def upsert_comment(repo: str, pr_number: int, body: str, marker: str = MARKER, *, bot_login: str) -> int | None:
@@ -205,9 +257,23 @@ def upsert_comment(repo: str, pr_number: int, body: str, marker: str = MARKER, *
     resolve_bot_login(), and a hardcoded fallback would be the coupling this
     parameter replaced.
     """
-    existing = find_own_comment(repo, pr_number, marker, bot_login)
+    owned = find_own_comments(repo, pr_number, marker, bot_login)
 
-    if existing is not None:
+    # Reconcile before writing. More than one owned comment means a previous race
+    # left duplicates (a run before the workflow's per-PR concurrency group, one
+    # cancelled mid-POST, or a consumer without the group), and nothing ever
+    # looked for a second one — so the loser sat stale indefinitely. The oldest
+    # carries the review; the rest are retired and give up the marker.
+    for duplicate in owned[1:]:
+        api_json(
+            f"/repos/{repo}/issues/comments/{duplicate['id']}",
+            method="PATCH",
+            payload={"body": DUPLICATE_NOTICE},
+        )
+        print(f"retired duplicate comment {duplicate['id']}")
+
+    if owned:
+        existing = owned[0]
         api_json(f"/repos/{repo}/issues/comments/{existing['id']}", method="PATCH", payload={"body": body})
         print(f"updated existing comment {existing['id']}")
         return cast("int", existing["id"])

@@ -333,8 +333,43 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
                 )
 
 
+def check_commanded_scope(plan: dict, commanded_finding: dict | None) -> None:
+    """ADR-0007: the command names ONE finding, so the fix must touch its file.
+
+    This scope was enforced by the PROMPT alone — verify_plan never saw the
+    finding. A generator steered by text in the contributor-authored head tree
+    (which it may Read in full) into patching the other files a PR changed, and
+    none of the finding's own, produced a plan that verified: every path is in
+    changed_files, none is denylisted, the chain is ordered. The commander asked
+    for auth.py and got settings.py.
+
+    AMONG, not equal to. ADR-0009 adds the stacked pull request precisely for a
+    fix that only makes sense applied across several files, so requiring the path
+    set to be exactly the finding's would refuse the case that ADR exists for. A
+    fix touching the commanded file plus others is a judgement a human reviews;
+    one that never touches it is not the commanded fix.
+
+    None means no command (the review lane, and every test that passes no
+    finding), which refuses nothing extra. A plan with no fix step has no path
+    set to compare — check_plan_cardinality is what refuses a plan doing nothing.
+    """
+    if commanded_finding is None:
+        return
+    paths = {step["args"]["path"] for step in plan["steps"] if step["kind"] in ANCHORED_KINDS}
+    if not paths:
+        return
+    commanded_path = commanded_finding.get("path")
+    if commanded_path not in paths:
+        raise Rejection(
+            f"plan: the commanded finding is on {commanded_path!r} but the fix touches "
+            f"{sorted(paths)}; a plan that never touches the commanded file is not the "
+            "commanded fix (ADR-0007: the command names one finding)"
+        )
+
+
 def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
-                           policy_plan: dict, content_source, head_branch: str | None = None) -> None:
+                           policy_plan: dict, content_source, head_branch: str | None = None,
+                           commanded_finding: dict | None = None) -> None:
     """ADR-0005: frame, denylist, suggest.line provenance, bounding, anchoring
     (which for a suggest step includes PLACEMENT — that `old` begins exactly at
     the addressed line, so the anchored region and the region GitHub's suggestion
@@ -371,6 +406,12 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         pattern = matches_denylist(path, policy_plan["path_denylist"])
         if pattern is not None:
             raise Rejection(f"plan.steps[{index}].args.path: {path!r} is on the policy path denylist ({pattern!r})")
+
+    # Scope, after the frame: a path the PR never touched is out of frame
+    # whatever was commanded, so that is the reason a reader should get. Here
+    # rather than later because it is still decidable from the plan plus the
+    # command, before anything is read off disk.
+    check_commanded_scope(plan, commanded_finding)
 
     # suggest.line provenance (ADR-0009 addendum): the same in-hunk check a
     # finding's line gets, against the same SHA-anchored diff, in the verifier
@@ -644,7 +685,8 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
 
 
 def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: dict,
-                content_source, head_branch: str | None = None) -> None:
+                content_source, head_branch: str | None = None,
+                commanded_finding: dict | None = None) -> None:
     """Raise Rejection on the first policy violation; return None if verified.
 
     Mirrors verify()'s phase order (schema, provenance-shaped checks, markdown,
@@ -654,10 +696,16 @@ def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: di
     because the read discipline (confinement, what counts as missing) is the
     caller's trust decision, and a callable keeps this module free of any
     filesystem assumption beyond it.
+
+    `commanded_finding` is the finding the command names (ADR-0007), making the
+    plan's scope a CHECKED property rather than a prompt instruction. None means
+    no command and refuses nothing extra.
     """
     check_plan_schema(plan, policy["plan"])
     check_plan_cardinality(plan, policy["plan"])
     check_plan_ordering(plan, policy["plan"])
-    check_plan_containment(plan, diff_text, changed_files, policy["plan"], content_source, head_branch)
+    check_plan_containment(
+        plan, diff_text, changed_files, policy["plan"], content_source, head_branch, commanded_finding
+    )
     check_plan_markdown(plan, policy)
     check_plan_secrets(plan, policy)

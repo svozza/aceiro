@@ -259,6 +259,12 @@ def artifact_dir(tmp_path):
     (artifact / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
     (artifact / "diff.patch").write_text(PLAN_DIFF)
     (artifact / "changed_files.json").write_text(json.dumps(PLAN_CHANGED_FILES))
+    # The commanded finding travels in the bundle: the executor re-verifies the
+    # plan's SCOPE against it (ADR-0007), so it is an input to a gate rather than
+    # evidence, like plan.json itself.
+    (artifact / "finding.json").write_text(json.dumps(
+        {"path": "src/app.py", "line": 2, "severity": "high", "title": "t", "body": "b"}
+    ))
     return artifact
 
 
@@ -347,6 +353,46 @@ class TestMain:
         with pytest.raises(SystemExit):
             execute_plan.main()
         assert "plan rejected" in capsys.readouterr().err
+        assert calls == []
+
+    def test_a_plan_scoped_to_the_wrong_file_is_rejected_here_too(
+            self, main_env, monkeypatch, capsys):
+        # The executor re-verifies scope rather than trusting the plan job to
+        # have: it is the process holding the write credential, and ADR-0007's
+        # "the command names one finding" is only a property if the gate at the
+        # credential reads it. A plan patching another changed file passes frame,
+        # denylist, ordering and anchoring — scope is the only thing refusing it.
+        (main_env / "plan.json").write_text(json.dumps({"steps": [{
+            "id": "s0", "kind": "suggest",
+            "args": {"path": "src/util.py", "line": 1, "old": "def check(path):\n",
+                     "new": "def check(path=None):\n", "note": "make path optional"},
+        }]}))
+        calls = stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "commanded finding" in capsys.readouterr().err
+        assert calls == []
+
+    def test_a_bundle_with_no_commanded_finding_is_refused(self, main_env, monkeypatch, capsys):
+        # Fail-closed on the missing input, read_model_stamp's rule: a plan whose
+        # commanded finding is unknown cannot have its scope checked, and
+        # proceeding would silently restore the prompt-only enforcement.
+        (main_env / "finding.json").unlink()
+        calls = stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "finding.json" in capsys.readouterr().err
+        assert calls == []
+
+    def test_a_tampered_finding_cannot_widen_the_scope(self, main_env, monkeypatch, capsys):
+        # The bundle is the plan job's output, so its finding gets the same
+        # artifact-element check plan_loop applies — a "finding" that is not one
+        # cannot be used to authorise a fix.
+        (main_env / "finding.json").write_text(json.dumps({"path": "src/app.py"}))
+        calls = stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "missing keys" in capsys.readouterr().err
         assert calls == []
 
     def test_disproved_plan_never_reaches_the_network(self, main_env, monkeypatch, capsys, stub_prover, tmp_path):

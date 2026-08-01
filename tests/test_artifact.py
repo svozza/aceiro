@@ -110,7 +110,7 @@ class TestFencing:
         (context / "finding.json").write_text(json.dumps({
             "path": "src/a.py", "line": 1, "severity": "high", "title": "real", "body": "the real one",
         }))
-        message = plan_loop.build_plan_user_message(context)
+        message = plan_loop.build_plan_user_message(context, POLICY)
         assert message.count("<commanded_finding>") == 1
         assert message.count("</commanded_finding>") == 1
         assert "setup.py" not in message.split("</commanded_finding>")[0]

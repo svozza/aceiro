@@ -11,6 +11,7 @@ import sys
 
 import pytest
 
+import github_api
 import post
 from conftest import CHANGED_FILES, POLICY, SAMPLE_DIFF
 from verify import verify
@@ -122,12 +123,19 @@ class TestRender:
 
 class TestResolveBotLogin:
     def stub_graphql(self, monkeypatch, response, calls=None):
-        def fake_api_json(path, method="GET", payload=None):
+        """Stub the TRANSPORT, not github_api.graphql.
+
+        Stubbing the response dict one layer higher is what hid this call site
+        bypassing graphql() and its errors-array check: both paths looked
+        identical in tests while only one inspected `errors`. Patched at
+        api_request so the real graphql() runs.
+        """
+        def fake_api_request(path, method="GET", payload=None, accept=None):
             if calls is not None:
                 calls.append({"path": path, "method": method, "payload": payload})
-            return response
+            return json.dumps(response).encode()
 
-        monkeypatch.setattr(post, "api_json", fake_api_json)
+        monkeypatch.setattr(github_api, "api_request", fake_api_request)
 
     def test_resolves_viewer_login_via_graphql(self, monkeypatch):
         # The one identity call every token type answers: REST /user is 403
@@ -136,8 +144,14 @@ class TestResolveBotLogin:
         calls = []
         self.stub_graphql(monkeypatch, {"data": {"viewer": {"login": "github-actions[bot]"}}}, calls)
         assert post.resolve_bot_login() == "github-actions[bot]"
+        # `variables` because this goes through github_api.graphql, which always
+        # sends the pair — the same shape the minimize mutation sends.
         assert calls == [
-            {"path": "/graphql", "method": "POST", "payload": {"query": post.VIEWER_LOGIN_QUERY}},
+            {
+                "path": "/graphql",
+                "method": "POST",
+                "payload": {"query": post.VIEWER_LOGIN_QUERY, "variables": {}},
+            },
         ]
 
     def test_app_bot_login_is_used_verbatim(self, monkeypatch):
@@ -163,6 +177,30 @@ class TestResolveBotLogin:
         # Guessing an identity here means the executor may edit comments it
         # does not own; every malformed shape must exit, not default.
         self.stub_graphql(monkeypatch, response)
+        with pytest.raises(SystemExit):
+            post.resolve_bot_login()
+
+    def test_a_partially_errored_response_is_not_a_success(self, monkeypatch):
+        # GraphQL returns HTTP 200 with an `errors` array rather than an error
+        # status, so a response can carry a usable login AND an error. This path
+        # bypassed graphql() and never looked at `errors`, while the same
+        # response through graphql() raises — the divergence the errors-array
+        # check exists to prevent, invisible because the tests stubbed the
+        # response dict rather than the transport.
+        self.stub_graphql(monkeypatch, {
+            "data": {"viewer": {"login": "github-actions[bot]", "databaseId": None}},
+            "errors": [{"message": "databaseId: insufficient scope"}],
+        })
+        with pytest.raises(SystemExit):
+            post.resolve_bot_login()
+
+    def test_both_graphql_call_sites_share_the_errors_check(self, monkeypatch):
+        # The property, not the instance: whichever way identity is resolved, it
+        # goes through the one helper that inspects `errors`.
+        errored = {"data": {"viewer": {"login": "x[bot]"}}, "errors": [{"message": "nope"}]}
+        self.stub_graphql(monkeypatch, errored)
+        with pytest.raises(RuntimeError, match="nope"):
+            github_api.graphql(post.VIEWER_LOGIN_QUERY, {})
         with pytest.raises(SystemExit):
             post.resolve_bot_login()
 
@@ -194,10 +232,20 @@ def comment(cid, body, login=BOT_LOGIN):
     return {"id": cid, "body": body, "user": {"login": login}}
 
 
+def own_comment(cid, tail="old review", login=BOT_LOGIN):
+    """A comment shaped as render() writes one: the marker is the FIRST LINE.
+
+    Fixtures used to put it mid-body (`f"old {post.MARKER}"`), which is exactly
+    the shape a comment merely QUOTING the marker has — so the fixture encoded
+    the substring match rather than the ownership property.
+    """
+    return comment(cid, f"{post.MARKER}\n{tail}", login=login)
+
+
 class TestUpsertComment:
     def test_updates_existing_bot_comment(self, capture_api):
         calls, set_pages = capture_api
-        set_pages([[comment(42, f"old {post.MARKER}")]])
+        set_pages([[own_comment(42)]])
         post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
         assert len(calls) == 1
         assert calls[0]["method"] == "PATCH"
@@ -207,7 +255,7 @@ class TestUpsertComment:
     def test_marker_with_wrong_author_is_ignored(self, capture_api):
         # Hijack guard: anyone can paste the marker; only the bot's comment is ours.
         calls, set_pages = capture_api
-        set_pages([[comment(99, f"forged {post.MARKER}", login="attacker")]])
+        set_pages([[own_comment(99, "forged", login="attacker")]])
         post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
         assert calls[0]["method"] == "POST"
         assert "/issues/1/comments" in calls[0]["path"]
@@ -217,9 +265,94 @@ class TestUpsertComment:
         # old github-actions[bot] comment carries the right marker but is no
         # longer OURS to edit. A hardcoded login would have hijacked it.
         calls, set_pages = capture_api
-        set_pages([[comment(42, f"old review {post.MARKER}", login="github-actions[bot]")]])
+        set_pages([[own_comment(42, login="github-actions[bot]")]])
         post.upsert_comment("o/r", 1, "new body", bot_login="my-review-app[bot]")
         assert calls[0]["method"] == "POST", "edited a comment authored by a different identity"
+
+    def test_duplicates_are_reconciled_down_to_one_live_review(self, capture_api):
+        # Two runs that both paginated before either POSTed leave two owned
+        # comments, and the loser stays stale indefinitely — nothing ever looked
+        # for a second one. The workflow's per-PR concurrency group stops the race
+        # arising; this is what repairs a PR where it already did (a pre-group run,
+        # a cancelled run mid-POST, or a consumer without the group).
+        calls, set_pages = capture_api
+        set_pages([[own_comment(10, "first run"), own_comment(11, "second run")]])
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
+        patched = {c["path"].rsplit("/", 1)[1]: c["payload"]["body"] for c in calls}
+        assert set(patched) == {"10", "11"}, "a duplicate owned comment was left in place"
+        assert patched["10"] == "new body", "the oldest owned comment is the one that carries the review"
+        assert patched["11"] == post.DUPLICATE_NOTICE
+
+    def test_the_retired_duplicate_stops_being_matched(self, capture_api):
+        # The retirement must actually give up ownership, or the next run finds
+        # the same duplicate and the PR never converges.
+        calls, set_pages = capture_api
+        store = [own_comment(10, "first"), own_comment(11, "second")]
+        set_pages([store])
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
+        retired = next(c["payload"]["body"] for c in calls if c["path"].endswith("/11"))
+        assert retired.split("\n", 1)[0].strip() != post.MARKER
+
+    def test_a_single_comment_is_not_touched_twice(self, capture_api):
+        # Calibration: the ordinary case must stay one PATCH.
+        calls, set_pages = capture_api
+        set_pages([[own_comment(42)]])
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
+        assert len(calls) == 1
+
+    def test_a_comment_merely_quoting_the_marker_is_not_ours(self, capture_api):
+        # A substring match owned any comment CONTAINING the marker, including one
+        # discussing it. render() writes the marker as the first line, so that is
+        # the canonical form, and a quotation is not it.
+        calls, set_pages = capture_api
+        set_pages([[comment(1, f"See the marker {post.MARKER} which identifies our comment")]])
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
+        assert calls[0]["method"] == "POST", "PATCHed a comment that only mentions the marker"
+
+    def test_the_real_comment_wins_over_one_quoting_the_marker(self, capture_api):
+        # Ordering matters: the quoting comment is older, so a substring match
+        # found it first and replaced IT, leaving the real review up and stale.
+        calls, set_pages = capture_api
+        set_pages([[comment(1, f"docs mention {post.MARKER}"), own_comment(2)]])
+        post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
+        assert calls[0]["method"] == "PATCH"
+        assert "/comments/2" in calls[0]["path"]
+
+    @pytest.mark.parametrize("marker", ["", "   ", "\n"], ids=["empty", "blank", "newline"])
+    def test_an_empty_or_blank_marker_is_refused(self, capture_api, marker):
+        # A consumer passing --marker "" made every comment ours: `"" in body` is
+        # always true, so the first bot comment on the PR was replaced with the
+        # review. Refused rather than matched, since there is no honest reading of
+        # "identify my comment by nothing".
+        calls, set_pages = capture_api
+        set_pages([[comment(1, "an unrelated bot comment")]])
+        with pytest.raises(SystemExit):
+            post.upsert_comment("o/r", 1, "new body", marker, bot_login=BOT_LOGIN)
+        assert calls == []
+
+    def test_a_multiline_marker_is_refused(self, capture_api):
+        # render() writes the marker on one line, so a marker containing a
+        # newline can never BE the first line it writes — it would search forever
+        # for a comment it does not post and create a new one every run.
+        calls, set_pages = capture_api
+        set_pages([[comment(1, "unrelated")]])
+        with pytest.raises(SystemExit):
+            post.upsert_comment("o/r", 1, "new body", "<!-- a\nb -->", bot_login=BOT_LOGIN)
+        assert calls == []
+
+    def test_the_marker_render_writes_is_the_marker_that_matches(self, capture_api):
+        # The property tying the two halves together: whatever render() puts on
+        # line 1 is what find_own_comment recognises. A custom marker included.
+        calls, set_pages = capture_api
+        custom = "<!-- second-generator -->"
+        body = post.render(
+            {"summary": "s", "findings": [], "residual_risk": ""}, METADATA, SEVERITY_ORDER,
+            custom, "Second Generator",
+        )
+        set_pages([[comment(5, body)]])
+        post.upsert_comment("o/r", 1, "new body", custom, bot_login=BOT_LOGIN)
+        assert calls[0]["method"] == "PATCH"
+        assert "/comments/5" in calls[0]["path"]
 
     def test_no_marker_creates_new(self, capture_api):
         calls, set_pages = capture_api
@@ -229,8 +362,8 @@ class TestUpsertComment:
 
     def test_finds_bot_comment_across_pages(self, capture_api):
         calls, set_pages = capture_api
-        page1 = [comment(1, "chatter"), comment(2, f"forged {post.MARKER}", login="someone")]
-        page2 = [comment(3, f"ours {post.MARKER}")]
+        page1 = [comment(1, "chatter"), own_comment(2, "forged", login="someone")]
+        page2 = [own_comment(3, "ours")]
         set_pages([page1, page2])
         post.upsert_comment("o/r", 1, "new body", bot_login=BOT_LOGIN)
         assert calls[0]["method"] == "PATCH"
@@ -243,7 +376,7 @@ class TestUpsertComment:
         # must find only its own comment. Searching with the default marker while a
         # sibling's comment is present would PATCH the sibling's review away.
         calls, set_pages = capture_api
-        set_pages([[comment(42, f"the incumbent's review {post.MARKER}")]])
+        set_pages([[own_comment(42, "the incumbent's review")]])
         post.upsert_comment("o/r", 1, "new body", self.HANDROLLED, bot_login=BOT_LOGIN)
         assert calls[0]["method"] == "POST", "hijacked another generator's comment instead of creating its own"
 
@@ -251,7 +384,10 @@ class TestUpsertComment:
         # Both comments present, as on any real PR after the first run: each
         # generator must PATCH its own id and leave the other alone.
         calls, set_pages = capture_api
-        both = [comment(10, f"incumbent {post.MARKER}"), comment(11, f"handrolled {self.HANDROLLED}")]
+        both = [
+            comment(10, f"{post.MARKER}\nincumbent"),
+            comment(11, f"{self.HANDROLLED}\nhandrolled"),
+        ]
 
         set_pages([list(both)])
         post.upsert_comment("o/r", 1, "x", bot_login=BOT_LOGIN)
@@ -312,12 +448,19 @@ def stub_pr_shas(monkeypatch, *responses):
     remaining = list(responses)
 
     def fake_api_json(path, method="GET", payload=None):
-        if path == "/graphql":
-            return {"data": {"viewer": {"login": BOT_LOGIN}}}
         head, base_ref = remaining.pop(0) if len(remaining) > 1 else remaining[0]
         return {"head": {"sha": head}, "base": {"ref": base_ref, "sha": "live-base-tip"}}
 
     monkeypatch.setattr(post, "api_json", fake_api_json)
+    stub_viewer(monkeypatch)
+
+
+def stub_viewer(monkeypatch, login=None):
+    """Identity resolution at the TRANSPORT, since resolve_bot_login goes through
+    github_api.graphql for its errors-array check. Stubbing post.api_json cannot
+    reach it, which is the point of routing it there."""
+    payload = {"data": {"viewer": {"login": login or BOT_LOGIN}}}
+    monkeypatch.setattr(github_api, "api_request", lambda *a, **k: json.dumps(payload).encode())
 
 
 UNMOVED = ("reviewed-sha", "main")
@@ -342,8 +485,6 @@ def stub_comment_store(monkeypatch, *responses, after_write=None):
             after_write(store)
 
     def fake_api_json(path, method="GET", payload=None):
-        if path == "/graphql":
-            return {"data": {"viewer": {"login": BOT_LOGIN}}}
         if method == "PATCH":
             cid = int(path.rsplit("/", 1)[1])
             next(c for c in store if c["id"] == cid)["body"] = payload["body"]
@@ -358,6 +499,7 @@ def stub_comment_store(monkeypatch, *responses, after_write=None):
 
     monkeypatch.setattr(post, "api_json", fake_api_json)
     monkeypatch.setattr(post, "paginate", lambda _p: iter([list(store)]))
+    stub_viewer(monkeypatch)
     return store
 
 
@@ -389,11 +531,15 @@ class TestMain:
         # executor must not guess -- guessing decides which comments it may
         # edit. Verification and the TOCTOU pre-check pass; identity fails.
         def fake_api_json(path, method="GET", payload=None):
-            if path == "/graphql":
-                return {"errors": [{"message": "something upstream broke"}]}
             return {"head": {"sha": "reviewed-sha"}, "base": {"ref": "main", "sha": "live-base-tip"}}
 
         monkeypatch.setattr(post, "api_json", fake_api_json)
+        # The errors array, at the transport: an errored 200 is what a GraphQL
+        # failure looks like, and it must not yield an identity.
+        monkeypatch.setattr(
+            github_api, "api_request",
+            lambda *a, **k: json.dumps({"errors": [{"message": "something upstream broke"}]}).encode(),
+        )
         posted = []
         monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
 
@@ -569,12 +715,14 @@ class TestMain:
         body = post.render(valid_artifact, metadata, {"medium": 0, "high": 1, "low": 2, "critical": 3})
         assert post.sha_stamp("abc123") in body
 
-    def test_stale_notice_passes_the_markdown_policy(self):
-        # The withdrawal body is static, but it must never be the one piece
-        # of posted text outside the safe grammar.
+    @pytest.mark.parametrize("notice", ["STALE_NOTICE", "DUPLICATE_NOTICE"])
+    def test_every_static_notice_passes_the_markdown_policy(self, notice):
+        # These bodies are static, but neither may be the one piece of posted text
+        # outside the safe grammar — parametrized so a third notice joins the rule
+        # rather than escaping it.
         from verify import check_markdown_field
 
-        check_markdown_field(post.STALE_NOTICE, POLICY["markdown"], "stale_notice")
+        check_markdown_field(getattr(post, notice), POLICY["markdown"], notice.lower())
 
 
 class TestModelStamp:

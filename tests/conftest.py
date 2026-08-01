@@ -1,3 +1,4 @@
+import copy
 import json
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ diff --git a/aws_lambda_powertools/logging/logger.py b/aws_lambda_powertools/log
 index 1111111..2222222 100644
 --- a/aws_lambda_powertools/logging/logger.py
 +++ b/aws_lambda_powertools/logging/logger.py
-@@ -10,7 +10,9 @@ import os
+@@ -10,5 +10,7 @@ import os
  import logging
 
 
@@ -75,9 +76,22 @@ POLICY["markdown"]["link_host_allowlist"] = [
 ]
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def policy():
-    return POLICY
+    """A fresh deep copy per test.
+
+    Function-scoped and copied, because session-scoped handed every test the same
+    mutable dict — and this dict, the one a dozen modules also import as POLICY
+    directly. A test doing `policy['markdown']['link_host_allowlist'] = []` (the
+    natural way to write a fail-closed case) emptied the allowlist for every test
+    that ran after it, so the goldens asserting a legitimate link is ACCEPTED
+    would fail, or a rejection-only test would pass while asserting nothing. The
+    symptom is a test that passes alone and fails in the suite, which is the
+    hardest kind to place.
+
+    Deep, not shallow: every interesting mutation is on a nested dict.
+    """
+    return copy.deepcopy(POLICY)
 
 
 @pytest.fixture

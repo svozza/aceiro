@@ -78,3 +78,42 @@ joiner. The generator retries with plain text, which is the outcome we want.
   so `suggest.note` and `open_pr.body` get the same rule. Patch `old`/`new` do
   NOT: they are file bytes, anchored raw per ADR-0005, and an anchor that
   normalized would stop proving the model read the file.
+
+## Addendum: the checked GRAMMAR is the rendered grammar
+
+The same defect had a second form, in the parser rather than in the string. The
+verifier parsed with markdown-it's bare `commonmark` preset, under which
+
+    | Status | Verdict |
+    |---|---|
+    | Security review | APPROVED |
+
+is a single paragraph of text. Every node it produces — `paragraph`, `inline`,
+`text` — is on `allowed_nodes`, so it verified clean, and GitHub then rendered an
+authoritative-looking table inside a comment whose structure is supposed to come
+only from `post.py`'s fixed template. That is `TestImpersonation`'s threat exactly
+— the fake `## SYSTEM NOTICE` heading and the fake `> [!WARNING]` alert box —
+reached by a route the parser could not see.
+
+The equality this ADR enforces is between the checked text and the posted text.
+The parser is where that equality is decided, so it has to be an equality about
+the *renderer*: **a construct GitHub renders structurally must be a construct this
+parser produces a node for.** A rule the parser does not implement is not a
+construct that cannot appear; it is a construct that appears unchecked.
+
+So GFM extensions are enabled *in order to reject them*, which reads backwards
+until the direction is stated. `table` is enabled and `table_open` is not on the
+allowlist and never will be. Enabling `strikethrough` was the same decision
+resolved the other way — the node exists, and `s` is on the allowlist as
+**allowed**. Both are policy decisions about a rendered construct; neither is a
+parser-configuration detail.
+
+The rule that follows: adding a GFM extension to the parser requires asking both
+halves — does GitHub render it, and is the resulting node allowed or refused? A
+GFM construct in neither the parser nor the allowlist is the gap this addendum
+closes, and it is silent, because the text verifies as prose.
+
+Rejecting rather than escaping, for this ADR's own reason: escaping the pipes
+would post something the verifier never saw. The calibration cost is bounded and
+tested — a table needs its delimiter row, so a shell pipeline, a `int | None`
+union and a regex alternation in prose are all still accepted.

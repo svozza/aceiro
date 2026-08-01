@@ -302,7 +302,21 @@ def walk_tokens(tokens, allowed: set[str], link_allowlist: list[str], where: str
 
 
 # Stateless across parse() calls; construction is the expensive part.
-_PARSER = MarkdownIt("commonmark").enable(["strikethrough"])
+#
+# GFM extensions are enabled so the allowlist walk can REJECT them, which is the
+# opposite of what enabling a rule usually means. The target renderer is GitHub,
+# and canonicalization is "what will the target environment actually render this
+# as" — so a construct GitHub renders structurally has to be a construct this
+# parser SEES. Under bare "commonmark", `| Status | Verdict |` / `|---|---|` is
+# paragraph prose whose every node is on the allowlist: it verified, and GitHub
+# then rendered an authoritative-looking table. Producing the token makes it
+# `table_open`, which is not on the allowlist and never will be.
+#
+# Same reasoning as strikethrough, which was enabled first and put `s` on the
+# allowlist as an ALLOWED node. Adding a rule here is therefore a policy decision
+# in both directions, and a new GFM extension needs the same question asked:
+# does GitHub render it, and is the node allowed or refused?
+_PARSER = MarkdownIt("commonmark").enable(["strikethrough", "table"])
 
 
 # A line the executor appends is probed against the real parser rather than
