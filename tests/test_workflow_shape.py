@@ -116,6 +116,29 @@ def job_condition(text: str, job: str) -> str:
     return " ".join(" ".join(parts).split())
 
 
+def job_environment(text: str, job: str) -> str | None:
+    """One job's `environment:` value, or None.
+
+    Job-level only: a `steps:` entry is more deeply indented and a step has no
+    environment key, so the first match at the job's own key depth is the job's.
+    """
+    indent = None
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        current = len(raw) - len(raw.lstrip())
+        stripped = raw.strip()
+        if indent is None:
+            if stripped == f"{job}:":
+                indent = current
+            continue
+        if current <= indent:
+            break
+        if stripped.startswith("environment:"):
+            return stripped[len("environment:"):].strip()
+    return None
+
+
 def untrusted_checkout_index(steps) -> int:
     """Index of the step checking out the PR's own head, or -1.
 
@@ -181,6 +204,52 @@ class TestEvalsApprovalGate:
         assert "ai-pr-review" in joined
         assert "trusted" in joined  # AUTHOR_TRUSTED from eval_author_trust
         assert "draft" in joined.lower()  # PR_DRAFT
+
+
+class TestTheGateJobWaitsAtTheEnvironmentTheWorkerVerifies:
+    """The in-code assertion and the job that actually waits must name ONE
+    environment.
+
+    environment_gate.py asks whether GATE_ENVIRONMENT carries required
+    reviewers. It cannot ask whether THIS run waited at one -- so if the gate
+    job's `environment:` is some other environment, the check passes on the
+    reviewed environment's rules while the run waited at an environment with
+    none. That is failure 4 of the ADR-0006 addendum, and every step-ordering
+    assertion in this file stays green through it: they read the worker's step
+    list, and this is a fact about a different job.
+    """
+
+    # (workflow, gate job, worker job). The worker is where GATE_ENVIRONMENT is
+    # set; the gate job is the one whose `environment:` makes the run wait.
+    LANES = [
+        ("evals.yml", "eval_approve", "evals"),
+        ("ai-pr-review.yml", "approve", "review"),
+    ]
+
+    @pytest.mark.parametrize("workflow,gate_job,worker_job", LANES)
+    def test_the_gate_job_environment_is_the_asserted_one(self, workflow, gate_job, worker_job):
+        text = (WORKFLOWS / workflow).read_text()
+        declared = [
+            step[key]
+            for step in parse_steps(text, worker_job)
+            for key in step
+            if key.endswith("GATE_ENVIRONMENT")
+        ]
+        assert declared, f"{workflow} job {worker_job!r} sets no GATE_ENVIRONMENT"
+        waited_at = job_environment(text, gate_job)
+        assert waited_at == declared[0], (
+            f"{workflow}: {worker_job!r} asserts protection rules on {declared[0]!r} while "
+            f"{gate_job!r} waits at {waited_at!r}. A run can then satisfy needs.{gate_job}.result "
+            "without any human having approved it, and the in-code gate still passes."
+        )
+
+    @pytest.mark.parametrize("workflow,gate_job,worker_job", LANES)
+    def test_the_worker_does_not_wait_at_the_gate_environment(self, workflow, gate_job, worker_job):
+        # The two must differ: the worker holds the credential, so if it waited
+        # at the reviewed environment every run would need a second approval,
+        # and a maintainer would "fix" that by loosening the gate's rules.
+        text = (WORKFLOWS / workflow).read_text()
+        assert job_environment(text, worker_job) != job_environment(text, gate_job)
 
 
 class TestNoUntrustedInfluencedCache:
