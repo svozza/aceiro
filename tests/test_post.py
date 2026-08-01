@@ -292,6 +292,12 @@ def main_env(tmp_path, monkeypatch, artifact_dir):
         "argv",
         ["post.py", "--artifact-dir", str(artifact_dir), "--policy", str(policy_path), "--prompt", str(prompt_path)],
     )
+    # The executor fetches its own provenance inputs; the network stands in for
+    # a PR whose real changes are conftest's sample diff. Tests about the fetch
+    # itself override this.
+    monkeypatch.setattr(
+        post, "fetch_anchored_pair", lambda repo, base, head: (SAMPLE_DIFF.encode(), list(CHANGED_FILES)),
+    )
     return artifact_dir, policy_path
 
 
@@ -492,6 +498,51 @@ class TestMain:
 
         assert "withdrawn" not in store[0]["body"]
         assert "the pushed-sha run's review" in store[0]["body"]
+
+    def test_provenance_is_checked_against_the_fetched_diff_not_the_bundles(
+        self, main_env, monkeypatch, artifact_dir, valid_artifact
+    ):
+        # post.py's docstring says it trusts nothing from the review job. The
+        # diff and the changed-file list are two of verify()'s three inputs, so
+        # a bundle claiming a file the PR never touched must not make a finding
+        # on that file provenant.
+        forged_path = "src/never_touched.py"
+        artifact = json.loads(json.dumps(valid_artifact))
+        artifact["findings"] = [finding(path=forged_path, line=1)]
+        (artifact_dir / "review.json").write_text(json.dumps(artifact))
+        (artifact_dir / "diff.patch").write_text(
+            f"diff --git a/{forged_path} b/{forged_path}\n"
+            f"--- a/{forged_path}\n+++ b/{forged_path}\n@@ -1,1 +1,1 @@\n+forged\n"
+        )
+        (artifact_dir / "changed_files.json").write_text(json.dumps([forged_path]))
+
+        stub_comment_store(monkeypatch, UNMOVED)
+        # The first-party fetch reports what the PR really changed.
+        monkeypatch.setattr(
+            post, "fetch_anchored_pair",
+            lambda repo, base, head: (SAMPLE_DIFF.encode(), list(CHANGED_FILES)),
+        )
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
+
+        with pytest.raises(SystemExit):
+            post.main()
+        assert posted == [], "posted a finding on a file the PR never changed"
+
+    def test_the_fetched_pair_is_anchored_to_the_reviewed_shas(self, main_env, monkeypatch):
+        # The executor must ask about the SAME comparison the review described;
+        # anchoring its own fetch anywhere else re-verifies a different diff.
+        asked = {}
+
+        def fake_fetch(repo, base, head):
+            asked.update(repo=repo, base=base, head=head)
+            return SAMPLE_DIFF.encode(), list(CHANGED_FILES)
+
+        stub_comment_store(monkeypatch, UNMOVED)
+        monkeypatch.setattr(post, "fetch_anchored_pair", fake_fetch)
+        post.main()
+
+        assert asked == {"repo": "o/r", "base": "reviewed-base", "head": "reviewed-sha"}
 
     def test_the_footer_carries_the_stamp_the_withdrawal_searches_for(self, valid_artifact):
         # The two must not drift: a rendered footer the withdrawal cannot

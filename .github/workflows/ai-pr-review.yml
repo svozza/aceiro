@@ -327,7 +327,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/bundle"
           cp "$RUNNER_TEMP/review-output/"* "$RUNNER_TEMP/bundle/" 2>/dev/null || true
-          # pr.json included so the exact model input is reconstructible.
+          # pr.json included so the exact model input is reconstructible. The
+          # diff and file list travel as evidence only: post.py re-fetches both
+          # rather than verifying against these copies.
           cp "$RUNNER_TEMP/context/diff.patch" \
              "$RUNNER_TEMP/context/changed_files.json" \
              "$RUNNER_TEMP/context/pr.json" \
@@ -349,6 +351,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      # contents:read is what re-fetching the SHA-anchored diff needs. The
+      # executor re-verifies provenance against a comparison it establishes
+      # itself, because a diff supplied by the job that ran the generator makes
+      # verify()'s provenance phase only as strong as that job.
+      contents: read
       pull-requests: write
     steps:
       # The verifier MUST come from the pinned harness, never the artifact

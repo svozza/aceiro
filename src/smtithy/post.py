@@ -1,10 +1,14 @@
 """Trusted executor: verify, render via a fixed template, upsert one comment.
 
 Runs in the post job (the only job holding `pull-requests: write`). Trusts
-nothing from the review job: re-runs the verifier here, re-checks the PR head
-SHA still equals the reviewed SHA (TOCTOU guard), then renders the artifact
-through a fixed template and upserts a single sticky comment identified by a
-hidden HTML marker.
+nothing from the review job: re-runs the verifier here against provenance
+inputs it fetches itself (the SHA-anchored diff and changed-file list, not the
+bundle's copies of them), re-checks the PR head SHA still equals the reviewed
+SHA (TOCTOU guard), then renders the artifact through a fixed template and
+upserts a single sticky comment identified by a hidden HTML marker.
+
+The artifact is the one thing that must come from the bundle, being the review
+job's output. Everything the artifact is CHECKED against is first-party.
 
 Any verifier rejection or SHA mismatch: nothing is posted, exit non-zero.
 
@@ -41,7 +45,8 @@ from pathlib import Path
 from typing import cast
 
 from github_api import api_json, fail, paginate
-from canonicalize import read_contributor_text, read_harness_text
+from canonicalize import decode_contributor_bytes, read_harness_text
+from prepare_context import fetch_anchored_pair
 from verify import Rejection, verify
 
 # The incumbent's marker and heading. Defaults, so a caller passing neither posts
@@ -253,10 +258,17 @@ def main() -> None:
     reviewed_base = os.environ["BASE_SHA"]
 
     artifact = json.loads(read_harness_text(args.artifact_dir / "review.json"))
-    diff_text = read_contributor_text(args.artifact_dir / "diff.patch")
-    changed_files = json.loads(read_harness_text(args.artifact_dir / "changed_files.json"))
     policy_text = read_harness_text(args.policy)
     policy = json.loads(policy_text)
+
+    # The provenance inputs are re-fetched, not read from the bundle. The
+    # artifact must come from the review job -- it IS that job's output -- but
+    # the diff and the changed-file list are facts about the PR that this job's
+    # own token can establish, and re-verifying against the bundle's copies
+    # would make the provenance phase only as strong as the job it distrusts.
+    # The bundle copies stay in the artifact as reproducibility evidence.
+    diff_bytes, changed_files = fetch_anchored_pair(repo, reviewed_base, reviewed_sha)
+    diff_text = decode_contributor_bytes(diff_bytes)
 
     # Verification happens HERE, where the write token lives. Job 2's claims
     # about having verified anything are not trusted.

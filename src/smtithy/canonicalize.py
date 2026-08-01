@@ -68,20 +68,27 @@ def strip_invisible(text: str) -> str:
     return "".join(ch for ch in text if not is_invisible(ch))
 
 
-def read_contributor_text(path: Path) -> str:
-    """Decode a file whose bytes a contributor controls — the diff, above all.
+def decode_contributor_bytes(data: bytes) -> str:
+    """Decode bytes a contributor controls — the diff, above all.
 
     Explicit UTF-8 with errors="replace", never the platform default: the diff is
-    written as raw bytes in whatever encoding the changed files use, so a latin-1
-    byte would otherwise raise UnicodeDecodeError out of context assembly, and
-    under a POSIX/C locale the effective codec is ASCII. U+FFFD in a diff line is
-    a reviewable defect; a crashed job with no logged reason is not.
+    raw bytes in whatever encoding the changed files use, so a latin-1 byte would
+    otherwise raise UnicodeDecodeError out of context assembly, and under a
+    POSIX/C locale the effective codec is ASCII. U+FFFD in a diff line is a
+    reviewable defect; a crashed job with no logged reason is not.
 
     Replacement is safe for the checks downstream because provenance compares
     LINE NUMBERS, and anchoring compares raw bytes read from the tree rather than
     anything decoded here.
     """
-    return path.read_text(encoding="utf-8", errors="replace")
+    return data.decode("utf-8", errors="replace")
+
+
+def read_contributor_text(path: Path) -> str:
+    """Read a file whose bytes a contributor controls, under
+    decode_contributor_bytes' discipline. Same bytes from an API response go
+    through that function directly."""
+    return decode_contributor_bytes(path.read_bytes())
 
 
 def read_harness_text(path: Path) -> str:

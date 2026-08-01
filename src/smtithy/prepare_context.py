@@ -22,6 +22,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import cast
 
 from diff_map import split_diff_lines, unquote_path, walk_diff
 from github_api import api_json, api_request, fail
@@ -90,6 +91,34 @@ def assert_diff_and_list_agree(diff: bytes, changed_files: list[str]) -> None:
         )
 
 
+def fetch_anchored_pair(repo: str, base_sha: str, head_sha: str) -> tuple[bytes, list[str]]:
+    """The diff and the changed-file list for base_sha...head_sha, capped and
+    asserted to describe the same comparison.
+
+    The provenance inputs verify() takes, produced from first-party API calls.
+    Exported because the executor re-derives them rather than trusting the
+    review job's copies: a re-verification whose diff comes from the job it
+    distrusts can only re-check the phases that do not read the diff.
+    """
+    compare_path = f"/repos/{repo}/compare/{base_sha}...{head_sha}"
+    diff = api_request(compare_path, accept="application/vnd.github.diff")
+    if len(diff) > MAX_DIFF_BYTES:
+        fail(f"diff is {len(diff)} bytes (cap {MAX_DIFF_BYTES}); no review")
+
+    # From the SAME anchored comparison as the diff, never /pulls/{n}/files: that
+    # endpoint recomputes against the base branch's CURRENT tip, which may have
+    # advanced while the run sat at the approval gate.
+    compare = cast("dict", api_json(compare_path))
+    changed_files = [item["filename"] for item in compare.get("files", [])]
+    # The endpoint returns at most 300 files per page, so a PR over the cap
+    # yields a truncated list, which the assertion below also catches.
+    if len(changed_files) > MAX_CHANGED_FILES:
+        fail(f"compare lists {len(changed_files)} files (cap {MAX_CHANGED_FILES}); no review")
+
+    assert_diff_and_list_agree(diff, changed_files)
+    return diff, changed_files
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True, type=Path)
@@ -110,23 +139,7 @@ def main() -> None:
     if pr["changed_files"] > MAX_CHANGED_FILES:
         fail(f"PR changes {pr['changed_files']} files (cap {MAX_CHANGED_FILES}); no review")
 
-    # SHA-anchored diff: compare base.sha...head SHA, immune to branch moves.
-    compare_path = f"/repos/{repo}/compare/{base_sha}...{expected_head}"
-    diff = api_request(compare_path, accept="application/vnd.github.diff")
-    if len(diff) > MAX_DIFF_BYTES:
-        fail(f"diff is {len(diff)} bytes (cap {MAX_DIFF_BYTES}); no review")
-
-    # From the SAME anchored comparison as the diff, never /pulls/{n}/files: that
-    # endpoint recomputes against the base branch's CURRENT tip, which may have
-    # advanced while the run sat at the approval gate.
-    compare = api_json(compare_path)
-    changed_files = [item["filename"] for item in compare.get("files", [])]
-    # The endpoint returns at most 300 files per page, and MAX_CHANGED_FILES is
-    # 300, enforced above; a truncated list would also trip the assertion below.
-    if len(changed_files) > MAX_CHANGED_FILES:
-        fail(f"compare lists {len(changed_files)} files (cap {MAX_CHANGED_FILES}); no review")
-
-    assert_diff_and_list_agree(diff, changed_files)
+    diff, changed_files = fetch_anchored_pair(repo, base_sha, expected_head)
 
     # TOCTOU recheck: the head must not have moved during collection.
     if fetch_pr(repo, pr_number)["head"]["sha"] != expected_head:
