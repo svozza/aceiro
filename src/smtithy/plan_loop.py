@@ -42,7 +42,14 @@ from artifact import (
     sha256,
 )
 from canonicalize import read_contributor_text, read_harness_text
-from cc_loop import MAX_SUBMISSIONS, configured_model, drive_session, make_submit_tool, tool_guidance
+from cc_loop import (
+    MAX_SUBMISSIONS,
+    configured_model,
+    drive_session,
+    fail,
+    make_submit_tool,
+    tool_guidance,
+)
 from plan_verify import tree_content_source, verify_plan
 from verify import Rejection, check_markdown_field, check_scalar, markdown_fields
 

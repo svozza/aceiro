@@ -513,3 +513,50 @@ class TestRunWiring:
         prompt = query.calls[0].system_prompt
         assert "powertools-lambda-python" in prompt
         assert prompt.startswith(PLAN_PROMPT)
+
+
+class TestUnassemblableContextIsLogged:
+    """Every arm of run()'s context handler reaches the transcript.
+
+    Asserted on the run_failed RECORD rather than the return code: an
+    uncaught exception also exits non-zero, so a returncode-only test cannot
+    tell a logged refusal from a traceback past an open transcript.
+    """
+
+    def scenario(self, tmp_path):
+        return TestRunWiring().scenario(tmp_path)
+
+    def reasons(self, out):
+        events = [json.loads(line) for line in (out / "transcript.jsonl").read_text().splitlines()]
+        return [e["reason"] for e in events if e["event"] == "run_failed"]
+
+    def test_a_malformed_commanded_finding_is_logged(self, tmp_path, monkeypatch):
+        # The Rejection arm 27c78f2 added: a finding that is not the shape it
+        # claims to be.
+        context, pr_root = self.scenario(tmp_path)
+        (context / "finding.json").write_text(json.dumps({"bogus": "x"}))
+        monkeypatch.setattr(cc_loop, "query", fake_query([[result_message()]]))
+        out = tmp_path / "out"
+        assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
+        assert not (out / "plan.json").exists()
+        assert any("cannot assemble the plan context" in r for r in self.reasons(out))
+
+    def test_an_unreadable_context_file_is_logged(self, tmp_path, monkeypatch):
+        # The OSError arm, reached by removing a file the assembly reads.
+        context, pr_root = self.scenario(tmp_path)
+        (context / "finding.json").unlink()
+        monkeypatch.setattr(cc_loop, "query", fake_query([[result_message()]]))
+        out = tmp_path / "out"
+        assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
+        assert any("cannot assemble the plan context" in r for r in self.reasons(out))
+
+    def test_an_undecodable_harness_file_is_logged(self, tmp_path, monkeypatch):
+        # The UnicodeError arm. It is a HARNESS file that reaches it: contributor
+        # bytes decode with errors="replace" and never raise, by
+        # decode_contributor_bytes' design, so a bad diff.patch is not this arm.
+        context, pr_root = self.scenario(tmp_path)
+        (context / "changed_files.json").write_bytes(b'["src/app.py \xff\xfe"]')
+        monkeypatch.setattr(cc_loop, "query", fake_query([[result_message()]]))
+        out = tmp_path / "out"
+        assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
+        assert any("cannot assemble the plan context" in r for r in self.reasons(out))
