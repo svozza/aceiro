@@ -156,7 +156,9 @@ jobs:
   eval_approve:
     # The human gate. Authors with write-or-above on a non-draft pull request
     # skip it; everyone else waits for a maintainer to approve the environment
-    # that actually HAS required reviewers.
+    # that actually HAS required reviewers. A draft therefore reaches the gate
+    # and, once approved, RUNS: the job below carries no draft exclusion, so
+    # this request is always one a reviewer can act on (ADR-0006 addendum §4).
     needs: eval_author_trust
     if: >-
       always()
@@ -180,9 +182,13 @@ jobs:
     # eval_author_trust rather than trusting that the gate was skipped for a good
     # reason: `skipped` alone cannot distinguish "author holds write" from "the
     # gate job itself failed to run".
+    #
+    # No draft exclusion: a draft runs behind the gate (ADR-0008), which
+    # eval_approve requests for it unconditionally. Excluding drafts here would
+    # make every draft approval request unanswerable AND leave a PR whose last
+    # push happened in draft with no eval coverage at all.
     if: >-
       always()
-      && !github.event.pull_request.draft
       && (
         github.event_name != 'pull_request_target'
         || github.event.action != 'labeled'

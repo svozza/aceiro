@@ -159,9 +159,11 @@ jobs:
   approve:
     # Human gate: resolves against the CALLER's `ai-pr-review` environment.
     # Authors with write-or-above on a non-draft PR skip it; bots never reach
-    # the review job at all. NOTE this job alone proves nothing — a missing
-    # environment passes instantly — which is why the review job re-asserts
-    # the gate in code before touching a credential.
+    # the review job at all. A draft reaches the gate and, once approved, RUNS —
+    # the review job carries no draft exclusion, so this request is always one a
+    # reviewer can act on (ADR-0006 addendum §4). NOTE this job alone proves
+    # nothing — a missing environment passes instantly — which is why the review
+    # job re-asserts the gate in code before touching a credential.
     needs: author_trust
     if: >-
       always()
@@ -181,9 +183,12 @@ jobs:
     # The skipped branch re-derives trust rather than assuming `skipped`
     # meant "trusted": skipped alone cannot tell "author holds write" from
     # "the gate job failed to run".
+    #
+    # No draft exclusion: a draft reviews behind the gate, which `approve`
+    # requests for it unconditionally. Kept in lockstep with evals.yml — the
+    # ADR-0006 addendum reads the two as a pair.
     if: >-
       always()
-      && !github.event.pull_request.draft
       && (
         needs.approve.result == 'success'
         || (

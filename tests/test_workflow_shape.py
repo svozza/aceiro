@@ -81,6 +81,41 @@ def evals_steps():
     return parse_steps((WORKFLOWS / "evals.yml").read_text(), "evals")
 
 
+def job_condition(text: str, job: str) -> str:
+    """One job's `if:` expression, whitespace-collapsed.
+
+    Block scalars (`if: >-`) are the norm for these, so the continuation lines
+    are joined; the assertions below test for substrings, not layout. A block
+    ends at the first line back at the key's own indentation.
+    """
+    indent = None
+    key_indent = None
+    parts: list[str] = []
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        current = len(raw) - len(raw.lstrip())
+        stripped = raw.strip()
+        if indent is None:
+            if stripped == f"{job}:":
+                indent = current
+            continue
+        if current <= indent:
+            break
+        if key_indent is not None:
+            if current <= key_indent:
+                break
+            parts.append(stripped)
+            continue
+        if stripped.startswith("if:"):
+            inline = stripped[3:].strip()
+            if inline in (">-", ">", "|", "|-"):
+                key_indent = current
+            else:
+                return " ".join(inline.split())
+    return " ".join(" ".join(parts).split())
+
+
 def untrusted_checkout_index(steps) -> int:
     """Index of the step checking out the PR's own head, or -1.
 
@@ -212,6 +247,68 @@ class TestQuarantineIsStrippedOfSymlinks:
             "~/.aws/credentials inside a directory the generator may Read"
         )
         assert "-delete" in quarantine
+
+
+class TestDraftSemanticsAgree:
+    """ADR-0008: "untrusted and draft authors wait at the environment's required
+    reviewer before their code runs with the credential, whatever the trigger."
+    So a draft is EVALUATED behind the gate.
+
+    Two ways to break that, both of which the code had. A gate job that fires
+    for a draft while the worker it gates excludes drafts parks an approval
+    request that can produce no run — ADR-0006 addendum §4: "a gate that fires
+    for everyone carries no information about anyone", and the cost lands on the
+    routine path, which is where people learn to click without reading. And
+    excluding drafts at all leaves the draft-to-ready transition covered by
+    nothing, since every run while the PR was a draft was skipped.
+    """
+
+    GATED = [
+        ("evals.yml", "eval_approve", "evals"),
+        ("ai-pr-review.yml", "approve", "review"),
+    ]
+
+    @pytest.mark.parametrize(("workflow", "gate", "worker"), GATED)
+    def test_a_gate_that_fires_for_drafts_gates_a_job_that_runs_them(self, workflow, gate, worker):
+        text = (WORKFLOWS / workflow).read_text()
+        gate_asks_for_drafts = "pull_request.draft" in job_condition(text, gate)
+        worker_excludes_drafts = "!github.event.pull_request.draft" in job_condition(text, worker)
+        assert not (gate_asks_for_drafts and worker_excludes_drafts), (
+            f"{workflow}: {gate!r} requests approval for a draft that {worker!r} will skip "
+            "regardless of what the reviewer clicks"
+        )
+
+    @pytest.mark.parametrize(("workflow", "gate", "worker"), GATED)
+    def test_the_worker_does_not_exclude_drafts(self, workflow, gate, worker):
+        # The other half: with drafts excluded, the ready_for_review transition
+        # would need its own trigger, because every draft-era run was skipped.
+        text = (WORKFLOWS / workflow).read_text()
+        assert "!github.event.pull_request.draft" not in job_condition(text, worker), (
+            f"{workflow}: {worker!r} excludes drafts, so a PR whose last push happened while it "
+            "was a draft merges with no coverage (ADR-0008 says drafts run behind the gate)"
+        )
+
+    def test_every_draft_push_creates_a_run(self):
+        # What closes the draft-to-ready coverage hole. With drafts evaluated,
+        # `opened` covers the first commit and `synchronize` every push after,
+        # so the state at the moment a PR leaves draft has always been graded
+        # and no `ready_for_review` trigger is needed. Remove either type and
+        # the hole reopens.
+        text = (WORKFLOWS / "evals.yml").read_text()
+        types = next(line for line in text.splitlines() if "types:" in line)
+        assert "opened" in types and "synchronize" in types, (
+            f"evals.yml must run on opened and synchronize or a draft's pushes go ungraded; got {types!r}"
+        )
+
+    @pytest.mark.parametrize(("workflow", "gate", "worker"), GATED)
+    def test_a_draft_still_waits_for_a_human(self, workflow, gate, worker):
+        # Evaluating drafts must not mean evaluating them unapproved: a draft
+        # from a fork author executes PR-head code against a live credential.
+        text = (WORKFLOWS / workflow).read_text()
+        assert "pull_request.draft" in job_condition(text, gate), (
+            f"{workflow}: {gate!r} no longer requests approval for drafts, so a draft would run "
+            "PR-head code with no human gate"
+        )
 
 
 class TestRunsAreSerializedPerPullRequest:

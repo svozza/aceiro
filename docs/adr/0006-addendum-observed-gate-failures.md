@@ -1,4 +1,4 @@
-# Addendum to ADR-0006: four observed ways the gate goes wrong
+# Addendum to ADR-0006: five observed ways the gate goes wrong
 
 ADR-0006 reasons from GitHub's documentation that a missing Actions environment
 is auto-created without protection rules, and concludes the gate must be asserted
@@ -6,6 +6,11 @@ in code. Setting the environment up for real on 2026-07-30 produced three
 concrete failures, two of which the ADR does not describe. Recorded because the
 in-code assertion has to catch all three, and only one is the case the ADR
 anticipated.
+
+Failures 4 and 5 are a pair and are about the *conditions*, not the environment:
+a gate that fires more often than the job it gates, and a gate that fires for a
+job that cannot run. Both are cases of the gate condition and the worker
+condition disagreeing.
 
 ## 1. A rejected protection rule still creates the environment
 
@@ -91,6 +96,42 @@ branch may reach the credential. That is also what makes `pull_request_target`
 load-bearing, since the policy checks the ref the *run* executes under — the base
 branch for `pull_request_target`, versus `refs/pull/N/merge` for `pull_request`,
 which would never match.
+
+## 5. A gate whose worker excludes drafts asks an unanswerable question
+
+The same shape as failure 4, reached from the other end and found by review
+rather than by configuration. Both workflows requested approval for a draft
+(`|| github.event.pull_request.draft` on the approve job) while the job being
+approved excluded drafts (`&& !github.event.pull_request.draft`). So every draft
+push from a fork author parked a pending deployment review on the `ai-pr-review`
+environment, and approving it ran nothing: the worker was guaranteed to skip
+whatever the reviewer clicked.
+
+This is §4's harm without §4's fail-closed consolation. Five approval requests
+from one iterating draft, none of which does anything, is the most efficient way
+to teach a maintainer that these requests are meaningless — and the one that
+arrives after the PR leaves draft *does* execute fork code against a live
+Bedrock credential.
+
+It also left a coverage hole. Every run while the PR was a draft was skipped by
+the exclusion, and `ready_for_review` was not a listed trigger type, so a PR
+whose last push happened in draft could merge having never run a single eval
+scenario, with a check list indistinguishable from any other PR's.
+
+**Resolved by evaluating drafts**, which is what ADR-0008 and the README already
+describe ("untrusted and draft authors wait at the environment's required
+reviewer before their code runs with the credential, whatever the trigger") — the
+code was the thing out of step. The `!draft` exclusion is gone from
+`evals.yml`'s `evals` job and `ai-pr-review.yml`'s `review` job; the approve
+conditions are unchanged. No new trigger type is needed: `opened` covers a
+draft's first commit and `synchronize` every push after, so the state at the
+moment a PR leaves draft has always been graded.
+
+The generalisation worth keeping: **a gate job's condition must imply the worker
+job's condition.** Whenever the two are edited apart, one of the two failures
+follows — an unanswerable request (this failure) or an unconditional one (§4).
+`tests/test_workflow_shape.py::TestDraftSemanticsAgree` asserts the implication
+over both workflows, since it is a fact about YAML that no other test can see.
 
 ## Status
 
