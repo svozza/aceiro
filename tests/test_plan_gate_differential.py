@@ -27,6 +27,7 @@ from verify import Rejection  # noqa: E402
 from test_plan_verify import (  # noqa: E402
     PLAN_CHANGED_FILES,
     PLAN_DIFF,
+    PLAN_TREE,
     _full_policy,
     anchored_patch,
     anchored_suggest,
@@ -73,9 +74,32 @@ def prover_admits_text(plan_text: str, changed_files, tmp_path) -> bool:
     return result.returncode == 0
 
 
+def corpus_tree(plan):
+    """PLAN_TREE plus each step's own `old` bytes, keyed by its path.
+
+    Anchoring runs in the same phase as the frame, denylist and cap checks and
+    rejects a path the content source does not carry. A case naming a file
+    outside PLAN_TREE was therefore rejected for the fixture's thinness before
+    the check it exists for was consulted, and the boolean comparison cannot
+    tell those two rejections apart: neutralising the denylist, or raising
+    max_patched_files to 99, left all 21 cases passing on
+    "cannot read ... at the reviewed SHA".
+
+    Derived per case rather than by widening PLAN_TREE, which is imported by
+    tests/test_execute_plan.py and materialised on disk by its pr_root fixture.
+    """
+    tree = dict(PLAN_TREE)
+    for step in plan.get("steps", []):
+        args = step.get("args", {})
+        path, old = args.get("path"), args.get("old")
+        if isinstance(path, str) and isinstance(old, str) and path not in tree:
+            tree[path] = old.encode()
+    return tree
+
+
 def verifier_admits(plan, changed_files) -> bool:
     try:
-        verify_plan(plan, PLAN_DIFF, changed_files, _full_policy(), tree_source())
+        verify_plan(plan, PLAN_DIFF, changed_files, _full_policy(), tree_source(corpus_tree(plan)))
     except Rejection:
         return False
     return True
@@ -319,6 +343,59 @@ def test_both_gates_agree_on_the_plans_json_spelling(plan_text, changed_files, e
         f"prove-cli {'admitted' if prover_verdict else 'rejected'}, expected "
         f"{'admit' if expected else 'reject'}"
     )
+
+
+def _cases_by_id():
+    return {case_id: (plan, files) for case_id, plan, files, _ in CASES}
+
+
+def test_the_denylist_cases_fail_when_the_denylist_stops_matching():
+    """Neutralise the denylist and its two cases must go red.
+
+    The named check has to be the REASON, not merely a reason. These cases patch
+    files outside PLAN_TREE, so with a bare tree_source() they also violate
+    anchoring -- and anchoring is enough to reject them on its own. Deleting the
+    denylist then changed nothing observable and all 21 cases stayed green, which
+    is the opposite of what a differential corpus is for.
+    """
+    import plan_verify
+
+    cases = _cases_by_id()
+    original = plan_verify.matches_denylist
+    plan_verify.matches_denylist = lambda *args, **kwargs: None
+    try:
+        still_rejected = [
+            case_id
+            for case_id in ("denylisted-path-that-is-a-changed-file", "denylisted-pem-that-is-a-changed-file")
+            if not verifier_admits(*cases[case_id])
+        ]
+    finally:
+        plan_verify.matches_denylist = original
+    assert not still_rejected, (
+        "these cases reject with the denylist disabled, so they are not testing it: "
+        f"{still_rejected}"
+    )
+
+
+def test_the_patched_file_cap_case_fails_when_the_cap_is_raised():
+    cases = _cases_by_id()
+    plan, changed_files = cases["over-max-patched-files"]
+    policy = _full_policy()
+    policy["plan"]["max_patched_files"] = 99
+    try:
+        verify_plan(plan, PLAN_DIFF, changed_files, policy, tree_source(corpus_tree(plan)))
+    except Rejection as exc:
+        pytest.fail(f"over-max-patched-files rejects with the cap raised to 99, so it is not testing it: {exc}")
+
+
+def test_the_out_of_frame_case_fails_when_every_step_path_is_a_changed_file():
+    cases = _cases_by_id()
+    plan, changed_files = cases["out-of-frame-patch"]
+    paths = [step["args"]["path"] for step in plan["steps"] if "path" in step.get("args", {})]
+    try:
+        verify_plan(plan, PLAN_DIFF, list(changed_files) + paths, _full_policy(), tree_source(corpus_tree(plan)))
+    except Rejection as exc:
+        pytest.fail(f"out-of-frame-patch rejects with its path inside the frame, so it is not testing it: {exc}")
 
 
 # Every key under policy.plan, and the file(s) that must MENTION it for that gate
