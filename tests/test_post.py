@@ -271,6 +271,7 @@ def artifact_dir(tmp_path, valid_artifact):
     (tmp_path / "review.json").write_text(json.dumps(valid_artifact))
     (tmp_path / "diff.patch").write_text(SAMPLE_DIFF)
     (tmp_path / "changed_files.json").write_text(json.dumps(CHANGED_FILES))
+    (tmp_path / "run_metadata.json").write_text(json.dumps({"model": "claude-sonnet-4-5"}))
     return tmp_path
 
 
@@ -287,7 +288,6 @@ def main_env(tmp_path, monkeypatch, artifact_dir):
     monkeypatch.setenv("BASE_SHA", "reviewed-base")
     monkeypatch.setenv("BASE_REF", "main")
     monkeypatch.setenv("RUN_URL", "https://github.com/o/r/actions/runs/1")
-    monkeypatch.setenv("BEDROCK_INFERENCE_PROFILE", "global.anthropic.claude-opus-4-8")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -575,3 +575,44 @@ class TestMain:
         from verify import check_markdown_field
 
         check_markdown_field(post.STALE_NOTICE, POLICY["markdown"], "stale_notice")
+
+
+class TestModelStamp:
+    """The footer's model is the audit trail for "which model said this". Both
+    model arms are configured on every run — a Bedrock profile and a CLI model,
+    each with a default — so only the arm that ran can name what answered."""
+
+    def test_the_stamp_is_the_model_the_generator_recorded(self, main_env, monkeypatch, artifact_dir):
+        stub_comment_store(monkeypatch, UNMOVED)
+        (artifact_dir / "run_metadata.json").write_text(json.dumps({"model": "claude-sonnet-4-5"}))
+        posted = {}
+        monkeypatch.setattr(
+            post, "upsert_comment",
+            lambda repo, pr, body, marker=None, bot_login=None: posted.update(body=body),
+        )
+
+        post.main()
+
+        assert "model: `claude-sonnet-4-5`" in posted["body"]
+
+    def test_an_unattributable_artifact_posts_nothing(self, main_env, monkeypatch, artifact_dir):
+        # Fail-closed rather than stamping a placeholder: a footer naming a
+        # model that never ran is a false audit trail, which is worse than none.
+        (artifact_dir / "run_metadata.json").unlink()
+        stub_comment_store(monkeypatch, UNMOVED)
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
+
+        with pytest.raises(SystemExit):
+            post.main()
+        assert posted == []
+
+    def test_a_metadata_file_naming_no_model_posts_nothing(self, main_env, monkeypatch, artifact_dir):
+        (artifact_dir / "run_metadata.json").write_text(json.dumps({"model": None}))
+        stub_comment_store(monkeypatch, UNMOVED)
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
+
+        with pytest.raises(SystemExit):
+            post.main()
+        assert posted == []

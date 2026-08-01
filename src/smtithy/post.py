@@ -25,9 +25,10 @@ and this is what holds when serialization does not.
 
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA,
 BASE_REF (the reviewed base BRANCH, which is what a retarget changes),
-RUN_URL, BEDROCK_INFERENCE_PROFILE (attribution stamp only).
-Arguments: --artifact-dir (review.json + context files), --policy, --prompt, and
-optionally --marker/--title to identify which generator's comment this is.
+RUN_URL.
+Arguments: --artifact-dir (review.json + run_metadata.json + context files),
+--policy, --prompt, and optionally --marker/--title to identify which
+generator's comment this is.
 
 One executor, several generators. `--marker` exists because the comment identity
 is per-GENERATOR while this code is shared: two reviewers posting under one marker
@@ -154,6 +155,26 @@ def resolve_bot_login() -> str:
     if not isinstance(login, str) or not login:
         fail(f"could not resolve the token's own login, nothing posted (response: {json.dumps(response)[:300]})")
     return login
+
+
+def read_model_stamp(artifact_dir: Path) -> str:
+    """The model the generator actually invoked, for the attribution footer.
+
+    Produced by the arm that ran (cc_loop writes it from the AssistantMessage)
+    rather than read from configuration here: both model arms are configured on
+    every run — the Bedrock profile and the CLI model are separate inputs, each
+    with a default — so configuration cannot say which one drove the session.
+
+    Fail-closed. The stamp is the audit trail for "which model said this", and a
+    placeholder would be a false one; there is no honest fallback.
+    """
+    path = artifact_dir / "run_metadata.json"
+    if not path.is_file():
+        fail(f"no run_metadata.json in the bundle: the model that produced this artifact is unknown ({path})")
+    model = json.loads(read_harness_text(path)).get("model")
+    if not isinstance(model, str) or not model:
+        fail(f"run_metadata.json names no model, so the artifact cannot be attributed ({path})")
+    return model
 
 
 def find_own_comment(repo: str, pr_number: int, marker: str, bot_login: str) -> dict | None:
@@ -287,7 +308,7 @@ def main() -> None:
     bot_login = resolve_bot_login()
 
     metadata = {
-        "model": os.environ["BEDROCK_INFERENCE_PROFILE"],
+        "model": read_model_stamp(args.artifact_dir),
         "prompt": hashlib.sha256(args.prompt.read_bytes()).hexdigest()[:12],
         "policy": hashlib.sha256(policy_text.encode()).hexdigest()[:12],
         "sha": reviewed_sha,

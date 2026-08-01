@@ -300,6 +300,11 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
             async for message in query(prompt=user_message, options=options):
                 lines.append(serialize_message(message))
                 if isinstance(message, AssistantMessage):
+                    # The model that ACTUALLY answered, which is the only
+                    # honest source for the posted attribution: the two arms
+                    # are configured by different inputs, and configuration
+                    # cannot say which one ran.
+                    state["model"] = message.model
                     for block in message.content:
                         if isinstance(block, ToolUseBlock):
                             transcript.log("tool_request", round=attempt, tool=block.name, input=block.input)
@@ -343,7 +348,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     # so an api_error retry inherits them rather than being forgiven them.
     state = {
         "round": 0, "repeated": 0, "last_fingerprint": None,
-        "accepted": None, "abort_reason": None, "tool_calls": 0,
+        "accepted": None, "abort_reason": None, "tool_calls": 0, "model": None,
     }
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # What a restarted session does start over on: it may submit again, and
@@ -442,6 +447,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
             # throttled-but-successful run is distinguishable from a healthy one.
             api_ms=result.duration_api_ms,
             tool_calls=state["tool_calls"],
+            model=state["model"],
             permission_denials=result.permission_denials,
         )
 
@@ -454,6 +460,10 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
             )
 
         (output_dir / artifact_filename).write_text(json.dumps(artifact, indent=2, ensure_ascii=False))
+        # Written by the arm that ran, for the executor to stamp into what it
+        # posts. Configuration cannot supply this: both arms are configured on
+        # every run and only one of them invoked a model.
+        (output_dir / "run_metadata.json").write_text(json.dumps({"model": state["model"]}))
         transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
         transcript.log("run_complete", rounds=state["round"])
         transcript.close()

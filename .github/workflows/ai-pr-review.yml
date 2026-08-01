@@ -408,7 +408,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          BEDROCK_INFERENCE_PROFILE: ${{ inputs.bedrock-inference-profile }}
+          # No model input here: the attribution stamp comes from the bundle's
+          # run_metadata.json, written by the arm that actually invoked a model.
           # Via env, not inline interpolation: an input inside a run: block is
           # shell-expanded, and these two are free-text.
           COMMENT_MARKER: ${{ inputs.comment-marker }}

@@ -277,6 +277,28 @@ class TestRunFailureModes:
         assert waits == [cc_loop.API_ERROR_BACKOFF_SECONDS]
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
 
+    def test_the_run_records_the_model_that_actually_answered(self, tmp_path, monkeypatch):
+        # The comment footer's attribution is this value. Taken from the
+        # AssistantMessage rather than from configuration, because the two arms
+        # are configured by different inputs and only one of them ran.
+        created = []
+        original = cc_loop.make_submit_tool
+        monkeypatch.setattr(
+            cc_loop, "make_submit_tool",
+            lambda *a, **k: created.append(original(*a, **k)) or created[-1],
+        )
+        artifact = {"summary": "ok", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            yield AssistantMessage(content=[TextBlock(text="working")], model="claude-sonnet-4-5")
+            await created[-1].handler(artifact)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 0
+
+        assert json.loads((tmp_path / "run_metadata.json").read_text())["model"] == "claude-sonnet-4-5"
+
     def test_a_tripped_breaker_survives_an_api_error_retry(self, tmp_path, monkeypatch):
         # The breaker's whole point is that a run repeating one failure fails
         # loud. A fresh per-attempt state would forgive the abort, and the next
