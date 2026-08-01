@@ -66,11 +66,15 @@ name: Evals
 # pull_request_target is the base branch, whereas pull_request resolves to
 # refs/pull/N/merge and would never match.
 #
-# None of this is self-verifying. docs/adr/0006-addendum-observed-gate-failures.md
-# records four ways the gate has silently failed open, including a rejected
-# create call leaving an unprotected environment behind and a visibility flip
-# stripping a protection rule. No run went red for any of them, which is why the
-# in-code assertion ADR-0006 requires is still owed.
+# The configuration is not self-verifying, which is why the in-code assertion
+# ADR-0006 requires now runs INSIDE this job:
+# docs/adr/0006-addendum-observed-gate-failures.md records four ways the gate has
+# silently failed open, including a rejected create call leaving an unprotected
+# environment behind and a visibility flip stripping a protection rule, and no
+# run went red for any of them. environment_gate.py is asserted from a TRUSTED
+# base-branch checkout before the PR's head is on disk and before any credential
+# exists in the job — asking the PR's own code whether the PR was approved would
+# be no check at all.
 
 on:
   # Every pull request, on open and on every push (ADR-0008 addendum: the
@@ -210,15 +214,17 @@ jobs:
       contents: read
       id-token: write # Bedrock role assumption only; no pull-requests scope
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # TRUSTED CHECKOUT FIRST, into its own directory, so the gate below is
+      # asserted by BASE-BRANCH code. Asserting it from the PR's checkout would
+      # ask attacker-controlled code whether the attacker was approved.
+      #
+      # `path:` keeps it out of the workspace root, which the PR checkout below
+      # owns — and that checkout runs with clean:false so it cannot delete this
+      # directory out from under the assertion's own audit trail.
+      - name: Check out the base-branch harness (trusted)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          # Deliberately the pull request's OWN head SHA: the default ref for
-          # pull_request_target is the base branch, but the code under test must
-          # be the PR's. Only reached after eval_approve resolved for this SHA.
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          # This job EXECUTES the checked-out code. The default leaves the job
-          # token in .git/config, where that code could read it and act as the
-          # workflow. Load-bearing here, not hygiene.
+          path: trusted-base
           persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -226,6 +232,42 @@ jobs:
           python-version: "3.13"
           cache: pip
           cache-dependency-path: requirements*.txt
+
+      # ADR-0006: the gate is asserted INSIDE the gated job, before any
+      # credential exists in the job AND before the PR's own code is on disk.
+      # A missing or protection-free environment makes eval_approve succeed
+      # automatically, and this job then executes contributor-controlled Python
+      # with Bedrock credentials. environment_gate.py imports only the stdlib,
+      # so it runs before any dependency install.
+      - name: Assert the approval gate was real
+        # Only pull_request_target can be gated by an environment; schedule and
+        # workflow_dispatch have no PR and legitimately have no gate (the
+        # dispatch path is restricted to those who can dispatch).
+        if: github.event_name == 'pull_request_target'
+        working-directory: trusted-base
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GATE_ENVIRONMENT: ai-pr-review
+          AUTHOR_TRUSTED: ${{ needs.eval_author_trust.outputs.trusted }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        run: python src/smtithy/environment_gate.py
+
+      - name: Check out the PR head (the code under test)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Deliberately the pull request's OWN head SHA: the default ref for
+          # pull_request_target is the base branch, but the code under test must
+          # be the PR's. Only reached after eval_approve resolved for this SHA
+          # AND the gate assertion above passed.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # This job EXECUTES the checked-out code. The default leaves the job
+          # token in .git/config, where that code could read it and act as the
+          # workflow. Load-bearing here, not hygiene.
+          persist-credentials: false
+          # Do not wipe trusted-base/ (checked out above) while cleaning the
+          # workspace root. The PR's tree still lands in the root, which is where
+          # every step below expects it.
+          clean: false
       # The generator (claude-agent-sdk) installs here too: the SDK wheel
       # bundles the Claude Code CLI binary, so the hash pin below covers both.
       # tests/test_cc_loop.py asserts the bundled CLI version, so a wheel that
