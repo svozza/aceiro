@@ -39,6 +39,7 @@ import os
 import re
 from pathlib import Path
 
+from canonicalize import strip_invisible
 from verify import Rejection, check_markdown_field, check_scalar, parse_diff_hunks, rendered_markdown
 
 # Ids exist so steps can be referred to; a duplicate makes a reference
@@ -517,13 +518,29 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
     The third representation is patch/suggest old FUSED with new: a rendered
     suggestion shows old and new adjacent, so a credential split across the
     boundary reads complete there while neither the raw JSON (which separates
-    them with syntax) nor either fragment alone ever matches."""
+    them with syntax) nor either fragment alone ever matches.
+
+    And each of those is scanned with invisible code points STRIPPED as well as
+    raw. old/new used to get the raw form only, while markdown args were scanned
+    rendered — so an invisible split every pattern while the rendered suggestion,
+    and the follow-up PR's diff, showed the key complete to a human. Same bypass
+    class as the artifact verifier's, on the side whose output becomes a merge
+    candidate.
+
+    Stripping here is a SCAN representation and nothing else. ADR-0005's anchor
+    comparison in check_plan_containment stays raw: an `old` that matched only
+    after canonicalization is a fragment the model never saw, so it must keep
+    failing closed.
+    """
     texts = [json.dumps(plan, ensure_ascii=False)]
     for _, value in _iter_plan_markdown(plan, policy):
         texts.append(rendered_markdown(value))
     for step in plan["steps"]:
         if step["kind"] in ANCHORED_KINDS:
             texts.append(step["args"]["old"] + step["args"]["new"])
+    # Keeping the raw forms alongside means stripping can only ADD matches: it
+    # cannot fuse two innocent runs into a false negative.
+    texts.extend(strip_invisible(text) for text in list(texts))
     for pattern in policy["secret_scan_patterns"]:
         for text in texts:
             if re.search(pattern, text):

@@ -310,6 +310,48 @@ class TestSecretsSplitAcrossArgs:
         verified(plan_of(anchored_patch(old='PREFIX = "AKIA"\n', new='PREFIX = get_prefix()\n')),
                  changed_files=["src/app.py"], tree=tree)
 
+    # old/new were concatenated RAW only, while markdown args were scanned in
+    # rendered form. An invisible code point splits every pattern while the
+    # rendered suggestion (and the follow-up PR's diff) shows the key complete to
+    # a human — the same bypass class as the artifact verifier's, on the side that
+    # produces a merge candidate.
+
+    ZWSP = "​"
+
+    def test_invisible_split_secret_in_new_rejects(self):
+        rejected(plan_of(anchored_patch(new=f'key = "AKIA{self.ZWSP}IOSFODNN7EXAMPLE"\n')))
+
+    def test_default_ignorable_split_secret_in_new_rejects(self):
+        # Not just Cf: U+FE0F is Mn, which a general-category test lets through.
+        rejected(plan_of(anchored_patch(new='key = "AKIA️IOSFODNN7EXAMPLE"\n')))
+
+    def test_invisible_split_secret_across_old_and_new_rejects(self):
+        # The fused representation must be stripped too, not only each half.
+        tree = {"src/app.py": f'key = "AKIA{self.ZWSP}IOSF'.encode()}
+        rejected(plan_of(anchored_patch(old=f'key = "AKIA{self.ZWSP}IOSF',
+                                        new='ODNN7EXAMPLE_ROTATED"\n')),
+                 changed_files=["src/app.py"], tree=tree)
+
+    def test_invisible_split_secret_in_a_suggestion_rejects(self):
+        rejected(plan_of(anchored_suggest(new=f'    return "AKIA{self.ZWSP}IOSFODNN7EXAMPLE"\n')))
+
+    def test_anchoring_still_compares_raw_bytes(self):
+        # ADR-0005: the anchor must NOT be canonicalized. A tree containing a
+        # zero-width space is matched by an `old` containing the same bytes, and
+        # the scan's stripping must not have leaked into that comparison.
+        content = f'x = "a{self.ZWSP}b"\n'
+        tree = {"src/app.py": content.encode()}
+        verified(plan_of(anchored_patch(old=content, new='x = "ab"\n')),
+                 changed_files=["src/app.py"], tree=tree)
+
+    def test_an_invisible_stripped_old_no_longer_anchors(self):
+        # The other direction of the same rule: stripping is a SCAN
+        # representation, never the anchor. An `old` with the invisible removed
+        # does not byte-match a tree that has it.
+        tree = {"src/app.py": f'x = "a{self.ZWSP}b"\n'.encode()}
+        rejected(plan_of(anchored_patch(old='x = "ab"\n', new='x = "c"\n')),
+                 changed_files=["src/app.py"], tree=tree)
+
     def test_bold_split_secret_in_open_pr_body_rejects_rendered(self):
         plan = plan_of(
             anchored_patch(),
