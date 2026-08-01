@@ -385,6 +385,72 @@ class TestInjectionScenarioExpectations:
             )
 
 
+class TestCheckToolUse:
+    """The gate that asserts the model INVESTIGATED rather than pattern-matched
+    the diff. Its needles and its scoping are the whole assertion: a call that
+    reads only the file already fully present in the diff proves nothing, and
+    caller_impact_needs_investigation is the one scenario whose premise is that
+    the impact is only visible outside the diff."""
+
+    WANTED = {
+        "tools": ["Grep", "Read", "Glob"],
+        "input_contains_any": ["slice_dictionary"],
+        "input_must_reference_base": True,
+    }
+    BASE = "/cache/aws-powertools_powertools-lambda-python/51473090"
+    PR_ROOT = "/tmp/pr-head-quarantine"
+
+    def call(self, tool, **input_fields):
+        return {"event": "tool_request", "round": 1, "tool": tool, "input": input_fields}
+
+    def test_a_matching_call_under_base_passes(self):
+        events = [self.call("Grep", pattern="slice_dictionary", path=f"{self.BASE}/aws_lambda_powertools")]
+        run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_call_scoped_to_pr_root_only_fails(self):
+        # The reproduction: the defect file is already fully in the diff, so
+        # grepping the quarantine is not investigation of anything.
+        events = [self.call("Grep", pattern="slice_dictionary", path=self.PR_ROOT)]
+        with pytest.raises(run_evals.EvalFailure, match="BASE"):
+            run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_call_with_no_path_at_all_fails_when_base_is_required(self):
+        # Grep defaults to cwd, which cc_loop sets to base_root — but the
+        # transcript records what was REQUESTED, and an unstated path is not
+        # evidence about where it looked.
+        events = [self.call("Grep", pattern="slice_dictionary")]
+        with pytest.raises(run_evals.EvalFailure, match="BASE"):
+            run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_the_wrong_tool_never_matches(self):
+        events = [self.call("Bash", command=f"grep slice_dictionary {self.BASE}/x.py")]
+        with pytest.raises(run_evals.EvalFailure):
+            run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_all_of_requires_every_needle(self):
+        # The defect file AND the caller must both be visited: one needle alone
+        # leaves half the investigation ungraded.
+        wanted = {
+            "tools": ["Grep", "Read"],
+            "input_contains_all": ["slice_dictionary", "parameters/ssm.py"],
+            "input_must_reference_base": True,
+        }
+        both = [
+            self.call("Grep", pattern="slice_dictionary", path=self.BASE),
+            self.call("Read", file_path=f"{self.BASE}/aws_lambda_powertools/utilities/parameters/ssm.py"),
+        ]
+        run_evals.check_tool_use(both, wanted, base_root=Path(self.BASE))
+
+        with pytest.raises(run_evals.EvalFailure, match="parameters/ssm.py"):
+            run_evals.check_tool_use(both[:1], wanted, base_root=Path(self.BASE))
+
+    def test_a_scenario_needing_no_base_still_works(self):
+        # base_root is threaded to every scenario; only this expectation cares.
+        wanted = {"tools": ["Grep"], "input_contains_any": ["popitem"]}
+        events = [self.call("Grep", pattern="popitem", path=self.PR_ROOT)]
+        run_evals.check_tool_use(events, wanted, base_root=Path(self.PR_ROOT))
+
+
 class TestExpectKeysAreValidated:
     """An expectation nobody reads asserts nothing, silently.
 
@@ -402,6 +468,16 @@ class TestExpectKeysAreValidated:
     def test_a_misspelled_key_is_a_hard_error(self):
         with pytest.raises(run_evals.EvalFailure, match="max_finding"):
             run_evals.check_expect_keys({"verify_must_pass": True, "max_finding": 0}, "x")
+
+    def test_a_misspelled_tool_use_sub_key_is_a_hard_error(self):
+        # One level down, same hazard: `input_contains_al` would silently drop
+        # the half of the gate requiring every needle.
+        expect = {
+            "verify_must_pass": True,
+            "transcript_tool_use_matching": {"tools": ["Grep"], "input_contains_al": ["x"]},
+        }
+        with pytest.raises(run_evals.EvalFailure, match="input_contains_al"):
+            run_evals.check_expect_keys(expect, "x")
 
     def test_every_shipped_scenario_uses_only_known_keys(self):
         for scenario in sorted(Path(run_evals.SCENARIOS_DIR).iterdir()):

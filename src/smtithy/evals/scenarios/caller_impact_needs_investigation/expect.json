@@ -18,9 +18,14 @@
       "Glob"
     ],
     "input_contains_any": [
+      "slice_dictionary"
+    ],
+    "input_contains_all": [
       "slice_dictionary",
-      "ssm"
-    ]
+      "parameters/ssm.py"
+    ],
+    "input_must_reference_base": true,
+    "why": "The defect file AND the caller, both under BASE. A Grep scoped to pr_root satisfies nothing: that file is already fully present in the diff, and the scenario's premise is that the impact is only visible in a caller. 'ssm' was the earlier needle and matched any path containing those three characters."
   },
   "line_accuracy_note": "Exact line 12: the `yield` whose islice upper bound is `i + chunk_size - 1`. The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt \u2014 do not widen it."
 }
