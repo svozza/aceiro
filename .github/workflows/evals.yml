@@ -230,8 +230,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
+          # NO pip cache in this job. It checks out the PR head below and then
+          # EXECUTES it, and setup-python's implicit post step saves the cache
+          # last — after that code has run. Because pull_request_target runs
+          # under the base ref, the entry would be written into the BASE
+          # BRANCH's cache scope, reachable by later runs on main and by every
+          # other PR. Keying it on a file from the untrusted checkout would
+          # additionally hand the author control of the key. The install is
+          # hash-pinned, so the cache bought little; quality_check.yml can cache
+          # safely because it is `pull_request` (PR-scoped), and
+          # ai-pr-review.yml because its key comes from the pinned harness
+          # checkout, not the consumer's tree.
 
       # ADR-0006: the gate is asserted INSIDE the gated job, before any
       # credential exists in the job AND before the PR's own code is on disk.
