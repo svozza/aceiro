@@ -70,6 +70,67 @@ class TestStructure:
         rejected(["not", "an", "object"], sample_diff, changed_files, policy)
 
 
+class TestEveryTopLevelSpecIsEnforced:
+    """A top-level field's constraints must bind, not merely be read.
+
+    check_all_markdown already enumerates top-level string fields generically,
+    so a field added to the policy gets its `markdown` flag honoured — and
+    markdown_fields inspects `type` and `pattern` to decide the field is
+    constrained. Constraints that are read to justify skipping a check and then
+    never enforced are the fail-open shape the policy-error path at
+    markdown_fields exists to prevent.
+    """
+
+    @pytest.fixture
+    def policy_with_ticket(self, policy):
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["ticket"] = {
+            "type": "string", "min_length": 1, "max_length": 10, "pattern": "[A-Z]+-[0-9]+",
+        }
+        return extended
+
+    def test_a_conforming_value_is_accepted(self, artifact, sample_diff, changed_files, policy_with_ticket):
+        artifact["ticket"] = "SEC-1"
+        verify(artifact, sample_diff, changed_files, policy_with_ticket)
+
+    def test_max_length_binds(self, artifact, sample_diff, changed_files, policy_with_ticket):
+        artifact["ticket"] = "SEC-" + "9" * 400
+        rejected(artifact, sample_diff, changed_files, policy_with_ticket)
+
+    def test_the_pattern_binds(self, artifact, sample_diff, changed_files, policy_with_ticket):
+        artifact["ticket"] = "!!! " * 2
+        rejected(artifact, sample_diff, changed_files, policy_with_ticket)
+
+    def test_min_length_binds(self, artifact, sample_diff, changed_files, policy_with_ticket):
+        artifact["ticket"] = ""
+        rejected(artifact, sample_diff, changed_files, policy_with_ticket)
+
+    def test_the_declared_type_binds(self, artifact, sample_diff, changed_files, policy_with_ticket):
+        artifact["ticket"] = 7
+        rejected(artifact, sample_diff, changed_files, policy_with_ticket)
+
+    def test_a_markdown_top_level_field_is_length_bounded(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["addendum"] = {
+            "type": "string", "min_length": 0, "max_length": 20, "markdown": True,
+        }
+        artifact["addendum"] = "prose " * 100
+        rejected(artifact, sample_diff, changed_files, extended)
+
+    def test_an_unknown_scalar_type_is_a_policy_error_at_the_top_level(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # The same reachability the item_fields loop has: a policy typo must
+        # fail loudly rather than leave the field unchecked.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["ticket"] = {"type": "strnig", "pattern": "x"}
+        artifact["ticket"] = "anything at all"
+        with pytest.raises(Rejection, match="unknown scalar type"):
+            verify(artifact, sample_diff, changed_files, extended)
+
+
 class TestProvenance:
     def test_unchanged_file(self, artifact, sample_diff, changed_files, policy):
         artifact["findings"][0]["path"] = "aws_lambda_powertools/__init__.py"

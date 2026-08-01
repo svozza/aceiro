@@ -90,6 +90,19 @@ def check_scalar(value, spec: dict, where: str) -> None:
             raise Rejection(f"policy error: unknown scalar type {kind!r} at {where}")
 
 
+def top_level_scalars(schema: dict) -> dict[str, dict]:
+    """The artifact's top-level scalar specs: everything that is not the
+    findings array.
+
+    One definition, used by the schema gate, the markdown walk and the secret
+    scan, so a field the policy adds cannot be enforced by some of them and not
+    others. Selected by NOT being the array rather than by naming the scalar
+    types, so an unrecognised `type` reaches check_scalar's policy-error path
+    instead of being silently skipped.
+    """
+    return {name: spec for name, spec in schema.items() if spec.get("type") != "array"}
+
+
 def check_schema(artifact: dict, policy: dict) -> None:
     schema = policy["artifact_schema"]
     if not isinstance(artifact, dict):
@@ -101,8 +114,8 @@ def check_schema(artifact: dict, policy: dict) -> None:
     if missing:
         raise Rejection(f"artifact: missing keys {sorted(missing)}")
 
-    check_scalar(artifact["summary"], schema["summary"], "summary")
-    check_scalar(artifact["residual_risk"], schema["residual_risk"], "residual_risk")
+    for field, spec in top_level_scalars(schema).items():
+        check_scalar(artifact[field], spec, field)
 
     findings_spec = schema["findings"]
     findings = artifact["findings"]
@@ -444,7 +457,7 @@ def check_all_markdown(artifact: dict, policy: dict) -> None:
     markdown_policy = policy["markdown"]
     schema = policy["artifact_schema"]
 
-    top_level = {name: spec for name, spec in schema.items() if spec.get("type") == "string"}
+    top_level = top_level_scalars(schema)
     for field in markdown_fields(top_level):
         check_markdown_field(artifact[field], markdown_policy, field)
 
@@ -459,7 +472,7 @@ def check_all_markdown(artifact: dict, policy: dict) -> None:
 
 def _iter_markdown_values(artifact: dict, policy: dict):
     schema = policy["artifact_schema"]
-    top_level = {name: spec for name, spec in schema.items() if spec.get("type") == "string"}
+    top_level = top_level_scalars(schema)
     for field in markdown_fields(top_level):
         yield artifact[field]
     finding_fields = markdown_fields(schema["findings"]["item_fields"])
