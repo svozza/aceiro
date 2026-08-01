@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
 
 from plan_verify import (  # noqa: E402
+    check_plan_cardinality,
     check_plan_containment,
     check_plan_ordering,
     check_plan_schema,
@@ -619,6 +620,78 @@ class TestWriteClassTargets:
                       policy_plan=policy)
 
 
+class TestWriteChainCardinality:
+    """Ordering constrains the write chain's ORDER; nothing constrained how many
+    times it appeared. Read from policy's write_class flags rather than a
+    hardcoded kind list."""
+
+    def test_the_legal_single_chain_passes(self):
+        check_plan_cardinality(
+            {"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2")]}, PLAN_POLICY
+        )
+
+    def test_nine_chains_for_one_patch_reject(self):
+        # The report's scenario: fits max_steps, ordered correctly (all pushes
+        # before all opens), and would produce eighteen external effects.
+        steps = [patch_step("s0")]
+        steps += [push_step(f"p{i}", name=f"smtithy/b{i}") for i in range(9)]
+        steps += [open_pr_step(f"o{i}", branch=f"smtithy/b{i}") for i in range(9)]
+        # Kinds are checked in sorted order, so open_pr is the first violation.
+        with pytest.raises(Rejection, match="9 open_pr steps"):
+            check_plan_cardinality({"steps": steps}, PLAN_POLICY)
+
+    def test_two_push_branches_reject(self):
+        with pytest.raises(Rejection, match="push_branch"):
+            check_plan_cardinality(
+                {"steps": [patch_step("s0"), push_step("s1"), push_step("s2", name="smtithy/other"),
+                           open_pr_step("s3")]},
+                PLAN_POLICY,
+            )
+
+    def test_two_open_prs_reject(self):
+        with pytest.raises(Rejection, match="open_pr"):
+            check_plan_cardinality(
+                {"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2"),
+                           open_pr_step("s3", branch="smtithy/other")]},
+                PLAN_POLICY,
+            )
+
+    def test_open_pr_without_a_push_rejects(self):
+        # Nothing to open a PR from: the branch was never pushed.
+        with pytest.raises(Rejection, match="no push_branch"):
+            check_plan_cardinality({"steps": [patch_step("s0"), open_pr_step("s1")]}, PLAN_POLICY)
+
+    def test_a_push_with_no_open_pr_passes_the_cardinality_rule(self):
+        # Incomplete, but that is decide_delivery's Refusal to make — this phase
+        # bounds COUNT, and rejecting here would pre-empt a different rule.
+        check_plan_cardinality({"steps": [patch_step("s0"), push_step("s1")]}, PLAN_POLICY)
+
+    def test_a_suggestion_plan_may_not_carry_a_write_chain(self):
+        # ADR-0009: a suggestion is the delivery that needs no branch.
+        with pytest.raises(Rejection, match="suggest"):
+            check_plan_cardinality(
+                {"steps": [suggest_step("s0"), push_step("s1"), open_pr_step("s2")]}, PLAN_POLICY
+            )
+
+    def test_a_suggestion_only_plan_passes(self):
+        check_plan_cardinality({"steps": [suggest_step("s0")]}, PLAN_POLICY)
+
+    def test_duplicate_labels_reject(self):
+        # Two identical effects for one finding, in relative order, which
+        # pairwise ordering alone accepts.
+        with pytest.raises(Rejection, match="label"):
+            check_plan_cardinality(
+                {"steps": [patch_step("s0"), label_step("s1"), label_step("s2")]}, PLAN_POLICY
+            )
+
+    def test_verify_plan_enforces_cardinality(self):
+        steps = [anchored_patch("s0")]
+        steps += [push_step(f"p{i}", name=f"smtithy/b{i}") for i in range(9)]
+        steps += [open_pr_step(f"o{i}", branch=f"smtithy/b{i}") for i in range(9)]
+        with pytest.raises(Rejection, match="at most once"):
+            verify_plan({"steps": steps}, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
+
+
 class TestOrdering:
     """The Python twin of ts/plan/prove.test.ts describe('proveOrdering').
 
@@ -775,9 +848,14 @@ class TestPlanMarkdownAndSecrets:
 
     def full_plan(self, note="make `path` optional", body="Fixes the reviewed finding.",
                   old="def load(path):\n", new="def load(path=None):\n"):
+        """The patch delivery: a chain carrying open_pr.body's markdown.
+
+        Suggest and patch are two separate deliveries (decide_delivery refuses a
+        plan mixing them), so note is exercised by suggest_plan below rather than
+        by bolting a suggest step onto this one.
+        """
         return {
             "steps": [
-                anchored_suggest(note=note),
                 {"id": "s1", "kind": "patch",
                  "args": {"path": "src/app.py", "old": old, "new": new}},
                 push_step("s2"),
@@ -786,15 +864,22 @@ class TestPlanMarkdownAndSecrets:
             ]
         }
 
+    def suggest_plan(self, note="make `path` optional", new="def load(path=None):\n"):
+        """The suggestion delivery, carrying suggest.note's markdown."""
+        return {"steps": [anchored_suggest(note=note, new=new)]}
+
     def run(self, plan, policy=None):
         verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, policy or self.full_policy(), tree_source())
 
     def test_a_full_plan_verifies_end_to_end(self):
         self.run(self.full_plan())
 
+    def test_a_suggestion_plan_verifies_end_to_end(self):
+        self.run(self.suggest_plan())
+
     def test_suggest_note_is_markdown_checked(self):
         with pytest.raises(Rejection, match="raw HTML"):
-            self.run(self.full_plan(note="<script>alert(1)</script>"))
+            self.run(self.suggest_plan(note="<script>alert(1)</script>"))
 
     def test_open_pr_body_is_markdown_checked(self):
         with pytest.raises(Rejection, match="@-mention"):
@@ -811,4 +896,4 @@ class TestPlanMarkdownAndSecrets:
         # Bold-split key: invisible to the raw scan, complete once rendered —
         # the same case check_secrets pins for review comments.
         with pytest.raises(Rejection, match="secret scan"):
-            self.run(self.full_plan(note="uses key AKIA**IOSF**ODNN7EXAMPLE here"))
+            self.run(self.suggest_plan(note="uses key AKIA**IOSF**ODNN7EXAMPLE here"))

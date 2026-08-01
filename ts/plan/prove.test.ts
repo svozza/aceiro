@@ -23,6 +23,7 @@ import { checkPlanPolicy, writeClassKinds, type PlanPolicy } from './policy.js';
 import { checkPlanSchema, type Plan } from './schema.js';
 import {
   globToRegExp,
+  proveCardinality,
   proveFrame,
   proveOrdering,
   proveTaint,
@@ -339,6 +340,57 @@ describe('proveWriteTargets', () => {
   it('holds vacuously for a plan with no write-class step', () => {
     const result = proveWriteTargets(plan(patch('src/a.py')), POLICY);
     assert.equal(result.holds, true);
+  });
+});
+
+describe('proveCardinality', () => {
+  // Twin of tests/test_plan_verify.py TestWriteChainCardinality.
+
+  it('holds for the legal single chain', () => {
+    const result = proveCardinality(plan(patch('src/a.py'), pushBranch(), openPr()), POLICY);
+    assert.equal(result.holds, true);
+  });
+
+  it('CATCHES nine chains for one patch', () => {
+    const steps: { kind: string; args: Record<string, string | number> }[] = [patch('src/a.py')];
+    for (let i = 0; i < 9; i += 1) steps.push(pushBranch(`smtithy/b${i}`));
+    for (let i = 0; i < 9; i += 1) steps.push(openPr(`smtithy/b${i}`));
+    const result = proveCardinality(plan(...steps), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('at most once')));
+  });
+
+  it('CATCHES two push_branch steps', () => {
+    const result = proveCardinality(
+      plan(patch('src/a.py'), pushBranch(), pushBranch('smtithy/other'), openPr()),
+      POLICY,
+    );
+    assert.equal(result.holds, false);
+  });
+
+  it('CATCHES open_pr with no push_branch', () => {
+    const result = proveCardinality(plan(patch('src/a.py'), openPr()), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('no push_branch')));
+  });
+
+  it('CATCHES a write chain on a suggest plan', () => {
+    const result = proveCardinality(plan(suggest('src/a.py'), pushBranch(), openPr()), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('applied in place')));
+  });
+
+  it('holds for a suggestion-only plan', () => {
+    assert.equal(proveCardinality(plan(suggest('src/a.py')), POLICY).holds, true);
+  });
+
+  it('CATCHES duplicate labels', () => {
+    const result = proveCardinality(
+      plan(patch('src/a.py'), { kind: 'label', args: { name: 'needs-tests' } },
+           { kind: 'label', args: { name: 'needs-tests' } }),
+      POLICY,
+    );
+    assert.equal(result.holds, false);
   });
 });
 

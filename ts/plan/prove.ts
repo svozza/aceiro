@@ -347,6 +347,38 @@ export async function proveTaint(
   };
 }
 
+/**
+ * Cardinality: at most one of each write-class kind, no chain on a suggest plan.
+ *
+ * Ordering constrains the chain's ORDER, this its COUNT — one commanded finding
+ * produces one effect. Twin of plan_verify.check_plan_cardinality. A ground check
+ * for the same reason proveWriteTargets is one.
+ */
+export function proveCardinality(plan: Plan, policy: PlanPolicy): ProofResult {
+  const started = performance.now();
+  const kinds = plan.steps.map((step) => step.kind);
+  const writeKinds = writeClassKinds(policy);
+  const violations: string[] = [];
+
+  for (const kind of [...writeKinds].sort()) {
+    const count = kinds.filter((k) => k === kind).length;
+    if (count > 1) violations.push(`${count} ${kind} steps: a write-class kind may appear at most once`);
+  }
+  if (kinds.includes('suggest')) {
+    const chain = [...writeKinds].sort().filter((kind) => kind !== 'label' && kinds.includes(kind));
+    if (chain.length > 0) {
+      violations.push(`a suggest plan carries ${chain.join(', ')}: a suggestion is applied in place`);
+    }
+  }
+  if (kinds.includes('open_pr') && !kinds.includes('push_branch')) {
+    violations.push('open_pr with no push_branch: there is no branch to open it from');
+  }
+
+  const ms = performance.now() - started;
+  if (violations.length === 0) return { holds: true, policy: 'cardinality', ms };
+  return { holds: false, policy: 'cardinality', ms, counterexample: { policy: 'cardinality', path: violations } };
+}
+
 /** Which argument names a write-class kind's target. Twin of
  * plan_verify.BRANCH_ARGS. */
 const BRANCH_ARGS: Readonly<Record<string, string>> = { push_branch: 'name', open_pr: 'branch' };

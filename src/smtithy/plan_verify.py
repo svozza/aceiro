@@ -20,8 +20,9 @@ repair.
 
 Checks, in order (mirroring verify.py's phase order):
 1. Strict structural schema (check_plan_schema).
-2. The ordering policy (check_plan_ordering), mirroring proveOrdering — decidable
-   from the plan alone, so it runs before anything that reads a file.
+2. Cardinality (check_plan_cardinality) then the ordering policy
+   (check_plan_ordering, mirroring proveOrdering) — both decidable from the plan
+   alone, so they run before anything that reads a file.
 3. ADR-0005's containment (check_plan_containment): frame, denylist,
    suggest.line provenance and placement, bounding, anchoring. Anchoring is why
    verify_plan grows a content source over verify()'s argument list — the ADR
@@ -400,6 +401,42 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                 )
 
 
+# -------------------------------------------------------------- cardinality --
+
+
+def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
+    """At most one of each write-class kind; no chain at all on a suggest plan.
+
+    Ordering constrains the chain's ORDER, this its COUNT — one commanded finding
+    produces one effect. write_kinds is read from the policy rather than listed
+    here. A suggest plan is forbidden a chain because ADR-0009 makes a suggestion
+    the delivery applied in place, with nothing to push.
+    """
+    kinds = [step["kind"] for step in plan["steps"]]
+    step_kinds = policy_plan["step_kinds"]
+    write_kinds = [kind for kind, spec in step_kinds.items() if spec["write_class"]]
+
+    for kind in sorted(write_kinds):
+        count = kinds.count(kind)
+        if count > 1:
+            raise Rejection(
+                f"plan.steps: {count} {kind} steps; a write-class kind may appear at most once, "
+                "so one commanded finding produces one effect"
+            )
+
+    # A suggestion is applied by the contributor, so it needs no branch to push.
+    if "suggest" in kinds:
+        present = sorted(kind for kind in write_kinds if kind in kinds and kind != "label")
+        if present:
+            raise Rejection(
+                f"plan.steps: a suggest plan carries {present}; a suggestion is applied in place "
+                "and has nothing to push"
+            )
+
+    if "open_pr" in kinds and "push_branch" not in kinds:
+        raise Rejection("plan.steps: open_pr with no push_branch; there is no branch to open it from")
+
+
 # ----------------------------------------------------------------- ordering --
 
 
@@ -508,6 +545,7 @@ def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: di
     filesystem assumption beyond it.
     """
     check_plan_schema(plan, policy["plan"])
+    check_plan_cardinality(plan, policy["plan"])
     check_plan_ordering(plan, policy["plan"])
     check_plan_containment(plan, diff_text, changed_files, policy["plan"], content_source, head_branch)
     check_plan_markdown(plan, policy)

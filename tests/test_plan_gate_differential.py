@@ -136,6 +136,22 @@ CASES = [
         False,
     ),
     (
+        # Fits max_steps and is correctly ordered (all pushes before all opens),
+        # so only cardinality stands between it and eighteen external effects.
+        "nine-write-chains-for-one-patch",
+        {"steps": [anchored_patch("s0")]
+                  + [push_step(f"p{i}", name=f"smtithy/b{i}") for i in range(9)]
+                  + [open_pr_step(f"o{i}", branch=f"smtithy/b{i}") for i in range(9)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        "suggest-plan-carrying-a-write-chain",
+        {"steps": [anchored_suggest("s0"), push_step("s1"), open_pr_step("s2")]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
         "out-of-frame-patch",
         {"steps": [anchored_patch("s0", path="src/evil.py")]},
         PLAN_CHANGED_FILES,

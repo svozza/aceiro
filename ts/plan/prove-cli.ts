@@ -17,7 +17,14 @@ import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { checkPlanSchema } from './schema.js';
 import { loadPlanPolicy, Rejection } from './policy.js';
-import { proveOrdering, proveFrame, proveTaint, proveWriteTargets, shutdown } from './prove.js';
+import {
+  proveCardinality,
+  proveFrame,
+  proveOrdering,
+  proveTaint,
+  proveWriteTargets,
+  shutdown,
+} from './prove.js';
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -58,6 +65,7 @@ async function main(): Promise<number> {
     // --head-branch is optional; its absence only removes the one check the
     // namespace prefix cannot express.
     proveWriteTargets(plan, policy, values['head-branch']),
+    proveCardinality(plan, policy),
   ];
 
   let failed = false;
