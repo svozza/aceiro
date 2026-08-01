@@ -67,4 +67,6 @@ the right diff.
 
 - **`execute_plan.py` inherits it unbuilt.** Its workflow does not exist yet, so
   the env contract is documented in its module docstring and asserted by its
-  tests. The workflow that eventually runs it must supply `BASE_REF`.
+  tests. The workflow that eventually runs it must supply both: `BASE_REF` for
+  the retarget check, and `BASE_SHA` to anchor the diff it re-fetches (see the
+  ADR-0005 addendum for why it re-fetches).

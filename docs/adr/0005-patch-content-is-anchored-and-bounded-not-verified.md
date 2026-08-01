@@ -68,3 +68,38 @@ possesses, with no new trusted input.
   definition the pull request did not touch, so it is out of scope. This is the
   limitation most likely to want revisiting, and it needs its own ADR when a
   concrete plan requires it.
+
+## Addendum: the closed set has to be closed by the executor
+
+Added 2026-08-01, after review found the frame condition quantifying over an
+untrusted set.
+
+The frame is "a ∀-claim over a closed set the verifier already possesses, with
+no new trusted input" — the sentence that makes it a containment argument rather
+than a filter. What closes the set is where `changed_files` comes from, and in
+`execute_plan.py` it came out of the downloaded bundle, i.e. from the job that
+also ran the generator. The set was closed by the plan job.
+
+So the ∀-claim held over whatever list that job supplied. A `diff.patch` and
+`changed_files.json` naming a file the pull request never touched made a `patch`
+or `suggest` step on that file provenant, and anchoring does not catch it:
+anchoring proves the model read bytes that are really in the quarantine, and a
+contributor-authored file is really there. Reproduced end to end — a suggest
+step on `src/forged.py` reached the delivery decision.
+
+The prover made it slightly worse. `verify_plan` takes the parsed list and
+`prove-cli` takes a `--changed-files` PATH, so a fix that re-fetched the list for
+the verifier while leaving the prover pointed at the bundle's file would have the
+two gates proving different things about different files — with the frame proof,
+the one this ADR is about, reading the untrusted copy.
+
+**Both executors now establish their own provenance inputs.** `post.py` and
+`execute_plan.py` call `prepare_context.fetch_anchored_pair`, and
+`execute_plan.py` writes the fetched list to `changed_files.fetched.json` and
+points the prover at that — one list, both gates. The bundle's copies remain in
+the artifact as reproducibility evidence, which is all they were ever load-bearing
+for.
+
+Nothing about the frame condition itself changes. This is the ADR's own reasoning
+being made true: `changed_files` is only a closed set if the process making the
+∀-claim is the one that closed it.

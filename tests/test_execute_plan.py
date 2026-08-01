@@ -13,6 +13,7 @@ ordering: verify before prove, prove before decide, decide before any fetch.
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -281,6 +282,7 @@ def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
     monkeypatch.setenv("PR_NUMBER", "1")
     monkeypatch.setenv("HEAD_SHA", "reviewed-sha")
+    monkeypatch.setenv("BASE_SHA", "event-base-sha")
     monkeypatch.setenv("BASE_REF", "main")
     monkeypatch.setattr(sys, "argv", [
         "execute_plan.py",
@@ -289,6 +291,13 @@ def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
         "--policy", str(policy_path),
         "--prover", str(prover),
     ])
+    # The executor fetches its own provenance inputs; the network stands in for a
+    # PR whose real changes are the plan fixtures'. Tests about the fetch itself
+    # override this.
+    monkeypatch.setattr(
+        execute_plan, "fetch_anchored_pair",
+        lambda repo, base, head: (PLAN_DIFF.encode(), list(PLAN_CHANGED_FILES)),
+    )
     return artifact_dir
 
 
@@ -386,3 +395,98 @@ class TestMain:
         captured = capsys.readouterr()
         assert "delivery decision: suggestion comments" in captured.out
         assert "stacked PR refused" not in captured.err
+
+
+class TestProvenanceInputsAreFirstParty:
+    """The frame condition — every patched path is a file the PR touched — is
+    only as strong as the changed-file list it quantifies over, and that list
+    arrived in the bundle from the job that ran the generator.
+
+    Both gates read it: verify_plan takes the parsed list, and the prover takes
+    a PATH, so a partial fix would leave the two proving different things about
+    different files. That is why the fetched list is written to disk and the
+    prover is pointed at THAT file.
+    """
+
+    FORGED = "src/forged.py"
+
+    def forged_bundle(self, artifact_dir, pr_root):
+        """A plan targeting a file the PR never changed, with a bundle diff and
+        changed-file list that claim it did.
+
+        Anchoring passes on purpose: the file exists in the quarantine with the
+        bytes the step names, because the contributor authored it. Provenance is
+        the only thing standing between the plan and a suggestion on a file the
+        PR never touched.
+        """
+        target = pr_root / self.FORGED
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"import os\ndef load(path):\n    return path\n")
+        (artifact_dir / "plan.json").write_text(json.dumps({
+            "steps": [suggest(path=self.FORGED, line=2)],
+        }))
+        (artifact_dir / "diff.patch").write_text(
+            f"diff --git a/{self.FORGED} b/{self.FORGED}\n"
+            f"--- a/{self.FORGED}\n+++ b/{self.FORGED}\n"
+            "@@ -1,3 +1,3 @@\n import os\n+def load(path):\n     return path\n"
+        )
+        (artifact_dir / "changed_files.json").write_text(json.dumps([self.FORGED]))
+
+    def test_a_tampered_bundle_cannot_make_a_path_provenant(
+        self, main_env, pr_root, monkeypatch, capsys
+    ):
+        self.forged_bundle(main_env, pr_root)
+        # The first-party fetch reports what the PR really changed.
+        monkeypatch.setattr(
+            execute_plan, "fetch_anchored_pair",
+            lambda repo, base, head: (PLAN_DIFF.encode(), list(PLAN_CHANGED_FILES)),
+        )
+        stub_pr(monkeypatch, pr_payload())
+
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+
+        captured = capsys.readouterr()
+        assert "not a file this PR touched" in captured.err
+        assert "delivery decision" not in captured.out
+
+    def test_the_prover_is_given_the_fetched_list_not_the_bundles(
+        self, main_env, pr_root, monkeypatch
+    ):
+        # verify_plan takes the parsed list and the prover takes a path. If the
+        # prover keeps reading the bundle's file, the frame condition is proved
+        # against the very list the executor refused to trust.
+        self.forged_bundle(main_env, pr_root)
+        monkeypatch.setattr(
+            execute_plan, "fetch_anchored_pair",
+            lambda repo, base, head: (PLAN_DIFF.encode(), list(PLAN_CHANGED_FILES)),
+        )
+        seen = {}
+
+        def spy_prover(prover_js, plan_path, changed_files_path, policy_path):
+            seen["listed"] = json.loads(Path(changed_files_path).read_text())
+
+        monkeypatch.setattr(execute_plan, "run_prover", spy_prover)
+        # A plan the fetched list DOES support, so the run reaches the prover.
+        (main_env / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
+        stub_pr(monkeypatch, pr_payload())
+
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+
+        assert seen["listed"] == list(PLAN_CHANGED_FILES)
+        assert self.FORGED not in seen["listed"], "the prover read the bundle's changed-file list"
+
+    def test_the_fetch_is_anchored_to_the_reviewed_shas(self, main_env, monkeypatch):
+        asked = {}
+
+        def fake_fetch(repo, base, head):
+            asked.update(repo=repo, base=base, head=head)
+            return PLAN_DIFF.encode(), list(PLAN_CHANGED_FILES)
+
+        monkeypatch.setattr(execute_plan, "fetch_anchored_pair", fake_fetch)
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+
+        assert asked == {"repo": "o/r", "base": "event-base-sha", "head": "reviewed-sha"}

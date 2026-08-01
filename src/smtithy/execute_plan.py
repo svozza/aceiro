@@ -1,11 +1,15 @@
 """Trusted plan executor: re-verify, re-prove, decide the delivery, deliver.
 
 Runs in the execute job (the one holding `pull-requests: write`). Trusts
-nothing from the plan job: re-runs verify_plan() in this process against the
-quarantine-fetched PR head (the same tree that anchored the plan), re-proves
-the ordering/frame/taint policies by running prove-cli as a subprocess
-(ADR-0003 put the prover in TypeScript; this process is Python), and only
-then decides how the fix is delivered.
+nothing from the plan job: re-fetches the SHA-anchored diff and changed-file
+list rather than reading the bundle's copies, re-runs verify_plan() in this
+process against the quarantine-fetched PR head (the same tree that anchored the
+plan), re-proves the ordering/frame/taint policies by running prove-cli as a
+subprocess (ADR-0003 put the prover in TypeScript; this process is Python), and
+only then decides how the fix is delivered.
+
+The plan is the one thing that must come from the bundle, being the plan job's
+output. Everything the plan is CHECKED against is first-party.
 
 The delivery decision is the EXECUTOR's, computed from checkable structure of
 the verified plan, never the model's (ADR-0009):
@@ -28,11 +32,13 @@ things: exit 1 carries a counterexample (an audit record — the model produced
 a plan a policy disproves), exit 2 means nothing was proved at all (an
 operational failure of the run, not evidence about the plan).
 
-Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_REF
-(the reviewed base BRANCH, which is what a retarget changes).
-Arguments: --artifact-dir (plan.json + diff.patch + changed_files.json),
---pr-root (the quarantine-fetched reviewed head, the anchor tree), --policy,
-and --prover (the built prove-cli.js).
+Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA
+(the diff anchor), BASE_REF (the reviewed base BRANCH, which is what a retarget
+changes — ADR-0012).
+Arguments: --artifact-dir (plan.json; the bundle's diff.patch and
+changed_files.json travel as evidence only, since both gates' provenance inputs
+are re-fetched here), --pr-root (the quarantine-fetched reviewed head, the anchor
+tree), --policy, and --prover (the built prove-cli.js).
 """
 
 from __future__ import annotations
@@ -45,8 +51,9 @@ from pathlib import Path
 from typing import NamedTuple, cast
 
 from github_api import api_json, fail, pr_moved
-from canonicalize import read_contributor_text, read_harness_text
+from canonicalize import decode_contributor_bytes, read_harness_text
 from plan_verify import tree_content_source, verify_plan
+from prepare_context import fetch_anchored_pair
 from verify import Rejection
 
 _HARNESS_ROOT = Path(__file__).resolve().parent
@@ -206,14 +213,28 @@ def main() -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     pr_number = int(os.environ["PR_NUMBER"])
     reviewed_sha = os.environ["HEAD_SHA"]
+    # Two roles, deliberately separate (ADR-0012): the SHA anchors the diff, the
+    # ref detects a retarget. BASE_SHA is unusable for the second because the
+    # live base.sha tracks the branch tip.
+    reviewed_base_sha = os.environ["BASE_SHA"]
     reviewed_base_ref = os.environ["BASE_REF"]
 
     plan_path = args.artifact_dir / "plan.json"
     plan = json.loads(read_harness_text(plan_path))
-    diff_text = read_contributor_text(args.artifact_dir / "diff.patch")
-    changed_files_path = args.artifact_dir / "changed_files.json"
-    changed_files = json.loads(read_harness_text(changed_files_path))
     policy = json.loads(read_harness_text(args.policy))
+
+    # The provenance inputs are re-fetched, not read from the bundle. The plan
+    # must come from the plan job — it IS that job's output — but the diff and
+    # the changed-file list are facts about the PR that this job's own token can
+    # establish, and the frame condition is only as strong as the list it
+    # quantifies over. post.py takes the same posture toward the review job.
+    diff_bytes, changed_files = fetch_anchored_pair(repo, reviewed_base_sha, reviewed_sha)
+    diff_text = decode_contributor_bytes(diff_bytes)
+    # Written out because the prover takes a PATH, not a parsed list: pointing it
+    # at the bundle's copy would prove the frame condition against the very list
+    # this executor declined to trust. One list, both gates.
+    changed_files_path = args.artifact_dir / "changed_files.fetched.json"
+    changed_files_path.write_text(json.dumps(changed_files))
 
     # Re-verification happens HERE, where the write token lives. The plan
     # job's claim to have verified anything is not trusted — the posture
