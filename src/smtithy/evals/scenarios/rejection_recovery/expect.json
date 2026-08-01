@@ -11,8 +11,18 @@
       "severity_at_least": "medium",
       "line_in": [
         24
+      ],
+      "body_contains_any": [
+        "newest",
+        "most recent",
+        "most-recently",
+        "last=True",
+        "wrong end",
+        "instead of the oldest",
+        "least recently"
       ]
     }
   ],
-  "line_accuracy_note": "Exact line 24, same defect as lru_eviction_bug (context_from). The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt \u2014 do not widen it."
+  "line_accuracy_note": "Exact line 24, same defect as lru_eviction_bug (context_from). The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt — do not widen it.",
+  "diagnosis_note": "body_contains_any is lru_eviction_bug's, since the planted defect is the same one (context_from). The recovery property is about resubmitting a COMPLETE artifact, so the artifact still has to carry the diagnosis."
 }

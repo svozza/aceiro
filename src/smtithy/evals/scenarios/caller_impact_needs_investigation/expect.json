@@ -8,6 +8,15 @@
       "severity_at_least": "high",
       "line_in": [
         12
+      ],
+      "body_contains_any": [
+        "last key",
+        "final key",
+        "drops",
+        "omit",
+        "chunk_size - 1",
+        "off-by-one",
+        "off by one"
       ]
     }
   ],
@@ -27,5 +36,6 @@
     "input_must_reference_base": true,
     "why": "The defect file AND the caller, both under BASE. A Grep scoped to pr_root satisfies nothing: that file is already fully present in the diff, and the scenario's premise is that the impact is only visible in a caller. 'ssm' was the earlier needle and matched any path containing those three characters."
   },
-  "line_accuracy_note": "Exact line 12: the `yield` whose islice upper bound is `i + chunk_size - 1`. The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt \u2014 do not widen it."
+  "line_accuracy_note": "Exact line 12: the `yield` whose islice upper bound is `i + chunk_size - 1`. The model reads a diff whose lines are prefixed with their new-file numbers (artifact.annotate_diff), so the anchor is a copy rather than a calculation; measured 4/4 exact on every scenario. If this starts failing, look at the annotation or the prompt — do not widen it.",
+  "diagnosis_note": "body_contains_any names the defect (the last key of every chunk is dropped), not a wording. Without it, correct path+line+severity graded as having found it even with no diagnosis — and this scenario's whole premise is understanding the impact."
 }

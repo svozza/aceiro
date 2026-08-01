@@ -79,6 +79,7 @@ EXPECT_KEYS = frozenset({
     "context_from",
     # prose, for the reader of the scenario
     "description", "line_accuracy_note", "max_findings_note", "residual_risk_note",
+    "diagnosis_note",
 })
 
 # transcript_tool_use_matching's own vocabulary. Nested one level down, and the
