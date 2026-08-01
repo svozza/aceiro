@@ -138,6 +138,9 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
   }
   const kindEntries = Object.entries(kinds as Record<string, unknown>);
   if (kindEntries.length === 0) throw new PolicyError('policy.plan.step_kinds: no kinds declared');
+  // Null prototype, so neither this function's own `in` test below nor any
+  // consumer's lookup can resolve a name inherited from Object.prototype.
+  const declaredKinds: Record<string, unknown> = Object.assign(Object.create(null), kinds);
 
   for (const [name, spec] of kindEntries) {
     if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) {
@@ -188,7 +191,7 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
     for (const side of ['before', 'after'] as const) {
       const value = entry[side];
       if (typeof value !== 'string') throw new PolicyError(`${where}.${side}: expected a string`);
-      if (!(value in (kinds as Record<string, unknown>))) {
+      if (!(value in declaredKinds)) {
         // An ordering rule naming a kind that does not exist is a rule that can
         // never fire, which reads as enforcement while enforcing nothing.
         throw new PolicyError(`${where}.${side}: ${JSON.stringify(value)} is not a declared step kind`);
@@ -196,7 +199,9 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
     }
   }
 
-  return plan as unknown as PlanPolicy;
+  // step_kinds carries the null prototype outward too, so no consumer's lookup
+  // can resolve an inherited name either.
+  return { ...plan, step_kinds: declaredKinds } as unknown as PlanPolicy;
 }
 
 export function loadPlanPolicy(policyPath: string): PlanPolicy {

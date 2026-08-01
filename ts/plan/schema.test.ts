@@ -164,6 +164,31 @@ describe('step kinds are allowlisted', () => {
     rejected({ steps: [{ ...validStep, kind: 'Patch' }] }, /not a declared step kind/);
   });
 
+  // A plain-object lookup resolves names inherited from Object.prototype, so an
+  // untrusted kind of 'toString' used to reach Object.keys(kindSpec.args) and
+  // throw a TypeError past the Rejection path. The class of inherited names is
+  // what matters, not the three famous ones.
+  for (const kind of ['toString', 'constructor', '__proto__', 'valueOf', 'hasOwnProperty']) {
+    it(`rejects the prototype-inherited kind ${kind} as a Rejection, not a TypeError`, () => {
+      assert.throws(
+        () => checkPlanSchema({ steps: [{ id: 's0', kind, args: {} }] }, POLICY),
+        (error: unknown) => {
+          assert.ok(error instanceof Rejection, `expected Rejection, got ${(error as Error).constructor.name}`);
+          assert.match((error as Error).message, /not a declared step kind/);
+          return true;
+        },
+      );
+    });
+  }
+
+  it('still rejects an inherited name carrying otherwise-valid patch args', () => {
+    // args that WOULD satisfy patch, so nothing downstream can be blamed.
+    rejected(
+      { steps: [{ id: 's0', kind: 'toString', args: { path: 'a.py', old: 'a', new: 'b' } }] },
+      /not a declared step kind/,
+    );
+  });
+
   it('rejects a missing required arg', () => {
     rejected({ steps: [{ ...validStep, args: { path: 'a.py', old: 'a' } }] }, /missing new/);
   });
@@ -234,6 +259,24 @@ describe('the policy itself is validated', () => {
       name: 'PolicyError',
       message: /deploy.*not a declared step kind/,
     });
+  });
+
+  it('rejects an ordering rule naming a prototype-inherited kind', () => {
+    // The `in` test that validates a rule's kinds was the second reader of
+    // step_kinds able to resolve an inherited name.
+    assert.throws(() => checkPlanPolicy({ ...POLICY, ordering: [{ before: 'toString', after: 'patch' }] }), {
+      name: 'PolicyError',
+      message: /toString.*not a declared step kind/,
+    });
+  });
+
+  it('gives step_kinds a null prototype, so no reader can resolve an inherited name', () => {
+    // The structural guarantee the two cases above rely on, asserted directly:
+    // a future reader inherits it without knowing to guard.
+    const policy = checkPlanPolicy(POLICY);
+    assert.equal(Object.getPrototypeOf(policy.step_kinds), null);
+    assert.equal(policy.step_kinds['toString'], undefined);
+    assert.equal('toString' in policy.step_kinds, false);
   });
 
   it('rejects a string arg with no max_length', () => {

@@ -112,6 +112,17 @@ class TestStepShape:
         for kind in ("patch", "push_branch", "open_pr", "label", "suggest"):
             assert kind in str(exc.value)
 
+    @pytest.mark.parametrize(
+        "kind", ["toString", "constructor", "__proto__", "valueOf", "hasOwnProperty", "items", "get"]
+    )
+    def test_inherited_and_dunder_names_are_unknown_kinds(self, kind):
+        # `kind in step_kinds` is an own-key test on a dict, so these are already
+        # unknown here. Mirrors ts/plan/schema.test.ts, where a plain-object
+        # lookup resolved Object.prototype names and threw a TypeError instead.
+        plan = {"steps": [{"id": "s0", "kind": kind, "args": {}}]}
+        with pytest.raises(Rejection, match="not a declared step kind"):
+            check_plan_schema(plan, PLAN_POLICY)
+
     def test_extra_step_keys_reject(self):
         step = patch_step()
         step["when"] = "always"

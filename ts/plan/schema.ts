@@ -140,6 +140,8 @@ export function checkPlanSchema(candidate: unknown, policy: PlanPolicy): Plan {
 
     const kind = step['kind'];
     if (typeof kind !== 'string') throw new Rejection(`${where}.kind: expected a string`);
+    // checkPlanPolicy gives step_kinds a null prototype, so this cannot resolve
+    // an inherited name like "toString".
     const kindSpec = policy.step_kinds[kind];
     if (kindSpec === undefined) {
       // Allowlist, not denylist: an unknown kind is not a no-op the executor can
