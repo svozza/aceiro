@@ -264,6 +264,10 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python harness/src/smtithy/prepare_context.py --output-dir "$RUNNER_TEMP/context"
 
+      # Runs after Prepare SHA-anchored context on purpose: that step caps the
+      # head tree's per-blob and aggregate size from the tree API, so a tree too
+      # large to check out is refused before any of it is transferred. The diff
+      # caps cannot do it — a binary addition is a tiny diff with a full blob.
       - name: Quarantine-fetch PR head (bytes only, never executed)
         env:
           GITHUB_TOKEN: ${{ github.token }}

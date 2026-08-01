@@ -239,6 +239,19 @@ class TestQuarantineIsStrippedOfSymlinks:
     """Stripping happens where the tree is materialised; cc_loop asserts it
     independently."""
 
+    def test_the_tree_is_capped_before_it_is_materialised(self):
+        # prepare_context caps the head tree's blob and aggregate size from the
+        # tree API. That only bounds the checkout if it runs FIRST: reordered,
+        # the fetch has already pulled the bytes the cap exists to refuse.
+        steps = parse_steps((WORKFLOWS / "ai-pr-review.yml").read_text(), "review")
+        names = [step.get("name", "") for step in steps]
+        context = next(i for i, n in enumerate(names) if "SHA-anchored context" in n)
+        quarantine = next(i for i, n in enumerate(names) if "Quarantine-fetch" in n)
+        assert context < quarantine, (
+            "the quarantine fetch runs before the head-tree size cap, so an oversized tree is "
+            "transferred before anything refuses it"
+        )
+
     def test_the_quarantine_step_strips_symlinks(self):
         text = (WORKFLOWS / "ai-pr-review.yml").read_text()
         quarantine = text.split("Quarantine-fetch PR head")[1].split("- name:")[0]

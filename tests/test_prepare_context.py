@@ -47,6 +47,8 @@ def stubs(monkeypatch):
         "pr_sequence": [pr_payload(), pr_payload()],  # before, after collection
         "diff": diff_for("x.py"),
         "compare_pages": [{"files": [{"filename": "x.py"}]}],
+        # The head tree, bounded: the quarantine checks out every blob here.
+        "tree": {"truncated": False, "tree": [{"path": "x.py", "type": "blob", "size": 100}]},
         "requested": [],
     }
 
@@ -54,6 +56,8 @@ def stubs(monkeypatch):
         cfg["requested"].append(path)
         if "/compare/" in path:
             return cfg["compare_pages"].pop(0) if cfg["compare_pages"] else {"files": []}
+        if "/git/trees/" in path:
+            return cfg["tree"]
         return cfg["pr_sequence"].pop(0)
 
     def fake_api_request(path, method="GET", payload=None, accept="application/vnd.github+json"):
@@ -192,3 +196,60 @@ class TestChangedFilesAreAnchoredToTheEventBase:
         stubs["compare_pages"] = [{"files": [{"filename": "x.py"}, {"filename": "img.png"}]}]
         prepare_context.main()
         assert json.loads((env / "changed_files.json").read_text()) == ["x.py", "img.png"]
+
+
+class TestTheHeadTreeIsBounded:
+    """The diff caps cannot bound the checkout. A binary addition produces a
+    tiny diff and retains its full blob cost — measured: a 200 KB binary add is
+    a 231-byte diff — so 150 incompressible 99 MB files stay under both the
+    300-file and 1.5 MB caps while the quarantine fetch attempts ~15 GB.
+
+    Measured from the tree API, which reports every blob's size before any
+    bytes are transferred, so the refusal costs one request rather than a
+    filled disk.
+    """
+
+    def tree(self, *sizes, truncated=False):
+        return {
+            "truncated": truncated,
+            "tree": [
+                {"path": f"f{i}.bin", "type": "blob", "size": size}
+                for i, size in enumerate(sizes)
+            ],
+        }
+
+    def test_a_normal_tree_passes(self):
+        prepare_context.assert_head_tree_within_caps(self.tree(1000, 2000, 3000))
+
+    def test_an_oversized_aggregate_aborts(self, capsys):
+        over = prepare_context.MAX_TREE_BYTES // 2 + 1
+        with pytest.raises(SystemExit):
+            prepare_context.assert_head_tree_within_caps(self.tree(over, over))
+        assert "head tree" in capsys.readouterr().err
+
+    def test_a_single_oversized_blob_aborts(self, capsys):
+        with pytest.raises(SystemExit):
+            prepare_context.assert_head_tree_within_caps(self.tree(prepare_context.MAX_BLOB_BYTES + 1))
+        assert "f0.bin" in capsys.readouterr().err, "the offending path must be named"
+
+    def test_a_truncated_tree_aborts(self, capsys):
+        # Fail closed: a truncated listing cannot bound what was not listed.
+        with pytest.raises(SystemExit):
+            prepare_context.assert_head_tree_within_caps(self.tree(10, truncated=True))
+        assert "truncated" in capsys.readouterr().err
+
+    def test_subtrees_are_not_counted_as_content(self):
+        # Only blobs have a size; a tree entry carries none, and summing None
+        # would crash rather than refuse.
+        listing = self.tree(10)
+        listing["tree"].append({"path": "dir", "type": "tree"})
+        prepare_context.assert_head_tree_within_caps(listing)
+
+    def test_main_checks_the_tree_before_writing_context(self, env, stubs):
+        # Asserted through main() because the seam is the wiring: the check can
+        # be correct while nothing calls it, which no unit test of it would see.
+        over = prepare_context.MAX_BLOB_BYTES + 1
+        stubs["tree"] = {"truncated": False, "tree": [{"path": "huge.bin", "type": "blob", "size": over}]}
+        with pytest.raises(SystemExit):
+            prepare_context.main()
+        assert not (env / "diff.patch").exists()

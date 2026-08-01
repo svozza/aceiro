@@ -9,6 +9,10 @@ under review. Applies sanity caps (files/bytes) and fails loud on breach.
 compare call as the diff, never from /pulls/{n}/files, and the two are asserted
 to describe the same comparison.
 
+The head tree's size is capped here too, though the tree is materialised by the
+workflow's quarantine step rather than by this script: the tree API reports every
+blob's size before any bytes move, so this is where the refusal is cheap.
+
 Writes to --output-dir: pr.json, diff.patch, changed_files.json
 
 Environment: GITHUB_TOKEN (read-only), GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA,
@@ -29,6 +33,16 @@ from github_api import api_json, api_request, fail
 
 MAX_CHANGED_FILES = 300
 MAX_DIFF_BYTES = 1_500_000
+
+# The quarantine's bounds, which the diff caps cannot supply: a binary addition
+# produces a tiny diff and retains its full blob cost (measured: a 200 KB binary
+# add is a 231-byte diff), so a PR adding 150 incompressible 99 MB files stays
+# under both caps while the head-tree fetch attempts ~15 GB. Sized for source
+# trees the reviewer can plausibly review rather than for the runner's disk: the
+# generator reads this tree with Read/Grep/Glob, and a repository above these
+# bounds is not one a 30-turn review is going to cover.
+MAX_BLOB_BYTES = 10_000_000
+MAX_TREE_BYTES = 500_000_000
 
 
 def fetch_pr(repo: str, pr_number: int) -> dict:
@@ -91,6 +105,40 @@ def assert_diff_and_list_agree(diff: bytes, changed_files: list[str]) -> None:
         )
 
 
+def assert_head_tree_within_caps(listing: dict) -> None:
+    """Refuse a head tree too large to quarantine, per blob and in aggregate.
+
+    Takes the recursive tree listing rather than fetching, so the decision is
+    made from sizes the API reports before any bytes move — the quarantine fetch
+    is the expensive step and this runs before it.
+
+    A truncated listing fails closed: it cannot bound what it did not list.
+    """
+    if listing.get("truncated"):
+        fail(
+            "the head tree listing is truncated, so its size cannot be bounded; no review "
+            "(a tree this large is not one a bounded review can cover)"
+        )
+    blobs = [entry for entry in listing.get("tree", []) if entry.get("type") == "blob"]
+    for entry in blobs:
+        if (size := entry.get("size") or 0) > MAX_BLOB_BYTES:
+            fail(
+                f"head tree contains {entry['path']} at {size} bytes (per-file cap "
+                f"{MAX_BLOB_BYTES}); no review"
+            )
+    total = sum(entry.get("size") or 0 for entry in blobs)
+    if total > MAX_TREE_BYTES:
+        fail(
+            f"head tree is {total} bytes across {len(blobs)} files (cap {MAX_TREE_BYTES}); "
+            "no review"
+        )
+
+
+def fetch_head_tree(repo: str, head_sha: str) -> dict:
+    """The recursive tree listing at the reviewed head SHA."""
+    return cast("dict", api_json(f"/repos/{repo}/git/trees/{head_sha}?recursive=1"))
+
+
 def fetch_anchored_pair(repo: str, base_sha: str, head_sha: str) -> tuple[bytes, list[str]]:
     """The diff and the changed-file list for base_sha...head_sha, capped and
     asserted to describe the same comparison.
@@ -138,6 +186,11 @@ def main() -> None:
 
     if pr["changed_files"] > MAX_CHANGED_FILES:
         fail(f"PR changes {pr['changed_files']} files (cap {MAX_CHANGED_FILES}); no review")
+
+    # Before the diff, because this is the cheap refusal: the workflow's
+    # quarantine step checks out this whole tree, and the diff caps below cannot
+    # see a binary addition's real cost.
+    assert_head_tree_within_caps(fetch_head_tree(repo, expected_head))
 
     diff, changed_files = fetch_anchored_pair(repo, base_sha, expected_head)
 
