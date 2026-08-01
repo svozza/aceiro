@@ -40,6 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from artifact import POLICY_PATH  # noqa: E402
+from canonicalize import read_contributor_text, read_harness_text  # noqa: E402
 from base_fixture import materialise as materialise_base  # noqa: E402
 from cc_loop import run as run_loop  # noqa: E402
 from verify import Rejection, verify  # noqa: E402
@@ -291,14 +292,14 @@ def run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dict
         }
 
     review = json.loads(review_path.read_text())
-    diff_text = (context_dir / "diff.patch").read_text()
-    changed_files = json.loads((context_dir / "changed_files.json").read_text())
+    diff_text = read_contributor_text(context_dir / "diff.patch")
+    changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
     # The harness's own policy, not one read out of the tree under review. Same
     # correction as cc_loop.py: base_root is the CONSUMER's content, so sourcing
     # the policy from it lets the reviewed repository supply the rules it is
     # graded against — and here it would also mean the empty BASE has no policy
     # at all.
-    policy = json.loads(POLICY_PATH.read_text())
+    policy = json.loads(read_harness_text(POLICY_PATH))
 
     try:
         grade(review, expect, diff_text, changed_files, policy, events)

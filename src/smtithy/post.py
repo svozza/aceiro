@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import cast
 
 from github_api import api_json, fail, paginate
+from canonicalize import read_contributor_text, read_harness_text
 from verify import Rejection, verify
 
 # The incumbent's marker and heading. Defaults, so a caller passing neither posts
@@ -204,10 +205,10 @@ def main() -> None:
     reviewed_sha = os.environ["HEAD_SHA"]
     reviewed_base = os.environ["BASE_SHA"]
 
-    artifact = json.loads((args.artifact_dir / "review.json").read_text())
-    diff_text = (args.artifact_dir / "diff.patch").read_text()
-    changed_files = json.loads((args.artifact_dir / "changed_files.json").read_text())
-    policy_text = args.policy.read_text()
+    artifact = json.loads(read_harness_text(args.artifact_dir / "review.json"))
+    diff_text = read_contributor_text(args.artifact_dir / "diff.patch")
+    changed_files = json.loads(read_harness_text(args.artifact_dir / "changed_files.json"))
+    policy_text = read_harness_text(args.policy)
     policy = json.loads(policy_text)
 
     # Verification happens HERE, where the write token lives. Job 2's claims

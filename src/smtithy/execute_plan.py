@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import NamedTuple, cast
 
 from github_api import api_json, fail
+from canonicalize import read_contributor_text, read_harness_text
 from plan_verify import tree_content_source, verify_plan
 from verify import Rejection
 
@@ -207,11 +208,11 @@ def main() -> None:
     reviewed_base = os.environ["BASE_SHA"]
 
     plan_path = args.artifact_dir / "plan.json"
-    plan = json.loads(plan_path.read_text())
-    diff_text = (args.artifact_dir / "diff.patch").read_text()
+    plan = json.loads(read_harness_text(plan_path))
+    diff_text = read_contributor_text(args.artifact_dir / "diff.patch")
     changed_files_path = args.artifact_dir / "changed_files.json"
-    changed_files = json.loads(changed_files_path.read_text())
-    policy = json.loads(args.policy.read_text())
+    changed_files = json.loads(read_harness_text(changed_files_path))
+    policy = json.loads(read_harness_text(args.policy))
 
     # Re-verification happens HERE, where the write token lives. The plan
     # job's claim to have verified anything is not trusted — the posture

@@ -1,18 +1,23 @@
-"""One spelling of "invisible", shared by every gate that needs it.
+"""Where text becomes text: one spelling of "invisible", and one of "decode".
 
 CONTEXT.md's canonicalization: establishing what a target environment will
-actually render a piece of text as, before deciding whether it is safe. Read by
-the input fence (artifact.escape_fence), the artifact secret scan
-(verify.rendered_text), the plan secret scan, and verify's canonical-text gate
-(ADR-0011), so a code point added here closes every one of them at once.
+actually render a piece of text as, before deciding whether it is safe.
 
-If the artifact verifier is ported to TypeScript (ADR-0003 phases this table
-first), it must stay one source of truth across both languages.
+The invisible table is read by the input fence (artifact.escape_fence), the
+artifact secret scan (verify.rendered_text), the plan secret scan, and verify's
+canonical-text gate (ADR-0011), so a code point added here closes every one of
+them at once. If the artifact verifier is ported to TypeScript (ADR-0003 phases
+this table first), it must stay one source of truth across both languages.
+
+The readers exist so the codec is never the platform's choice, and so
+contributor-controlled bytes and harness-written bytes are decoded by different
+rules.
 """
 
 from __future__ import annotations
 
 import unicodedata
+from pathlib import Path
 
 # Unicode Default_Ignorable_Code_Point ranges (DerivedCoreProperties.txt,
 # Unicode 16.0), inclusive. Tabulated explicitly because unicodedata exposes no
@@ -61,3 +66,28 @@ def is_invisible(ch: str) -> bool:
 def strip_invisible(text: str) -> str:
     """Drop the code points that render as nothing but break exact matching."""
     return "".join(ch for ch in text if not is_invisible(ch))
+
+
+def read_contributor_text(path: Path) -> str:
+    """Decode a file whose bytes a contributor controls — the diff, above all.
+
+    Explicit UTF-8 with errors="replace", never the platform default: the diff is
+    written as raw bytes in whatever encoding the changed files use, so a latin-1
+    byte would otherwise raise UnicodeDecodeError out of context assembly, and
+    under a POSIX/C locale the effective codec is ASCII. U+FFFD in a diff line is
+    a reviewable defect; a crashed job with no logged reason is not.
+
+    Replacement is safe for the checks downstream because provenance compares
+    LINE NUMBERS, and anchoring compares raw bytes read from the tree rather than
+    anything decoded here.
+    """
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def read_harness_text(path: Path) -> str:
+    """Decode a file the harness itself wrote (policy, prompt, JSON artifacts).
+
+    Strict UTF-8: these are ours, so a decode error is a broken deployment to fail
+    on rather than paper over.
+    """
+    return path.read_text(encoding="utf-8")

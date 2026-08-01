@@ -40,6 +40,7 @@ from artifact import (
     fence,
     sha256,
 )
+from canonicalize import read_contributor_text, read_harness_text
 from cc_loop import MAX_SUBMISSIONS, drive_session, make_submit_tool, tool_guidance
 from plan_verify import tree_content_source, verify_plan
 
@@ -155,7 +156,7 @@ def build_plan_user_message(context_dir: Path) -> str:
     the plan is anchored against the same SHA-anchored context the review
     was, or the anchor and the review can disagree.
     """
-    finding = json.loads((context_dir / "finding.json").read_text())
+    finding = json.loads(read_harness_text(context_dir / "finding.json"))
     review_context = build_user_message(context_dir)
     # The reviewer's closing instruction is the one review-specific sentence
     # in an otherwise reusable context block; swap it rather than duplicate
@@ -186,13 +187,13 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path,
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    policy_text = POLICY_PATH.read_text()
+    policy_text = read_harness_text(POLICY_PATH)
     policy = json.loads(policy_text)
     transcript = Transcript(output_dir / "transcript.jsonl", policy)
 
     schema = build_plan_schema(policy)
     system_prompt = (
-        PLAN_PROMPT_PATH.read_text()
+        read_harness_text(PLAN_PROMPT_PATH)
         + render_plan_constraints(policy)
         + tool_guidance(base_root.resolve(), pr_root.resolve())
     )
@@ -207,11 +208,14 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path,
         max_rounds=MAX_SUBMISSIONS,
     )
 
-    user_message = build_plan_user_message(context_dir)
+    try:
+        user_message = build_plan_user_message(context_dir)
+    except (OSError, ValueError, UnicodeError) as exc:
+        return fail(transcript, f"cannot assemble the plan context: {exc}")
     transcript.log("context", sha256=sha256(user_message), bytes=len(user_message.encode()))
 
-    diff_text = (context_dir / "diff.patch").read_text()
-    changed_files = json.loads((context_dir / "changed_files.json").read_text())
+    diff_text = read_contributor_text(context_dir / "diff.patch")
+    changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
     guidance = render_plan_rejection_guidance(policy)
 
     # The content source is pinned to pr_root HERE, not inside the tool: the

@@ -15,7 +15,13 @@ import time
 import unicodedata
 from pathlib import Path
 
-from canonicalize import DEFAULT_IGNORABLE_RANGES, is_default_ignorable, strip_invisible
+from canonicalize import (
+    DEFAULT_IGNORABLE_RANGES,
+    is_default_ignorable,
+    read_contributor_text,
+    read_harness_text,
+    strip_invisible,
+)
 from diff_map import walk_diff
 
 # Harness-owned files, resolved relative to THIS MODULE rather than to the
@@ -388,9 +394,9 @@ def annotate_diff(diff_text: str) -> str:
 
 
 def build_user_message(context_dir: Path) -> str:
-    pr = json.loads((context_dir / "pr.json").read_text())
-    diff = (context_dir / "diff.patch").read_text()
-    changed_files = json.loads((context_dir / "changed_files.json").read_text())
+    pr = json.loads(read_harness_text(context_dir / "pr.json"))
+    diff = read_contributor_text(context_dir / "diff.patch")
+    changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
 
     author_claims = f"Title: {pr['title']}\n\nBody:\n{pr.get('body') or '(empty)'}"
     return (

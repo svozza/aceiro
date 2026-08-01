@@ -29,7 +29,7 @@ from urllib.parse import unquote
 
 from markdown_it import MarkdownIt
 
-from canonicalize import is_invisible, strip_invisible
+from canonicalize import is_invisible, read_contributor_text, read_harness_text, strip_invisible
 from diff_map import walk_diff
 
 # Over-approximates GitHub's mention grammar (no trailing boundary check:
@@ -545,10 +545,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        artifact = json.loads(args.artifact.read_text())
-        diff_text = args.diff.read_text()
-        changed_files = json.loads(args.changed_files.read_text())
-        policy = json.loads(args.policy.read_text())
+        artifact = json.loads(read_harness_text(args.artifact))
+        diff_text = read_contributor_text(args.diff)
+        changed_files = json.loads(read_harness_text(args.changed_files))
+        policy = json.loads(read_harness_text(args.policy))
     except (OSError, json.JSONDecodeError) as exc:
         print(f"verifier: cannot load inputs: {exc}", file=sys.stderr)
         return 2

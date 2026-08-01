@@ -60,6 +60,7 @@ from run_evals import (  # noqa: E402
     transcript_events,
 )
 from artifact import POLICY_PATH  # noqa: E402
+from canonicalize import read_contributor_text, read_harness_text  # noqa: E402
 from verify import Rejection  # noqa: E402
 
 PLAN_SCENARIOS_DIR = Path(__file__).parent / "plan_scenarios"
@@ -233,9 +234,9 @@ def run_scenario(scenario_dir: Path, output_dir: Path) -> dict:
         }
 
     plan = json.loads(plan_path.read_text())
-    diff_text = (context_dir / "diff.patch").read_text()
-    changed_files = json.loads((context_dir / "changed_files.json").read_text())
-    policy = json.loads(POLICY_PATH.read_text())
+    diff_text = read_contributor_text(context_dir / "diff.patch")
+    changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
+    policy = json.loads(read_harness_text(POLICY_PATH))
 
     from plan_verify import tree_content_source
 

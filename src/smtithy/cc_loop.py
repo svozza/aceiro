@@ -59,6 +59,7 @@ from artifact import (
     render_rejection_guidance,
     sha256,
 )
+from canonicalize import read_contributor_text, read_harness_text
 from verify import Rejection, verify
 
 SUBMIT_TOOL = "mcp__review__submit_review"
@@ -486,7 +487,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    policy_text = POLICY_PATH.read_text()
+    policy_text = read_harness_text(POLICY_PATH)
     policy = json.loads(policy_text)
     transcript = Transcript(output_dir / "transcript.jsonl", policy)
 
@@ -495,7 +496,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
     # repository; absent, the assembled prompt is byte-identical to before
     # this seam existed, so the shipped default carries its eval history.
     system_prompt = (
-        apply_project_description(PROMPT_PATH.read_text(), os.environ.get("SMTITHY_PROJECT_DESCRIPTION"))
+        apply_project_description(read_harness_text(PROMPT_PATH), os.environ.get("SMTITHY_PROJECT_DESCRIPTION"))
         + render_constraints(policy)
         + tool_guidance(base_root.resolve(), pr_root.resolve())
     )
@@ -515,11 +516,17 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
     except Rejection as exc:
         return fail(transcript, str(exc))
 
-    user_message = build_user_message(context_dir)
+    # Context assembly reads four contributor-adjacent files. A failure here used
+    # to raise past the open transcript, leaving an uploaded artifact with no
+    # reason in it and an empty job log.
+    try:
+        user_message = build_user_message(context_dir)
+    except (OSError, ValueError, UnicodeError) as exc:
+        return fail(transcript, f"cannot assemble the review context: {exc}")
     transcript.log("context", sha256=sha256(user_message), bytes=len(user_message.encode()))
 
-    diff_text = (context_dir / "diff.patch").read_text()
-    changed_files = json.loads((context_dir / "changed_files.json").read_text())
+    diff_text = read_contributor_text(context_dir / "diff.patch")
+    changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
     guidance = render_rejection_guidance(policy)
 
     return drive_session(
