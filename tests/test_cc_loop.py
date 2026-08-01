@@ -277,6 +277,53 @@ class TestRunFailureModes:
         assert waits == [cc_loop.API_ERROR_BACKOFF_SECONDS]
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
 
+    def test_a_tripped_breaker_survives_an_api_error_retry(self, tmp_path, monkeypatch):
+        # The breaker's whole point is that a run repeating one failure fails
+        # loud. A fresh per-attempt state would forgive the abort, and the next
+        # attempt's placeholder would be written to review.json.
+        from verify import Rejection
+
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: None)
+        placeholder = {"summary": "content-free placeholder", "findings": [], "residual_risk": ""}
+
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+
+        submissions = {"n": 0}
+
+        def verify_fn(*_a):
+            submissions["n"] += 1
+            if submissions["n"] <= cc_loop.MAX_REPEATED_REJECTIONS:
+                raise Rejection("findings[0]: line 5 is not inside a diff hunk")
+
+        sessions = []
+
+        async def _query(prompt, options):
+            sessions.append(options)
+            if len(sessions) == 1:
+                for _ in range(cc_loop.MAX_REPEATED_REJECTIONS):
+                    await created[-1].handler(placeholder)
+                yield result_message(
+                    terminal_reason="api_error", result="API Error: 503 ServiceUnavailable"
+                )
+            else:
+                await created[-1].handler(placeholder)
+                yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path,
+                           verify_fn=verify_fn)
+        assert code == 1
+        assert not (tmp_path / "review.json").exists()
+        reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
+        assert reasons and "final submission rejected" in reasons[0]["reason"]
+
     def test_completing_without_a_submission_fails_closed(self, tmp_path, monkeypatch):
         assert run_loop(tmp_path, monkeypatch, [[result_message()]]) == 1
         assert not (tmp_path / "review.json").exists()

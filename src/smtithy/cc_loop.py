@@ -99,7 +99,8 @@ MAX_ATTEMPTS = 4
 # Submissions are bounded separately from API-error attempts now that a
 # rejected submission retries in-session rather than consuming a whole CLI
 # invocation. Four keeps the old budget: at most three rejections, then the
-# final one either lands or the run fails.
+# final one either lands or the run fails. Counted over the RUN, so the
+# ceiling is four submissions however many sessions they are spread across.
 MAX_SUBMISSIONS = 4
 
 # Doubled per attempt, so the budget spans 1s + 2s + 4s of waiting.
@@ -335,15 +336,20 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     stream capture, and the fail-closed artifact write. Everything specific to
     a channel — what the tool verifies, what the artifact is called — arrives
     through the parameters, so the plan generator runs THIS loop rather than a
-    diverging copy of it. `make_tool` is called once per attempt with the
-    fresh state dict and returns the submit tool."""
+    diverging copy of it. `make_tool` is called once per attempt with the run's
+    state dict and returns the submit tool."""
+    # The submission breaker is scoped to the RUN, not to a session: its budget
+    # and its abort verdict are properties of the one artifact being produced,
+    # so an api_error retry inherits them rather than being forgiven them.
+    state = {
+        "round": 0, "repeated": 0, "last_fingerprint": None,
+        "accepted": None, "abort_reason": None, "tool_calls": 0,
+    }
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        # Fresh per attempt: an api_error retry restarts the session, so its
-        # submission counters must not carry over.
-        state = {
-            "round": 0, "repeated": 0, "last_fingerprint": None,
-            "accepted": None, "abort_reason": None, "tool_calls": 0,
-        }
+        # What a restarted session does start over on: it may submit again, and
+        # its tool calls are counted against it alone.
+        state["accepted"] = None
+        state["tool_calls"] = 0
         submit = make_tool(state)
         server = build_review_server(submit, server_name)
         options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
@@ -365,6 +371,21 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
             )
         except ClaudeSDKError as exc:
             return fail(transcript, f"claude-agent-sdk error: {exc}")
+
+        # Checked before the session is classified, because the breaker's
+        # verdict outranks how the session happened to end: a run told it was
+        # aborted must not be resurrected by a retry the classification allows.
+        # The session's own ending is recorded alongside it, since that is the
+        # telemetry the branches below would otherwise have logged.
+        if state["abort_reason"]:
+            return fail(
+                transcript,
+                state["abort_reason"],
+                attempt=attempt,
+                subtype=result.subtype if result is not None else None,
+                terminal_reason=result.terminal_reason if result is not None else None,
+                tool_calls=state["tool_calls"],
+            )
 
         # A turn-limit exit is an error subtype but DOES carry a result
         # envelope, so name it: a generic failure would send a reader hunting
@@ -423,9 +444,6 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
             tool_calls=state["tool_calls"],
             permission_denials=result.permission_denials,
         )
-
-        if state["abort_reason"]:
-            return fail(transcript, state["abort_reason"])
 
         artifact = state["accepted"]
         if artifact is None:
