@@ -119,6 +119,30 @@ class TestEveryTopLevelSpecIsEnforced:
         artifact["addendum"] = "prose " * 100
         rejected(artifact, sample_diff, changed_files, extended)
 
+    def test_a_spec_key_no_reader_consults_is_a_policy_error(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # `maximum` has a reader in NEITHER gate, so {"minimum": 1,
+        # "maximum": 2} reads as a cap to whoever reviews policy.json and admits
+        # 100. Same rule ts/plan/policy.ts applies to the plan section's own
+        # keys, and the same reasoning: a constraint nobody enforces is worse
+        # than an absent one, because it is read as present.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "maximum": 2}
+        artifact["ticket"] = 100
+        with pytest.raises(Rejection, match="policy error"):
+            verify(artifact, sample_diff, changed_files, extended)
+
+    def test_a_spec_key_belonging_to_another_type_is_a_policy_error(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # max_length on an integer is a bound the integer branch never reads.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "max_length": 5}
+        artifact["ticket"] = 3
+        with pytest.raises(Rejection, match="policy error"):
+            verify(artifact, sample_diff, changed_files, extended)
+
     def test_an_unknown_scalar_type_is_a_policy_error_at_the_top_level(
         self, artifact, sample_diff, changed_files, policy
     ):

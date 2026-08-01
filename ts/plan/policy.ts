@@ -87,6 +87,26 @@ function requireKeys(object: Record<string, unknown>, keys: readonly string[], w
   }
 }
 
+/** Every key a scalar spec of each type may carry, being exactly the keys
+ * checkScalar reads for it. `type` is common to all three. Kept here rather than
+ * in schema.ts because this is where a policy is refused, and a spec whose bound
+ * has no reader must never load. */
+const SCALAR_KEYS: Readonly<Record<'string' | 'integer' | 'enum', readonly string[]>> = {
+  string: ['type', 'min_length', 'max_length', 'pattern', 'markdown'],
+  integer: ['type', 'minimum'],
+  enum: ['type', 'values'],
+};
+
+function requireOptionalKeys(object: Record<string, unknown>, allowed: readonly string[], where: string): void {
+  const extra = Object.keys(object).filter((key) => !allowed.includes(key));
+  if (extra.length > 0) {
+    throw new PolicyError(
+      `${where}: unexpected keys ${JSON.stringify(extra.sort())} — a spec key no gate reads ` +
+        `reads as a constraint while constraining nothing (allowed: ${allowed.join(', ')})`,
+    );
+  }
+}
+
 const PLAN_KEYS = [
   'max_steps',
   'control_flow',
@@ -190,6 +210,11 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
       if (type !== 'string' && type !== 'integer' && type !== 'enum') {
         throw new PolicyError(`${where}: unknown type ${JSON.stringify(type)}`);
       }
+      // Exactly the keys the reader for this type consults. A spec key nobody
+      // reads is the defect requireKeys already refuses one level up: `maximum`
+      // alongside `minimum` reads as a cap and caps nothing, and neither gate has
+      // ever had a reader for it.
+      requireOptionalKeys(scalar, SCALAR_KEYS[type], where);
       if (type === 'string' && typeof scalar['max_length'] !== 'number') {
         // Mirrors the artifact verifier's rule that every string must declare how
         // it is bounded. An unbounded string reaches a rendered PR body.

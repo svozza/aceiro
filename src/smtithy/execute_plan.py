@@ -30,7 +30,8 @@ Any rejection, disproof or refusal: nothing is posted, exit non-zero. The
 prover's two failure exits are logged differently because they mean different
 things: exit 1 carries a counterexample (an audit record — the model produced
 a plan a policy disproves), exit 2 means nothing was proved at all (an
-operational failure of the run, not evidence about the plan).
+operational failure of the run, not evidence about the plan) — whether because an
+input was unreadable or because the solver could not decide a query.
 
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA
 (the diff anchor), BASE_REF (the reviewed base BRANCH, which is what a retarget
@@ -169,9 +170,13 @@ def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, polic
             "plan DISPROVED by the prover; counterexample follows (audit record):\n"
             f"{result.stdout}"
         )
+    # BOTH streams: an unreadable input reports on stderr, while a policy the
+    # solver could not decide reports UNDECIDED on stdout with every other verdict
+    # line. Either is exit 2, and which query gave up is the part an operator acts
+    # on, so neither stream may be dropped.
     fail(
         f"prover proved nothing (exit {result.returncode}); operational failure, "
-        f"not evidence about the plan:\n{result.stderr}"
+        f"not evidence about the plan:\n{result.stderr}{result.stdout}"
     )
 
 

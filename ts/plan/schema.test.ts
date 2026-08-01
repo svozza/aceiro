@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { checkPlanPolicy, PolicyError, Rejection, type PlanPolicy } from './policy.js';
-import { checkPlanSchema } from './schema.js';
+import { checkPlanSchema, parsePlanJson } from './schema.js';
 
 const POLICY: PlanPolicy = checkPlanPolicy({
   max_steps: 3,
@@ -253,6 +253,23 @@ describe('scalar bounds', () => {
     assert.equal(plan.steps[0]?.args['name'], decomposed);
   });
 
+  it('counts an astral character once, as the artifact verifier does', () => {
+    // `String.length` is UTF-16 units, so an emoji costs 2 there and 1 in
+    // Python. A max_length of 20 admitted 10 emoji in one gate and 20 in the
+    // other — the same policy number meaning two things, which is what the
+    // shared policy.json exists to prevent.
+    const emoji = '🙂'.repeat(20);
+    assert.equal(emoji.length, 40);
+    const plan = checkPlanSchema({ steps: [{ id: 'b', kind: 'push_branch', args: { name: emoji } }] }, POLICY);
+    assert.equal(plan.steps[0]?.args['name'], emoji);
+  });
+
+  it('rejects one code point over max_length, astral or not', () => {
+    // The complement: the cap still binds, it is simply counted in the metric
+    // both gates share.
+    rejected({ steps: [{ id: 'b', kind: 'push_branch', args: { name: '🙂'.repeat(21) } }] }, /exceeds max_length/);
+  });
+
   it('anchors patterns at both ends', () => {
     // An unanchored pattern accepts anything with a matching substring -- the
     // shape of the §17 dotfile defect.
@@ -262,6 +279,70 @@ describe('scalar bounds', () => {
 
   it('rejects a value outside an enum', () => {
     rejected({ steps: [{ id: 'l', kind: 'label', args: { name: 'ship-it' } }] }, /not in/);
+  });
+});
+
+describe('an integer is an integer LEXEME, as it is in Python', () => {
+  // `1.0` and `1` parse to the same double, so Number.isInteger cannot tell them
+  // apart and the schema gate accepted `"line": 1.0` where plan_verify rejected
+  // it as a float. The distinction survives only in the source text, so this is
+  // decided at the parse boundary — parsePlanJson — not in checkScalar.
+  const INTEGER_POLICY: PlanPolicy = checkPlanPolicy({
+    ...POLICY,
+    step_kinds: {
+      suggest: {
+        write_class: false,
+        args: {
+          path: { type: 'string', min_length: 1, max_length: 500 },
+          line: { type: 'integer', minimum: 1 },
+        },
+      },
+    },
+    ordering: [],
+  });
+
+  function parsed(text: string): unknown {
+    return parsePlanJson(text);
+  }
+
+  it('accepts a plain integer literal', () => {
+    const plan = checkPlanSchema(parsed('{"steps":[{"id":"s","kind":"suggest","args":{"path":"a.py","line":7}}]}'),
+      INTEGER_POLICY);
+    assert.equal(plan.steps[0]?.args['line'], 7);
+  });
+
+  it('rejects a decimal-point spelling of a whole number', () => {
+    assert.throws(
+      () => parsed('{"steps":[{"id":"s","kind":"suggest","args":{"path":"a.py","line":1.0}}]}'),
+      { name: 'Rejection', message: /1\.0.*not an integer/ },
+    );
+  });
+
+  it('rejects exponent notation, which Python also reads as a float', () => {
+    assert.throws(
+      () => parsed('{"steps":[{"id":"s","kind":"suggest","args":{"path":"a.py","line":1e2}}]}'),
+      { name: 'Rejection', message: /not an integer/ },
+    );
+  });
+
+  it('rejects an integer literal too large to survive as a double', () => {
+    // Python keeps 9007199254740993 exactly; the double rounds it to ...992, so
+    // the two gates would be checking different numbers. Refused rather than
+    // silently re-spelled.
+    assert.throws(
+      () => parsed('{"steps":[{"id":"s","kind":"suggest","args":{"path":"a.py","line":9007199254740993}}]}'),
+      { name: 'Rejection', message: /exactly/ },
+    );
+  });
+
+  it('leaves strings holding a decimal spelling alone', () => {
+    // The rule is about JSON numbers. A string is a string, and its own spec
+    // decides it.
+    const plan = checkPlanSchema(
+      parsed('{"steps":[{"id":"s","kind":"suggest","args":{"path":"1.0","line":1}}]}'),
+      INTEGER_POLICY,
+    );
+    assert.equal(plan.steps[0]?.args['path'], '1.0');
   });
 });
 
@@ -327,6 +408,61 @@ describe('the policy itself is validated', () => {
 
   it('rejects an unexpected key in the plan policy', () => {
     assert.throws(() => checkPlanPolicy({ ...POLICY, allow_everything: true }), PolicyError);
+  });
+
+  it('rejects a scalar spec key no gate reads', () => {
+    // `maximum` has no reader in EITHER gate, so {minimum:1, maximum:2} read as
+    // a cap to a reviewer while admitting 100. Same fail-closed rule the plan
+    // policy's own top-level keys get: a key nobody reads is the worst outcome
+    // for a reviewable policy file.
+    assert.throws(
+      () =>
+        checkPlanPolicy({
+          ...POLICY,
+          step_kinds: {
+            patch: { write_class: false, args: { n: { type: 'integer', minimum: 1, maximum: 2 } } },
+          },
+          ordering: [],
+        }),
+      { name: 'PolicyError', message: /maximum/ },
+    );
+  });
+
+  it('rejects a scalar spec key belonging to another type', () => {
+    // max_length on an integer, minimum on a string: each is a bound the reader
+    // for that type never consults, so it reads as enforcement and enforces
+    // nothing.
+    for (const args of [
+      { n: { type: 'integer', minimum: 1, max_length: 5 } },
+      { s: { type: 'string', max_length: 5, minimum: 1 } },
+      { e: { type: 'enum', values: ['a'], max_length: 5 } },
+    ]) {
+      assert.throws(
+        () => checkPlanPolicy({ ...POLICY, step_kinds: { patch: { write_class: false, args } }, ordering: [] }),
+        PolicyError,
+      );
+    }
+  });
+
+  it('accepts exactly the keys each scalar type declares', () => {
+    // The complement: the shipped spellings must keep loading, or the rule has
+    // cost the policy its expressiveness.
+    const policy = checkPlanPolicy({
+      ...POLICY,
+      step_kinds: {
+        patch: {
+          write_class: false,
+          args: {
+            path: { type: 'string', min_length: 1, max_length: 500, pattern: 'a+' },
+            body: { type: 'string', max_length: 10, markdown: true },
+            line: { type: 'integer', minimum: 1 },
+            tag: { type: 'enum', values: ['x', 'y'] },
+          },
+        },
+      },
+      ordering: [],
+    });
+    assert.equal(policy.step_kinds['patch']?.args['line']?.minimum, 1);
   });
 
   it('rejects an invalid regex in a pattern', () => {

@@ -184,6 +184,23 @@ class TestRunProver:
         assert "expected an array of strings" in err
         assert "DISPROVED" not in err
 
+    def test_exit_two_carries_an_undecided_reason_from_stdout(self, stub_prover, prover_inputs, capsys):
+        # An UNDECIDED policy exits 2 (nothing was proved) but reports on STDOUT,
+        # where every verdict line goes. Logging stderr alone would drop the one
+        # thing an operator can act on — which solver query gave up, and why.
+        prover = stub_prover(
+            2,
+            stdout="ordering: holds (1.0ms)\nframe: UNDECIDED (3.0ms)\n"
+                   "  frame: UNDECIDED — the solver returned unknown\n"
+                   "  solver reason: max. resource limit exceeded\n",
+        )
+        with pytest.raises(SystemExit):
+            execute_plan.run_prover(prover, *prover_inputs)
+        err = capsys.readouterr().err
+        assert "operational failure" in err
+        assert "max. resource limit exceeded" in err
+        assert "DISPROVED" not in err
+
     def test_unrunnable_prover_fails_closed(self, tmp_path, prover_inputs, capsys):
         with pytest.raises(SystemExit):
             execute_plan.run_prover(tmp_path / "does-not-exist.js", *prover_inputs)

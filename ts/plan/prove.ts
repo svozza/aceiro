@@ -22,7 +22,7 @@
  */
 
 import { init } from 'z3-solver';
-import type { Plan } from './schema.js';
+import type { Plan, Step } from './schema.js';
 import { writeClassKinds, type PlanPolicy } from './policy.js';
 
 export interface Counterexample {
@@ -37,6 +37,26 @@ export interface ProofResult {
   readonly policy: string;
   readonly ms: number;
   readonly counterexample?: Counterexample;
+  /** The solver returned `unknown`: nothing was decided, so the policy is not
+   * held — but neither was it disproved. Distinct from a counterexample because
+   * the two mean different things to whoever reads the audit log: a
+   * counterexample is evidence about the PLAN, an undecided query is an
+   * operational failure of the RUN. */
+  readonly undecided?: true;
+}
+
+/** Knobs the corpus needs and the policy cannot express.
+ *
+ * `resourceLimit` bounds solver work (z3's `rlimit`), which is the only way to
+ * reach the `unknown` branch deterministically — every admissible plan decides in
+ * milliseconds. proveTaint's `bindings` sets the precedent: the prover is tested
+ * beyond what the schema can produce, because a branch no test reaches is a
+ * branch nobody knows the behaviour of.
+ *
+ * Unset in production: a real timeout would trade a fail-closed answer for a
+ * fail-closed non-answer, and the queries here are small by construction. */
+export interface ProofOptions {
+  readonly resourceLimit?: number;
 }
 
 /** An execution-time binding: step `from` feeds an argument of step `to`.
@@ -77,6 +97,37 @@ async function z3(): Promise<Awaited<ReturnType<typeof init>>> {
   return cached;
 }
 
+/** Apply the corpus's solver knobs, if any. */
+function configure(solver: { set(key: string, value: unknown): void }, options: ProofOptions | undefined): void {
+  if (options?.resourceLimit !== undefined) solver.set('rlimit', options.resourceLimit);
+}
+
+/**
+ * The undecided result, for a `check()` that returned neither sat nor unsat.
+ *
+ * A verdict other than `unsat` must never be read as "holds", and `unknown` must
+ * not be read as "violated" either: the model does not exist, so extracting a
+ * counterexample from it throws, and the only honest report is that nothing was
+ * decided. The solver's own reason is carried through, because "why" is the part
+ * an operator can act on.
+ */
+function undecidedResult(policy: string, reason: string, ms: number): ProofResult {
+  return {
+    holds: false,
+    undecided: true,
+    policy,
+    ms,
+    counterexample: {
+      policy,
+      path: [
+        `${policy}: UNDECIDED — the solver returned unknown, so this policy was neither ` +
+          'proved nor disproved',
+        `solver reason: ${reason === '' ? '(none given)' : reason}`,
+      ],
+    },
+  };
+}
+
 /** Release the WASM threads. Node will not exit while they are alive, so a CLI
  * or a test run has to call this. */
 export async function shutdown(): Promise<void> {
@@ -89,29 +140,45 @@ export async function shutdown(): Promise<void> {
 /**
  * Ordering: no write-class step may precede a step it depends on.
  *
- * Stated over the policy's declared rules ({before, after}), and quantified over
- * every PAIR of steps rather than checked pairwise in a loop, so the claim is
- * "on no ordering of these steps does an `after` precede a `before`".
+ * THE THEOREM THIS PROVES, exactly: for the plan's own concrete order, no
+ * declared rule ({before, after}) is violated by any pair of its steps. NOT "on
+ * no ordering of these steps" — positions are pinned to the plan's indices with
+ * `eq(index)`, because a plan IS an order and the question is whether THIS order
+ * violates a rule, not whether some permutation could. The pinning is therefore
+ * load-bearing, and dropping it to "restore the quantified reading" would change
+ * what is being proved: a plan whose steps could be rearranged into a violation
+ * would start failing, and the legal chain patch -> push_branch -> open_pr is
+ * exactly such a plan.
+ *
+ * It stays a solver query rather than an index comparison because the encoding
+ * has to be the shape a future policy grows into, and because a rule's violation
+ * is stated once here instead of once per reader.
  *
  * NOTE what this is NOT: ADR-0001 dropped §20's dominance policy, so there is no
  * "run_tests must dominate every write" obligation here and no `passed` claim to
  * bind. Ordering is only about the mutating actions' sequence among themselves.
  */
-export async function proveOrdering(plan: Plan, policy: PlanPolicy): Promise<ProofResult> {
+export async function proveOrdering(
+  plan: Plan,
+  policy: PlanPolicy,
+  options?: ProofOptions,
+): Promise<ProofResult> {
   const { Context } = await z3();
   const Z3 = Context(CONTEXT_NAME);
-  const { Solver, Int, Or, And, Distinct } = Z3;
+  const { Solver, Int, Or } = Z3;
 
   const solver = new Solver();
+  configure(solver, options);
   const position = plan.steps.map((step) => Int.const(`pos_${step.id}`));
 
   // A plan IS an order, so positions are pinned to the plan's own indices. The
   // solver is not searching for an order; it is being asked whether THIS order
-  // violates a rule.
+  // violates a rule. Distinctness follows from the pinning and is not asserted
+  // separately: a Distinct over variables already fixed to 0..n-1 is a tautology,
+  // so it would read as a constraint no test could ever fail without.
   for (const [index, variable] of position.entries()) {
     solver.add(variable.eq(index));
   }
-  if (position.length > 1) solver.add(Distinct(...position));
 
   // Negated: some declared rule is violated by some pair.
   const violations = [];
@@ -124,7 +191,7 @@ export async function proveOrdering(plan: Plan, policy: PlanPolicy): Promise<Pro
         const posJ = position[j];
         const posI = position[i];
         if (posJ === undefined || posI === undefined) continue;
-        violations.push(And(posJ.lt(posI)));
+        violations.push(posJ.lt(posI));
       }
     }
   }
@@ -141,6 +208,10 @@ export async function proveOrdering(plan: Plan, policy: PlanPolicy): Promise<Pro
   const ms = performance.now() - started;
 
   if (verdict === 'unsat') return { holds: true, policy: 'ordering', ms };
+  // sat, unsat and unknown are the three cases, and only sat has a model to
+  // extract. Guarding here rather than at the model call, so the branch that
+  // decides the verdict is the branch that reports it.
+  if (verdict !== 'sat') return undecidedResult('ordering', solver.reasonUnknown(), ms);
 
   const model = solver.model();
   const ordered = plan.steps
@@ -174,12 +245,14 @@ export async function proveFrame(
   plan: Plan,
   policy: PlanPolicy,
   changedFiles: readonly string[],
+  options?: ProofOptions,
 ): Promise<ProofResult> {
   const { Context } = await z3();
   const Z3 = Context(CONTEXT_NAME);
   const { Solver, Int, Bool, Function: Fn, ForAll, Implies, Not, And, Or } = Z3;
 
   const solver = new Solver();
+  configure(solver, options);
   const touchedByPr = Fn.declare('touched_by_pr', Int.sort(), Bool.sort());
   const modifiedByPlan = Fn.declare('modified_by_plan', Int.sort(), Bool.sort());
   const deniedByPolicy = Fn.declare('denied_by_policy', Int.sort(), Bool.sort());
@@ -201,10 +274,14 @@ export async function proveFrame(
   // modifies the file exactly as a patch would, so the frame condition binds
   // both. GitHub's own diff-anchoring makes an out-of-frame suggestion
   // unpostable anyway, but the policy must hold before mechanics are trusted.
-  const patchedPaths = plan.steps
+  // The step, not just its path: a counterexample naming "patch src/evil.py" for
+  // a suggest step misidentifies the violating kind, and the audit record is what
+  // someone reads to find the step to fix.
+  const modifying = plan.steps
     .filter((step) => step.kind === 'patch' || step.kind === 'suggest')
-    .map((step) => step.args['path'])
-    .filter((path): path is string => typeof path === 'string');
+    .map((step) => ({ step, path: step.args['path'] }))
+    .filter((entry): entry is { step: Step; path: string } => typeof entry.path === 'string');
+  const patchedPaths = modifying.map(({ path }) => path);
 
   for (const path of changedFiles) solver.add(touchedByPr.call(idOf(path)));
   for (const path of patchedPaths) solver.add(modifiedByPlan.call(idOf(path)));
@@ -244,15 +321,18 @@ export async function proveFrame(
   const verdict = await solver.check();
   const ms = performance.now() - started;
   if (verdict === 'unsat') return { holds: true, policy: 'frame', ms };
+  if (verdict !== 'sat') return undecidedResult('frame', solver.reasonUnknown(), ms);
 
   // The witness is an int, so names come from the intern table. Escaping paths
   // FIRST, matching plan_verify.check_plan_containment's frame-then-denylist
-  // order, so both gates give one reason for one plan.
+  // order, so both gates give one reason for one plan. Each line carries the
+  // step's own kind and id, so the record names the step that violated rather
+  // than a kind it guessed.
   const changed = new Set(changedFiles);
-  const escaping = patchedPaths.filter((path) => !changed.has(path));
-  const denied = patchedPaths
-    .map((path) => ({ path, pattern: firstMatch(path, policy.path_denylist) }))
-    .filter((entry): entry is { path: string; pattern: string } => entry.pattern !== undefined);
+  const escaping = modifying.filter(({ path }) => !changed.has(path));
+  const denied = modifying
+    .map(({ step, path }) => ({ step, path, pattern: firstMatch(path, policy.path_denylist) }))
+    .filter((entry): entry is { step: Step; path: string; pattern: string } => entry.pattern !== undefined);
   return {
     holds: false,
     policy: 'frame',
@@ -260,9 +340,10 @@ export async function proveFrame(
     counterexample: {
       policy: 'frame',
       path: [
-        ...escaping.map((path) => `patch ${path}: not a file this PR touched`),
+        ...escaping.map(({ step, path }) => `${step.kind} ${step.id} ${path}: not a file this PR touched`),
         ...denied.map(
-          ({ path, pattern }) => `patch ${path}: on the policy path denylist (${pattern})`,
+          ({ step, path, pattern }) =>
+            `${step.kind} ${step.id} ${path}: on the policy path denylist (${pattern})`,
         ),
       ],
     },
@@ -283,12 +364,14 @@ export async function proveTaint(
   plan: Plan,
   policy: PlanPolicy,
   bindings: readonly SyntheticBinding[] = [],
+  options?: ProofOptions,
 ): Promise<ProofResult> {
   const { Context } = await z3();
   const Z3 = Context(CONTEXT_NAME);
-  const { Solver, Bool, Or, And, Not } = Z3;
+  const { Solver, Bool, Or, Not } = Z3;
 
   const solver = new Solver();
+  configure(solver, options);
   const writeKinds = new Set(writeClassKinds(policy));
   const tainted = plan.steps.map((step) => Bool.const(`tainted_${step.id}`));
 
@@ -326,6 +409,7 @@ export async function proveTaint(
   const verdict = await solver.check();
   const ms = performance.now() - started;
   if (verdict === 'unsat') return { holds: true, policy: 'taint', ms };
+  if (verdict !== 'sat') return undecidedResult('taint', solver.reasonUnknown(), ms);
 
   const model = solver.model();
   const leaking = plan.steps

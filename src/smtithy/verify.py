@@ -65,7 +65,25 @@ class Rejection(Exception):
 # ---------------------------------------------------------------- schema ---
 
 
+# Every key a scalar spec of each type may carry, being exactly the keys the
+# branch below reads for it. Twin of ts/plan/policy.ts's SCALAR_KEYS: a spec key
+# with no reader — `maximum` had none in either gate — reads as a constraint to
+# whoever reviews policy.json while constraining nothing, which is worse than an
+# absent bound because it is read as present.
+SCALAR_KEYS = {
+    "string": frozenset({"type", "min_length", "max_length", "pattern", "markdown"}),
+    "integer": frozenset({"type", "minimum"}),
+    "enum": frozenset({"type", "values"}),
+}
+
+
 def check_scalar(value, spec: dict, where: str) -> None:
+    if allowed := SCALAR_KEYS.get(spec["type"]):
+        if extra := set(spec) - allowed:
+            raise Rejection(
+                f"policy error: scalar spec at {where} carries keys no reader consults "
+                f"{sorted(extra)} (allowed for {spec['type']}: {sorted(allowed)})"
+            )
     match spec["type"]:
         case "string":
             if not isinstance(value, str):

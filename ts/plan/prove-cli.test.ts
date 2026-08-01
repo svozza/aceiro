@@ -20,8 +20,13 @@ const CLI = join(HERE, 'prove-cli.js');
 const POLICY_PATH = join(HERE, '..', '..', 'src', 'smtithy', 'policy.json');
 
 function run(plan: unknown, changedFiles: unknown): ReturnType<typeof spawnSync> {
+  return runText(JSON.stringify(plan), changedFiles);
+}
+
+/** The plan as TEXT, for the cases where its JSON spelling is the point. */
+function runText(planText: string, changedFiles: unknown): ReturnType<typeof spawnSync> {
   const dir = mkdtempSync(join(tmpdir(), 'prove-cli-'));
-  writeFileSync(join(dir, 'plan.json'), JSON.stringify(plan));
+  writeFileSync(join(dir, 'plan.json'), planText);
   writeFileSync(join(dir, 'changed.json'), JSON.stringify(changedFiles));
   return spawnSync(
     process.execPath,
@@ -90,6 +95,32 @@ describe('prove-cli', () => {
     assert.equal(result.status, 1, String(result.stdout) + String(result.stderr));
     assert.match(String(result.stdout), /frame: VIOLATED/);
     assert.match(String(result.stdout), /denylist/);
+  });
+
+  it('exits 2 on a line spelled 1.0, which plan_verify reads as a float', () => {
+    // Reached only through the file, because JSON.stringify(1.0) is "1". The
+    // divergence is in the spelling, so the CLI has to parse the bytes it was
+    // given rather than a round-tripped copy of them.
+    const result = runText(
+      '{"steps":[{"id":"fix","kind":"suggest","args":' +
+        '{"path":"src/a.py","line":1.0,"old":"a","new":"b","note":"n"}}]}',
+      ['src/a.py'],
+    );
+    assert.equal(result.status, 2);
+    assert.match(String(result.stderr), /not an integer/);
+  });
+
+  it('names the violating step kind in the counterexample, not a guessed one', () => {
+    // The audit record has to name a step the plan contains. A suggest step
+    // reported as "patch" sends a reader looking for one that is not there.
+    const plan = {
+      steps: [
+        { id: 'fix', kind: 'suggest', args: { path: 'src/a.py', line: 1, old: 'a', new: 'b', note: 'n' } },
+      ],
+    };
+    const result = run(plan, ['other.py']);
+    assert.equal(result.status, 1);
+    assert.match(String(result.stdout), /suggest fix src\/a\.py: not a file this PR touched/);
   });
 
   it('a suggestion-only plan proves clean (vacuous ordering, ADR-0009)', () => {

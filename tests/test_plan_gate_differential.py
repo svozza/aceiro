@@ -46,15 +46,23 @@ pytestmark = pytest.mark.skipif(
 
 
 def prover_admits(plan, changed_files, tmp_path) -> bool:
+    return prover_admits_text(json.dumps(plan), changed_files, tmp_path)
+
+
+def prover_admits_text(plan_text: str, changed_files, tmp_path) -> bool:
     """True if prove-cli exits 0 (every policy holds).
 
     Exit 1 is a disproof and exit 2 is "nothing proved" (including a plan the TS
     schema gate rejects); both are "not admitted", which is the granularity the
     comparison needs.
+
+    The plan travels as TEXT because some divergences are in its JSON spelling:
+    `1.0` and `1` parse to one double, so re-serializing would erase the very
+    difference under test.
     """
     plan_file = tmp_path / "plan.json"
     changed_file = tmp_path / "changed_files.json"
-    plan_file.write_text(json.dumps(plan))
+    plan_file.write_text(plan_text)
     changed_file.write_text(json.dumps(changed_files))
     result = subprocess.run(
         ["node", str(PROVER_JS), "--plan", str(plan_file),
@@ -223,6 +231,62 @@ CASES = [
         PLAN_CHANGED_FILES,
         True,
     ),
+    (
+        # A string whose length the two gates measured differently: 2001 astral
+        # code points is 2001 to Python and 4002 UTF-16 units to TypeScript, so
+        # open_pr.body's max_length of 4000 admitted it in one gate and rejected
+        # it in the other. Both count code points now, so both admit it — and the
+        # secret scan, markdown gate and byte budget are what actually bound it.
+        "astral-body-inside-max-length-by-code-points",
+        {"steps": [anchored_patch("s0"), push_step("s1"),
+                   open_pr_step("s2", body="🙂" * 2001)]},
+        PLAN_CHANGED_FILES,
+        True,
+    ),
+    (
+        # The same metric in its rejecting direction, so the cap is shown to bind
+        # rather than merely to have been widened.
+        "astral-body-over-max-length-by-code-points",
+        {"steps": [anchored_patch("s0"), push_step("s1"),
+                   open_pr_step("s2", body="🙂" * 4001)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+]
+
+# Cases whose defect is the plan's JSON SPELLING, which json.dumps would erase:
+# it writes 1.0 as 1. Each is the literal text handed to both gates.
+TEXT_CASES = [
+    (
+        # `1.0` is a float to Python's json and an integer to Number.isInteger,
+        # so the suggest step's line was rejected by one gate and admitted by the
+        # other.
+        "suggest-line-spelled-as-a-decimal",
+        '{"steps": [{"id": "s0", "kind": "suggest", "args": {"path": "src/app.py", '
+        '"line": 2.0, "old": "def load(path):\\n", "new": "def load(path=None):\\n", '
+        '"note": "make path optional"}}]}',
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # The same step spelled as an integer is the admitted control, so the case
+        # above is shown to turn on the spelling and nothing else.
+        "suggest-line-spelled-as-an-integer",
+        '{"steps": [{"id": "s0", "kind": "suggest", "args": {"path": "src/app.py", '
+        '"line": 2, "old": "def load(path):\\n", "new": "def load(path=None):\\n", '
+        '"note": "make path optional"}}]}',
+        PLAN_CHANGED_FILES,
+        True,
+    ),
+    (
+        # Exponent notation is a float to Python too.
+        "suggest-line-in-exponent-notation",
+        '{"steps": [{"id": "s0", "kind": "suggest", "args": {"path": "src/app.py", '
+        '"line": 2e0, "old": "def load(path):\\n", "new": "def load(path=None):\\n", '
+        '"note": "make path optional"}}]}',
+        PLAN_CHANGED_FILES,
+        False,
+    ),
 ]
 
 
@@ -230,6 +294,23 @@ CASES = [
 def test_both_gates_reach_the_same_verdict(plan, changed_files, expected, tmp_path):
     python_verdict = verifier_admits(plan, changed_files)
     prover_verdict = prover_admits(plan, changed_files, tmp_path)
+    assert python_verdict == expected, (
+        f"verify_plan {'admitted' if python_verdict else 'rejected'}, expected "
+        f"{'admit' if expected else 'reject'}"
+    )
+    assert prover_verdict == expected, (
+        f"prove-cli {'admitted' if prover_verdict else 'rejected'}, expected "
+        f"{'admit' if expected else 'reject'}"
+    )
+
+
+@pytest.mark.parametrize("plan_text,changed_files,expected",
+                         [c[1:] for c in TEXT_CASES], ids=[c[0] for c in TEXT_CASES])
+def test_both_gates_agree_on_the_plans_json_spelling(plan_text, changed_files, expected, tmp_path):
+    # json.loads on the same text both gates get, so neither side is handed a
+    # normalized copy of what the other was asked to judge.
+    python_verdict = verifier_admits(json.loads(plan_text), changed_files)
+    prover_verdict = prover_admits_text(plan_text, changed_files, tmp_path)
     assert python_verdict == expected, (
         f"verify_plan {'admitted' if python_verdict else 'rejected'}, expected "
         f"{'admit' if expected else 'reject'}"

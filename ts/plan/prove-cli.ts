@@ -7,15 +7,16 @@
  * prover invocable as a subprocess: read plan + changed files + policy, run
  * every policy, print verdicts, exit non-zero on any violation.
  *
- * Exit codes: 0 every policy holds, 1 some policy fails (counterexample on
- * stdout), 2 inputs unreadable or malformed (including a plan the schema gate
- * rejects — the caller treats both as "not verified", but a 2 means nothing
- * was proved at all).
+ * Exit codes: 0 every policy holds, 1 some policy is DISPROVED (counterexample
+ * on stdout), 2 nothing was proved — inputs unreadable or malformed (including a
+ * plan the schema gate rejects), or a query the solver could not decide. The
+ * caller treats 1 and 2 both as "not verified", but only a 1 is evidence about
+ * the plan.
  */
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { checkPlanSchema } from './schema.js';
+import { checkPlanSchema, parsePlanJson } from './schema.js';
 import { loadPlanPolicy, Rejection } from './policy.js';
 import {
   proveBounds,
@@ -48,7 +49,9 @@ async function main(): Promise<number> {
   let plan, policy, changedFiles: string[];
   try {
     policy = loadPlanPolicy(values.policy);
-    plan = checkPlanSchema(readJson(values.plan), policy);
+    // parsePlanJson, not readJson: an integer's spelling only survives in the
+    // source text, and `1.0` must not pass a check the Python gate fails.
+    plan = checkPlanSchema(parsePlanJson(readFileSync(values.plan, 'utf8')), policy);
     const files: unknown = readJson(values['changed-files']);
     if (!Array.isArray(files) || !files.every((f) => typeof f === 'string')) {
       throw new Rejection('changed-files: expected an array of strings');
@@ -70,15 +73,24 @@ async function main(): Promise<number> {
     proveBounds(plan, policy),
   ];
 
-  let failed = false;
+  let disproved = false;
+  let undecided = false;
   for (const result of results) {
-    console.log(`${result.policy}: ${result.holds ? 'holds' : 'VIOLATED'} (${result.ms.toFixed(1)}ms)`);
+    const verdict = result.holds ? 'holds' : result.undecided ? 'UNDECIDED' : 'VIOLATED';
+    console.log(`${result.policy}: ${verdict} (${result.ms.toFixed(1)}ms)`);
     if (!result.holds) {
-      failed = true;
+      if (result.undecided) undecided = true;
+      else disproved = true;
       for (const line of result.counterexample?.path ?? []) console.log(`  ${line}`);
     }
   }
-  return failed ? 1 : 0;
+  // An undecided policy is exit 2, not 1: exit 1 means DISPROVED, which the
+  // executor logs as an audit record about the plan. A query the solver could not
+  // decide is an operational failure of this run, and reporting it as a disproof
+  // would blame the model for the solver giving up. A disproof alongside it still
+  // wins — that IS evidence about the plan.
+  if (disproved) return 1;
+  return undecided ? 2 : 0;
 }
 
 process.exitCode = await main();

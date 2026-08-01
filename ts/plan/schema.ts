@@ -32,6 +32,81 @@ const ID_RE = /^[a-z][a-z0-9_]{0,39}$/;
 const PLAN_KEYS = ['steps'] as const;
 const STEP_KEYS = ['id', 'kind', 'args'] as const;
 
+/** The reviver's third argument, carrying the raw source text of the value being
+ * revived. Declared here rather than taken from the lib types, which do not
+ * describe it yet; the runtime behaviour is present from Node 22 (the engines
+ * floor) onward and is asserted by the corpus. */
+interface JsonParseContext {
+  readonly source?: string;
+}
+
+/** A JSON number spelled as an integer: no decimal point, no exponent. Both the
+ * sign and the digits, so `-3` passes and `-3.0` does not. */
+const INTEGER_LEXEME_RE = /^-?(?:0|[1-9][0-9]*)$/;
+
+/**
+ * Parse a plan, deciding integer-ness from the SOURCE TEXT.
+ *
+ * This exists because `1.0` and `1` parse to the same double, so
+ * `Number.isInteger` cannot distinguish them — while Python's json reads the
+ * first as a float and the second as an int, and check_scalar rejects the float.
+ * A plan one gate admits and the other rejects is a defect in one of them, and
+ * the information needed to agree survives only in the text.
+ *
+ * A whole number too large for a double is refused rather than rounded: Python
+ * keeps 9007199254740993 exactly, a double does not, and two gates checking
+ * different numbers is the same defect in a quieter form.
+ *
+ * Callers holding already-parsed data (tests, and any in-process caller) may
+ * still use checkPlanSchema directly; this is the boundary for plan JSON that
+ * arrived as text, which is every production path.
+ */
+export function parsePlanJson(text: string): unknown {
+  const reviver = function (this: unknown, _key: string, value: unknown, context: JsonParseContext): unknown {
+    if (typeof value !== 'number') return value;
+    const source = context.source;
+    if (source === undefined) {
+      // No source text means the runtime does not carry it, and integer-ness
+      // cannot be decided. Fail closed rather than silently falling back to the
+      // check that admits 1.0.
+      throw new Rejection(
+        'plan: this runtime does not report JSON source text, so an integer cannot be ' +
+          'told from a whole-numbered float; Node 22 or newer is required',
+      );
+    }
+    if (!INTEGER_LEXEME_RE.test(source)) {
+      throw new Rejection(
+        `plan: ${source} is not an integer — a decimal point or exponent makes it a float, ` +
+          'which the Python gate rejects, so it is not accepted here either',
+      );
+    }
+    if (!Number.isSafeInteger(value)) {
+      throw new Rejection(
+        `plan: ${source} cannot be represented exactly, so the two gates would check ` +
+          'different numbers',
+      );
+    }
+    return value;
+  };
+  // The lib types do not describe the reviver's context argument yet.
+  const parseWithSource = JSON.parse as unknown as (
+    input: string,
+    reviver: (this: unknown, key: string, value: unknown, context: JsonParseContext) => unknown,
+  ) => unknown;
+  return parseWithSource(text, reviver);
+}
+
+/** Length in Unicode code points, which is what `len()` measures on the Python
+ * side of the same policy number. NOT `text.length`: that counts UTF-16 units,
+ * so every astral code point costs two and a max_length admits half as much text
+ * here as it does there. The metric is part of the policy, so it can only mean
+ * one thing. Twin of plan_verify's reliance on Python's own string length. */
+function codePointLength(text: string): number {
+  let count = 0;
+  for (const _codePoint of text) count += 1;
+  return count;
+}
+
 function checkScalar(value: unknown, spec: ScalarSpec, where: string): string | number {
   switch (spec.type) {
     case 'string': {
@@ -50,7 +125,7 @@ function checkScalar(value: unknown, spec: ScalarSpec, where: string): string | 
       // NFC before measuring, so decomposed forms cannot smuggle extra budget.
       // Same rule as the artifact verifier's check_scalar; the two must agree,
       // since policy.json is shared and a length means one thing.
-      const length = value.normalize('NFC').length;
+      const length = codePointLength(value.normalize('NFC'));
       if (length < (spec.min_length ?? 0)) throw new Rejection(`${where}: shorter than min_length ${spec.min_length}`);
       if (spec.max_length !== undefined && length > spec.max_length) {
         throw new Rejection(`${where}: exceeds max_length ${spec.max_length}`);

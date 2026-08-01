@@ -138,6 +138,18 @@ describe('proveOrdering', () => {
     const result = await proveOrdering(plan(patch('a.py'), patch('b.py'), pushBranch()), POLICY);
     assert.equal(result.holds, true);
   });
+
+  it('judges the plan\'s OWN order, not the orders it could be rearranged into', async () => {
+    // What the eq(index) pinning buys, stated as a case. The legal chain can be
+    // permuted into a violation — push_branch before patch — so a prover that
+    // quantified over orderings would reject it. Dropping the pinning to "restore
+    // the quantified reading" turns this green case red, which is what makes the
+    // pinning load-bearing rather than an optimisation.
+    const legal = await proveOrdering(plan(patch('src/a.py'), pushBranch(), openPr()), POLICY);
+    assert.equal(legal.holds, true);
+    const permuted = await proveOrdering(plan(pushBranch(), openPr(), patch('src/a.py')), POLICY);
+    assert.equal(permuted.holds, false);
+  });
 });
 
 describe('proveFrame', () => {
@@ -248,6 +260,94 @@ describe('proveFrame', () => {
     // whose name merely contains it is an ordinary source file.
     const result = await proveFrame(plan(patch('docs/.github-notes.md')), POLICY, ['docs/.github-notes.md']);
     assert.equal(result.holds, true);
+  });
+
+  it('names the violating step KIND, so a suggestion is not reported as a patch', async () => {
+    // The counterexample is the audit record. Reading "patch src/evil.py" for a
+    // suggest step sends whoever reads it looking for a step the plan does not
+    // contain.
+    const result = await proveFrame(plan(suggest('src/evil.py')), POLICY, ['src/a.py']);
+    assert.equal(result.holds, false);
+    assert.deepEqual(result.counterexample?.path, ['suggest s0 src/evil.py: not a file this PR touched']);
+  });
+
+  it('names the kind on a denied path too', async () => {
+    const result = await proveFrame(plan(suggest('deploy/key.pem')), POLICY, ['deploy/key.pem']);
+    assert.equal(result.holds, false);
+    assert.deepEqual(result.counterexample?.path, [
+      'suggest s0 deploy/key.pem: on the policy path denylist (**/*.pem)',
+    ]);
+  });
+
+  it('distinguishes two steps of different kinds on the same path', async () => {
+    // Without the id, two steps naming one file give two identical lines and the
+    // audit record cannot say which step to fix.
+    const result = await proveFrame(
+      checkPlanSchema(
+        {
+          steps: [
+            { id: 'a', kind: 'patch', args: { path: 'src/evil.py', old: 'a', new: 'b' } },
+            { id: 'b', kind: 'suggest', args: { path: 'src/evil.py', line: 1, old: 'a', new: 'b', note: 'n' } },
+          ],
+        },
+        POLICY,
+      ),
+      POLICY,
+      ['src/a.py'],
+    );
+    assert.equal(result.holds, false);
+    assert.deepEqual(result.counterexample?.path, [
+      'patch a src/evil.py: not a file this PR touched',
+      'suggest b src/evil.py: not a file this PR touched',
+    ]);
+  });
+});
+
+describe('a solver that decides nothing is not a proof', () => {
+  // `unsat` means the policy holds; every other verdict must not be read as one.
+  // `unknown` is the third: the model does not exist, so extracting it throws,
+  // and an unhandled rejection out of the CLI would abort the process with a
+  // stack trace where a structured fail-closed result belongs. Reached via the
+  // resourceLimit seam, on proveTaint's precedent — the corpus constructs what
+  // the policy cannot.
+
+  it('proveOrdering reports unknown as not holding, with the reason', async () => {
+    const result = await proveOrdering(plan(pushBranch(), patch('src/a.py')), POLICY, { resourceLimit: 1 });
+    assert.equal(result.holds, false);
+    assert.match(result.counterexample?.path.join('\n') ?? '', /UNDECIDED/);
+    assert.match(result.counterexample?.path.join('\n') ?? '', /resource limit/);
+  });
+
+  it('proveFrame reports unknown as not holding, with the reason', async () => {
+    const result = await proveFrame(plan(patch('src/evil.py')), POLICY, ['src/a.py'], { resourceLimit: 1 });
+    assert.equal(result.holds, false);
+    assert.match(result.counterexample?.path.join('\n') ?? '', /UNDECIDED/);
+  });
+
+  it('proveTaint reports unknown as not holding, with the reason', async () => {
+    const result = await proveTaint(plan(readPrFile(), pushBranch()), POLICY, [{ from: 0, to: 1 }], {
+      resourceLimit: 1,
+    });
+    assert.equal(result.holds, false);
+    assert.match(result.counterexample?.path.join('\n') ?? '', /UNDECIDED/);
+  });
+
+  it('does not claim the policy was violated when nothing was decided', async () => {
+    // The distinction the executor logs differently: a counterexample is an
+    // audit record about the plan, an undecided query is an operational failure
+    // of the run. Saying "VIOLATED" for the second would blame the model.
+    const result = await proveOrdering(plan(patch('src/a.py'), pushBranch()), POLICY, { resourceLimit: 1 });
+    assert.equal(result.holds, false);
+    assert.equal(result.undecided, true);
+    assert.ok(!result.counterexample?.path.some((line) => line.includes('violat')));
+  });
+
+  it('a limit generous enough to decide still returns the real verdict', async () => {
+    // The seam must not turn every proof into an unknown, or the tests above
+    // would pass against a prover that decides nothing at all.
+    const result = await proveOrdering(plan(patch('src/a.py'), pushBranch()), POLICY, { resourceLimit: 100_000_000 });
+    assert.equal(result.holds, true);
+    assert.equal(result.undecided, undefined);
   });
 });
 
