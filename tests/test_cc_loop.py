@@ -184,6 +184,51 @@ class TestSubmitTool:
         assert response["is_error"]
         assert "serialized as text" not in response["content"][0]["text"]
 
+    def test_a_handler_fault_is_counted_against_the_same_budget(self):
+        # Only Rejection advanced the breaker, so any OTHER failure inside the
+        # handler — a TypeError on a malformed submission, ENOSPC on the
+        # transcript write — went back to the model as an opaque tool error with
+        # nothing counting it. Measured: twelve identical faults, round 12, no
+        # abort. The model resubmits the same shape until the turn limit, and the
+        # run then blames the turn budget for a fault that is not the model's.
+        def explode(*a):
+            raise TypeError("'NoneType' object is not subscriptable")
+
+        submit, state, lines = self.make(verify_fn=explode)
+        for _ in range(cc_loop.MAX_SUBMISSIONS):
+            response = self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        assert state["abort_reason"], "a non-Rejection fault must exhaust the same budget"
+        assert state["accepted"] is None
+        faults = [line for line in lines if line["event"] == "submit_failed"]
+        assert faults and "TypeError" in faults[0]["error"], "the real fault must reach the audit trail"
+
+    def test_a_handler_fault_does_not_read_as_a_verifier_rejection(self):
+        # The model must not be told its artifact violated policy when the
+        # harness broke: that is the false-specifics failure mode
+        # run_evals.INJECTED_REJECTION_REASON exists to avoid, and it induces the
+        # degradation spiral rather than a retry.
+        def explode(*a):
+            raise TypeError("boom")
+
+        submit, _, _ = self.make(verify_fn=explode)
+        response = self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        assert response["is_error"]
+        text = response["content"][0]["text"]
+        assert "rejected by the verifier" not in text
+        assert "could not be processed" in text
+
+    def test_repeated_handler_faults_trip_the_repeat_breaker(self):
+        # Same fault every time is the same spiral a repeated rejection is, so it
+        # ends on MAX_REPEATED_REJECTIONS rather than only on the budget.
+        def explode(*a):
+            raise TypeError("identical fault")
+
+        submit, state, _ = self.make(verify_fn=explode)
+        assert cc_loop.MAX_REPEATED_REJECTIONS < cc_loop.MAX_SUBMISSIONS
+        for _ in range(cc_loop.MAX_REPEATED_REJECTIONS):
+            self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        assert state["abort_reason"]
+
     def test_a_second_submission_after_acceptance_is_refused(self):
         submit, state, _ = self.make()
         first = {"summary": "one", "findings": [], "residual_risk": ""}
@@ -357,6 +402,130 @@ class TestRunFailureModes:
         assert run_loop(tmp_path, monkeypatch, [stream]) == 1
         reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
         assert "turn limit" in reasons[0]["reason"]
+
+    def test_an_accepted_artifact_survives_a_turn_limit_exit(self, tmp_path, monkeypatch):
+        # A verified artifact was being discarded: the model submits on turn 27,
+        # verify() accepts, it then spends its last turns double-checking and hits
+        # the limit. The turn-limit branch was consulted before state["accepted"],
+        # so the run failed with "hit the 30-turn limit without calling
+        # submit_review" — a reason that is false, about a run that succeeded —
+        # and wrote no review.json.
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "a complete review", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            await created[-1].handler(artifact)
+            yield result_message(subtype="error_max_turns", is_error=True)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+
+    def test_a_turn_limit_after_acceptance_is_still_recorded(self, tmp_path, monkeypatch):
+        # Accepting the artifact must not hide that the session ran out of turns:
+        # a run consistently ending this way is a budget worth revisiting, and the
+        # transcript is where that is visible.
+        created = []
+        original = cc_loop.make_submit_tool
+        monkeypatch.setattr(
+            cc_loop, "make_submit_tool",
+            lambda *a, **k: created.append(original(*a, **k)) or created[-1],
+        )
+
+        async def _query(prompt, options):
+            await created[-1].handler({"summary": "ok", "findings": [], "residual_risk": ""})
+            yield result_message(subtype="error_max_turns", is_error=True)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        events = transcript_events(tmp_path)
+        assert [e for e in events if e["event"] == "run_complete"]
+        responses = [e for e in events if e["event"] == "model_response"]
+        assert responses and responses[0]["subtype"] == "error_max_turns"
+
+    def test_a_turn_limit_with_no_artifact_still_fails(self, tmp_path, monkeypatch):
+        # The complement: consulting state["accepted"] must not turn an empty
+        # turn-limit exit into a success.
+        stream = [result_message(subtype="error_max_turns", is_error=True)]
+        assert run_loop(tmp_path, monkeypatch, [stream]) == 1
+        assert not (tmp_path / "review.json").exists()
+
+    def test_an_aborted_run_is_not_rescued_by_an_acceptance(self, tmp_path, monkeypatch):
+        # Ordering: the breaker's verdict outranks an acceptance exactly as it
+        # outranks the session's ending. A run told it was aborted must not be
+        # resurrected because a later attempt got something through.
+        from verify import Rejection
+
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: None)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        placeholder = {"summary": "placeholder", "findings": [], "residual_risk": ""}
+
+        def verify_fn(*_a):
+            raise Rejection("findings[0]: line 5 is not inside a diff hunk")
+
+        async def _query(prompt, options):
+            for _ in range(cc_loop.MAX_REPEATED_REJECTIONS):
+                await created[-1].handler(placeholder)
+            yield result_message(subtype="error_max_turns", is_error=True)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path,
+                           verify_fn=verify_fn)
+        assert code == 1
+        assert not (tmp_path / "review.json").exists()
+
+    def test_the_transcript_records_the_model_that_answered_not_a_placeholder(self, tmp_path, monkeypatch):
+        # run_start logged CC_MODEL or the literal "default", and CC_MODEL is set
+        # by nothing in either workflow — so every production run recorded
+        # model_id="default" in the audit trail that exists to make runs
+        # comparable. A model swap between two runs was invisible in it.
+        monkeypatch.delenv("CC_MODEL", raising=False)
+        monkeypatch.setenv("ANTHROPIC_MODEL", "global.anthropic.claude-opus-4-8[1m]")
+        created = []
+        original = cc_loop.make_submit_tool
+        monkeypatch.setattr(
+            cc_loop, "make_submit_tool",
+            lambda *a, **k: created.append(original(*a, **k)) or created[-1],
+        )
+
+        async def _query(prompt, options):
+            yield AssistantMessage(content=[TextBlock(text="working")], model="claude-opus-4-8-v1")
+            await created[-1].handler({"summary": "ok", "findings": [], "residual_risk": ""})
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 0
+
+        events = transcript_events(tmp_path)
+        start = next(e for e in events if e["event"] == "run_start")
+        assert start["model_id"] == "global.anthropic.claude-opus-4-8[1m]", "the configured model must be logged"
+        # And the model that actually answered, once known, is recorded too: the
+        # configured value is a request, the reported one is what happened.
+        complete = next(e for e in events if e["event"] == "run_complete")
+        assert complete["model"] == "claude-opus-4-8-v1"
+
+    def test_an_unconfigured_run_says_so_rather_than_claiming_a_default(self, tmp_path, monkeypatch):
+        # With neither variable set there IS no configured model, and "default" is
+        # a claim about a value nobody supplied. None is the honest record.
+        monkeypatch.delenv("CC_MODEL", raising=False)
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        run_loop(tmp_path, monkeypatch, [[result_message()]])
+        start = next(e for e in transcript_events(tmp_path) if e["event"] == "run_start")
+        assert start["model_id"] is None
 
     def test_a_stream_without_a_result_envelope_fails_closed(self, tmp_path, monkeypatch):
         assert run_loop(tmp_path, monkeypatch, [[]]) == 1

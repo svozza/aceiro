@@ -133,6 +133,24 @@ def is_permanent_api_error(detail: str) -> bool:
     return any(marker in lowered for marker in PERMANENT_API_ERROR_MARKERS)
 
 
+def configured_model() -> str | None:
+    """The model this run was CONFIGURED to use, or None if nothing named one.
+
+    CC_MODEL is build_options' own override and is set by nothing in either
+    workflow, so reading it alone recorded model_id="default" on every production
+    run — a placeholder in the audit trail that exists specifically to make runs
+    comparable, hiding a model swap between two runs. ANTHROPIC_MODEL is what the
+    workflows actually set (from the cli-model input), so it is the fallback.
+
+    None rather than "default" when neither is set: "default" is a claim about a
+    value nobody supplied, and the honest record is that there was none. What
+    ACTUALLY answered is separate and only knowable mid-session — the
+    AssistantMessage's model, logged at run_complete and written to
+    run_metadata.json for the executor's attribution stamp.
+    """
+    return os.environ.get("CC_MODEL") or os.environ.get("ANTHROPIC_MODEL") or None
+
+
 def tool_guidance(base_root: Path, pr_root: Path) -> str:
     """Append the two filesystem roots, which are runtime paths the prompt
     file cannot state. How to use them is the prompt's own business."""
@@ -190,6 +208,22 @@ def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_f
     def error(text: str) -> dict:
         return {"content": [{"type": "text", "text": text}], "is_error": True}
 
+    def spend(reason: str) -> bool:
+        """Count one failed submission against the breaker. True if it aborts.
+
+        One budget for every way a submission can fail, because the spiral the
+        breaker exists to stop is the same either way: the model resubmits, and
+        an uncounted failure loops until the turn limit — which then reports the
+        turn budget as the fault.
+        """
+        fingerprint = rejection_fingerprint(reason)
+        state["repeated"] = state["repeated"] + 1 if fingerprint == state["last_fingerprint"] else 1
+        state["last_fingerprint"] = fingerprint
+        if state["repeated"] >= MAX_REPEATED_REJECTIONS or state["round"] >= MAX_SUBMISSIONS:
+            state["abort_reason"] = reason
+            return True
+        return False
+
     @tool(
         name=tool_name,
         description=f"Submit the completed {noun} artifact. Call exactly once, when your {noun} is final.",
@@ -205,19 +239,36 @@ def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_f
             verify_fn(args, diff_text, changed_files, policy)
         except Rejection as exc:
             transcript.log("submit_rejected", round=state["round"], reason=str(exc), artifact=args)
-            fingerprint = rejection_fingerprint(str(exc))
-            state["repeated"] = state["repeated"] + 1 if fingerprint == state["last_fingerprint"] else 1
-            state["last_fingerprint"] = fingerprint
             # Same breaker as before the port: a run repeating one failure
             # degrades into a placeholder that passes; fail loud instead.
-            if state["repeated"] >= MAX_REPEATED_REJECTIONS or state["round"] >= MAX_SUBMISSIONS:
-                state["abort_reason"] = f"final submission rejected: {exc}"
+            if spend(f"final submission rejected: {exc}"):
                 return error(
                     f"Your {noun} was rejected by the verifier: {exc}\n\n"
                     f"The submission budget is exhausted; the run is aborted and no {noun} will be posted."
                 )
             note = note_fn(args) if note_fn is not None else ""
             return error(f"Your {noun} was rejected by the verifier: {exc}{note}\n\n{guidance}")
+        except Exception as exc:
+            # Anything the handler itself broke on: a malformed submission
+            # reaching an unguarded index, a transcript write failing on a full
+            # disk. The model cannot act on it, so the only thing that must
+            # happen is that it counts — an uncounted failure returns an opaque
+            # tool error and the model resubmits the same shape until the turn
+            # limit, which then names the turn budget as the fault.
+            #
+            # Never phrased as a verifier rejection: telling a model its valid
+            # artifact violated policy is the false-specifics failure mode
+            # run_evals.INJECTED_REJECTION_REASON records, which induces the
+            # degradation spiral rather than a retry.
+            detail = f"{type(exc).__name__}: {exc}"
+            transcript.log("submit_failed", round=state["round"], error=detail, artifact=args)
+            aborted = spend(f"submission handler failed: {detail}")
+            tail = (
+                f"The submission budget is exhausted; the run is aborted and no {noun} will be posted."
+                if aborted
+                else "Submit the same complete artifact again."
+            )
+            return error(f"Your {noun} could not be processed: an error inside the harness. {tail}")
         state["accepted"] = args
         return {"content": [{"type": "text", "text": f"{noun.capitalize()} accepted and recorded. Do not submit again."}]}
 
@@ -412,7 +463,14 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # A turn-limit exit is an error subtype but DOES carry a result
         # envelope, so name it: a generic failure would send a reader hunting
         # for a CLI fault when the real cause is a bound we set.
-        if result is not None and result.subtype == "error_max_turns":
+        #
+        # Only when nothing was accepted. A session may submit, be verified, and
+        # then spend its remaining turns re-reading the diff — the artifact is
+        # already recorded, and "hit the turn limit WITHOUT calling
+        # {tool_display_name}" would be a false reason for a run that succeeded.
+        # The acceptance is checked here and not before the breaker above,
+        # because an aborted run must not be resurrected by one.
+        if result is not None and result.subtype == "error_max_turns" and state["accepted"] is None:
             return fail(
                 transcript,
                 f"agent hit the {MAX_TURNS}-turn limit without calling {tool_display_name}",
@@ -455,6 +513,10 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         transcript.log(
             "model_response",
             round=attempt,
+            # How the session ENDED, recorded even when an artifact was accepted:
+            # a run that consistently reaches the turn limit is a budget worth
+            # revisiting, and this is where that is visible.
+            subtype=result.subtype,
             stop_reason=result.stop_reason,
             usage=result.usage,
             num_turns=result.num_turns,
@@ -482,7 +544,10 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # every run and only one of them invoked a model.
         (output_dir / "run_metadata.json").write_text(json.dumps({"model": state["model"]}))
         transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
-        transcript.log("run_complete", rounds=state["round"])
+        # The model that answered joins the completion record, so the transcript
+        # carries both halves of the attribution: what was configured (run_start)
+        # and what actually ran.
+        transcript.log("run_complete", rounds=state["round"], model=state["model"])
         transcript.close()
         return 0
 
@@ -549,7 +614,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
     transcript.log(
         "run_start",
         generator="claude-agent-sdk",
-        model_id=os.environ.get("CC_MODEL", "default"),
+        model_id=configured_model(),
         prompt_sha256=sha256(system_prompt),
         policy_sha256=sha256(policy_text),
         max_rounds=MAX_SUBMISSIONS,

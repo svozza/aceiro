@@ -41,7 +41,7 @@ from artifact import (
     sha256,
 )
 from canonicalize import read_contributor_text, read_harness_text
-from cc_loop import MAX_SUBMISSIONS, drive_session, make_submit_tool, tool_guidance
+from cc_loop import MAX_SUBMISSIONS, configured_model, drive_session, make_submit_tool, tool_guidance
 from plan_verify import tree_content_source, verify_plan
 
 SUBMIT_TOOL = "mcp__plan__submit_plan"
@@ -202,7 +202,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path,
         "run_start",
         generator="claude-agent-sdk",
         artifact_kind="plan",
-        model_id=os.environ.get("CC_MODEL", "default"),
+        model_id=configured_model(),
         prompt_sha256=sha256(system_prompt),
         policy_sha256=sha256(policy_text),
         max_rounds=MAX_SUBMISSIONS,
