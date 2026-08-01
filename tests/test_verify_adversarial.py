@@ -493,6 +493,45 @@ class TestPostedTextIsTheCheckedText:
         artifact["summary"] = unicodedata.normalize("NFC", "café and naïve são fine")
         verify(artifact, sample_diff, changed_files, policy)
 
+    @pytest.mark.parametrize(
+        "entity,name",
+        [
+            ("&#x202E;", "hex RLO"),
+            ("&#8238;", "decimal RLO"),
+            ("&#x200B;", "hex ZWSP"),
+            ("&#x2066;", "hex LRI"),
+        ],
+    )
+    def test_entity_encoded_controls_reject_like_literal_ones(
+        self, artifact, sample_diff, changed_files, policy, entity, name
+    ):
+        # A character reference IS the control once rendered: markdown-it decodes
+        # it, so the source-level test never sees U+202E while the posted comment
+        # carries it. The mention and e-mail rules already run on decoded prose
+        # for exactly this reason; canonicality did not.
+        artifact["summary"] = f"Reviewed {entity}the change"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_the_entity_encoded_trojan_source_summary_rejects(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        artifact["summary"] = "Reviewed &#x202E;DEVORPPA ,ekatsim on&#x202C; carefully"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_entity_composed_non_nfc_text_rejects(self, artifact, sample_diff, changed_files, policy):
+        # "café" as e + COMBINING ACUTE, both as references: renders decomposed
+        # though the source is pure ASCII and NFC-equal to itself.
+        artifact["summary"] = "caf&#x65;&#x301; review"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_an_entity_for_a_visible_character_still_passes(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # False-positive guard: entities are ordinary markdown. Only the ones
+        # that decode to something invisible or non-NFC may reject.
+        artifact["summary"] = "the &#x41;PI and &amp; the caf&#xE9; are fine"
+        verify(artifact, sample_diff, changed_files, policy)
+
     def test_tabs_and_newlines_still_pass(self, artifact, sample_diff, changed_files, policy):
         # \n \t \r are visible separation, never "invisible" — the same
         # retention canonicalize.is_invisible makes.

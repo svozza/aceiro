@@ -197,6 +197,30 @@ def check_provenance(artifact: dict, diff_text: str, changed_files: list[str], p
 CODE_TOKEN_TYPES = {"code_inline", "code_block", "fence"}
 
 
+def text_nodes(tokens) -> list[str]:
+    """Every rendered text node's content, each kept separate.
+
+    For the canonicality pair, which asks its two questions of what the reader
+    sees. Separate rather than joined because NFC is a property of a run: a
+    combining mark starting one node would compose with the previous node's last
+    character in a concatenation and reject a document that is itself composed.
+
+    Code spans and fences are included — their content renders literally, so an
+    invisible code point in one is as invisible to the reader as anywhere else.
+    """
+    parts: list[str] = []
+
+    def walk(token_list) -> None:
+        for token in token_list:
+            if token.type in ("text", "code_inline", "code_block", "fence"):
+                parts.append(token.content)
+            elif token.children:
+                walk(token.children)
+
+    walk(tokens)
+    return parts
+
+
 def extract_prose(tokens) -> str:
     """Collect the rendered *text* content of a parsed AST, excluding code
     spans and code blocks (GitHub renders neither mentions nor auto-links
@@ -418,6 +442,30 @@ def check_markdown_field(text: str, policy_markdown: dict, where: str) -> None:
         )
     env: dict = {}
     tokens = _PARSER.parse(text, env)
+
+    # The same two questions again, on the RENDERED text. A character reference
+    # decodes at render time, so `&#x202E;` is not U+202E in the source above and
+    # IS U+202E in the posted comment — the source test alone leaves the bypass
+    # the mention and e-mail rules close by reading extract_prose. Both tests are
+    # needed: entities do not decode inside code spans, which extract_prose skips,
+    # so the source test is what covers a literal control inside backticks.
+    #
+    # Per text node, not over the concatenation: rendered chunks are joined with
+    # a separator here, but a combining mark opening one node would compose with
+    # the previous node's last character under NFC and reject a document whose own
+    # spelling is composed.
+    for node in text_nodes(tokens):
+        if invisible := next((ch for ch in node if is_invisible(ch)), None):
+            raise Rejection(
+                f"{where}: renders an invisible or bidirectional control "
+                f"U+{ord(invisible):04X}; a character reference is that code point once posted"
+            )
+        if node != unicodedata.normalize("NFC", node):
+            raise Rejection(
+                f"{where}: renders text that is not in Unicode NFC form; the posted text must be "
+                "the checked text, so submit the composed form"
+            )
+
     walk_tokens(tokens, set(policy_markdown["allowed_nodes"]), policy_markdown["link_host_allowlist"], where)
 
     # A link reference DEFINITION (``[label]: https://host``) emits no AST
