@@ -222,12 +222,9 @@ class TestExfiltration:
         artifact["summary"] = "[x](https://github.com/aws-powertools-evil/repo)"
         rejected(artifact, sample_diff, changed_files, policy)
 
-    # A path-prefix allowlist entry ("github.com/aws-powertools/") constrains
-    # nothing if the path can walk back out of it: the browser applies RFC 3986
-    # remove_dot_segments before issuing the request, so the link the reader
-    # CLICKS resolves to an org the policy never allowlisted. Both the explicit
-    # link form and the GFM bare-URL form go through check_link, so both are
-    # bracketed here.
+    # A browser applies remove_dot_segments before issuing the request, so a
+    # traversal resolves off the allowlisted prefix. Both the explicit link form
+    # and the GFM bare-URL form go through check_link.
     @pytest.mark.parametrize(
         "destination",
         [
@@ -319,16 +316,8 @@ class TestImpersonation:
 
 
 class TestPostedTextIsTheCheckedText:
-    """check_markdown_field NFC-normalized a local copy for CHECKING while
-    post.py renders the artifact's original string, so its docstring's claim
-    ("the checked text is the posted text") was false. The input side of the
-    harness already treats these code points as a threat and strips them
-    (artifact._strip_invisible); the output side — what a human reads and acts
-    on — did not.
-
-    Rejected rather than stripped, deliberately: stripping in post.py while
-    verify.py checks the original recreates the same split one layer down.
-    """
+    """post.py renders the artifact's own strings, so canonicality is rejected
+    if absent rather than normalized on a copy. ADR-0011."""
 
     @pytest.mark.parametrize(
         "control",
@@ -601,12 +590,8 @@ class TestSecrets:
         artifact["summary"] = "key AKIA​IOSFODNN7EXAMPLE leaked"
         rejected(artifact, sample_diff, changed_files, policy)
 
-    # Default_Ignorable code points whose general category is NOT Cf/Cc. A
-    # category-only strip lets every one of these through while GitHub renders
-    # the key as one contiguous run, so the reader sees the whole credential.
-    # The category test is not a usable proxy for "invisible" — the same reason
-    # artifact.py tabulates the property (see test_artifact.py's
-    # test_default_ignorable_non_cf_characters_are_stripped).
+    # Default_Ignorable code points whose category is NOT Cf/Cc, so a
+    # category-only strip lets them through while the key renders contiguous.
     @pytest.mark.parametrize(
         "invisible",
         [
@@ -625,12 +610,9 @@ class TestSecrets:
         artifact["summary"] = f"key AKIA{invisible}IOSFODNN7EXAMPLE leaked"
         rejected(artifact, sample_diff, changed_files, policy)
 
-    # A link DESTINATION was never scanned: check_secrets built its texts from
-    # json.dumps(artifact) plus rendered_markdown(value), and rendered_text
-    # collected text/code_inline/fence content — never href attributes. markdown-it
-    # and GitHub both decode entities in an href, so the raw JSON does not match
-    # the pattern while the rendered link carries the whole credential, exposing it
-    # in the comment and transmitting it when followed.
+    # An href is rendered content that rendered_text cannot reach: entities are
+    # decoded by markdown-it and GitHub, so the raw JSON never matches while the
+    # rendered link carries the whole credential.
 
     def test_entity_encoded_key_in_a_link_destination(self, artifact, sample_diff, changed_files, policy):
         artifact["summary"] = "[docs](https://docs.powertools.aws.dev/?k=AKIA&#73;OSFODNN7EXAMPLE)"

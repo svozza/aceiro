@@ -336,12 +336,9 @@ class TestRedactText:
     def test_leaves_innocent_text_alone(self):
         assert redact_text("nothing to see", POLICY) == "nothing to see"
 
-    # The captured stream IS a structured-record stream: serialize_message()
-    # JSON-dumps every SDK message, so a tool input arrives as
-    # {"aws_secret_access_key": "..."}. The policy's only pattern for that shape
-    # requires the value to follow `:` with whitespace between, and JSON puts a
-    # quote there — the exact reason redact_secrets needed a key/value bridge.
-    # cc_stream_*.jsonl is uploaded as a CI artifact with 90-day retention.
+    # The capture is JSONL of serialized SDK messages, so a tool input arrives
+    # as {"aws_secret_access_key": "..."} — the label pattern needs the value to
+    # follow `:` with only whitespace, and JSON puts a quote there.
 
     SECRET_VALUE = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY1"
 
@@ -479,14 +476,8 @@ class TestBundledCli:
 class TestQuarantineContainment:
     """The quarantine handed to the generator carries no symlinks.
 
-    git materialises mode-120000 entries from the head tree verbatim (verified
-    against a real fetch+checkout), and the generator is granted Read/Grep/Glob
-    over the directory. A permission check on the REQUESTED path cannot see where
-    a link points, so a path textually inside the quarantine would serve bytes
-    from outside it — into the captured stream (an uploaded artifact) and into
-    the submitted summary, where only the regex secret scan stands between it and
-    a posted comment. Fix containment, not the patterns: no pattern set covers
-    every credential shape.
+    A permission check on the path the generator requests cannot see where a link
+    points, so a path textually inside the quarantine would serve outside bytes.
     """
 
     def test_no_symlinks_found_in_a_clean_tree(self, tmp_path):

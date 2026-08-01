@@ -195,23 +195,12 @@ def tree_content_source(root: Path):
     which IS the reviewed head, so reading from it is reading at the reviewed
     SHA with no further git plumbing.
 
-    The tree is contributor-authored data, so both hostile shapes are refused and
-    both read as missing:
-
-    - a symlink pointing OUTSIDE the tree — confinement is checked on the
-      resolved path, so the link is never followed out;
-    - a symlink pointing INSIDE the tree, which confinement alone accepts. That
-      one matters just as much: the frame and denylist checks are lexical, seeing
-      only the declared path string, so a changed `src/link.py` symlinked to
-      `.github/workflows/ci.yml` passes both and then anchors against the
-      workflow's bytes. `old` would byte-match a file the denylist exists to
-      protect, and a filesystem-based executor could go on to modify the target.
-      Serving another path's bytes as the declared path's content is a false
-      anchor whatever the target is, denylisted or not.
-
-    So the requirement is stronger than containment: the resolved path must BE
-    the lexical join, which is false if any component is a link. FileNotFoundError
-    keeps the caller's existing "reads as missing" rejection wording.
+    The tree is contributor-authored, so the requirement is stronger than
+    confinement: the resolved path must BE the lexical join, false if any
+    component is a symlink. An inward-pointing link is refused as well as an
+    outward one — the frame and denylist checks are lexical, so they cannot see
+    that a declared path names another file's bytes. Raises FileNotFoundError
+    either way, so both read as missing to the caller.
     """
     resolved_root = root.resolve()
 
@@ -220,10 +209,9 @@ def tree_content_source(root: Path):
         target = lexical.resolve()
         if not target.is_relative_to(resolved_root):
             raise FileNotFoundError(f"{path!r} resolves outside the reviewed tree")
-        # Equality, not containment: resolve() collapses every symlink, so a
-        # mismatch means some component was one. Compares against the resolved
-        # ROOT-relative join so a link in the path to the quarantine itself (a
-        # /tmp symlink on macOS, say) is not mistaken for one inside the tree.
+        # resolve() collapses every symlink, so a mismatch means one was present.
+        # Compared against the join under the RESOLVED root, or a link on the way
+        # to the quarantine (/tmp on macOS) would read as one inside it.
         if target != Path(os.path.normpath(lexical)):
             raise FileNotFoundError(
                 f"{path!r} is or traverses a symlink inside the reviewed tree; "
@@ -248,29 +236,16 @@ BRANCH_ARGS = {"push_branch": "name", "open_pr": "branch"}
 def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | None) -> None:
     """Confine the arguments that decide WHERE a write-class step acts.
 
-    Containment binds patch and suggest, so these three kinds used to get nothing
-    beyond check_scalar's regex — and push_branch.name is the single argument
-    deciding where the executor's `contents: write` credential is pointed. A plan
-    of push_branch(name="main") verified clean, as did push_branch(name=<the
-    reviewed PR's own head branch>), which silently implements the
-    push-to-the-contributor's-branch mode ADR-0009's addendum decided against.
+    Branches (push_branch.name, open_pr.branch) must sit under
+    policy.plan.branch_prefix; a prefix rather than a denylist, so "not the
+    default branch" is a property of the name rather than a list to keep current.
+    The reviewed PR's own head branch is refused separately because the prefix
+    cannot express it — a contributor could name their branch inside the
+    namespace (ADR-0009 addendum). Labels must appear on
+    policy.plan.label_allowlist exactly.
 
-    Two constraints, of different shapes because the risks are different:
-
-    - Branches (push_branch.name, open_pr.branch) must sit under
-      policy.plan.branch_prefix, a harness-owned namespace. A prefix rather than
-      a denylist of protected names, so "not the default branch" is a property of
-      the name rather than a list someone has to keep current. The reviewed PR's
-      OWN head branch is refused separately: the prefix cannot express it, since a
-      contributor could name their branch inside the namespace.
-    - Labels must appear on policy.plan.label_allowlist EXACTLY. A label is a
-      control surface — this repo's evals workflow triggers on `run-evals` — and
-      the allowlist ships empty, on link_host_allowlist's precedent (ADR-0010):
-      a plan can apply none until a consumer names the ones it accepts.
-
-    `head_branch` is a plan input like changed_files, not something derivable
-    here; None means "unknown", which refuses nothing extra because the branch
-    the executor pushes to is still confined to the namespace.
+    `head_branch` is a plan input, not derivable here; None means unknown, which
+    refuses nothing extra since the namespace still bounds the target.
     """
     prefix = policy_plan["branch_prefix"]
     allowed_labels = policy_plan["label_allowlist"]
@@ -393,15 +368,10 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                 f"{where}: matches {path!r} {occurrences} times; an ambiguous anchor cannot be applied"
             )
 
-        # Placement (ADR-0009 addendum: "`old` IS the anchored line"). Exactly-
-        # once proves the model read SOME bytes of the file; suggest.line decides
-        # which bytes GitHub's suggestion block REPLACES, because the block
-        # overwrites the commented line range and not the text in `old`. Unless
-        # those are the same region, anchoring constrains nothing about what the
-        # executor destroys — `old` unique at line 4 with line: 2 would delete a
-        # function signature nobody anchored. Checked here rather than in the
-        # cheap in-hunk phase above because it is the file content that decides
-        # it, and anchoring is the phase allowed to read the file.
+        # Placement (ADR-0009 addendum: "`old` IS the anchored line"). GitHub's
+        # suggestion block replaces the commented line range, not the text in
+        # `old`, so the two must name the same region. Here rather than in the
+        # in-hunk phase above because only the file content decides it.
         if step["kind"] != "suggest":
             continue
         offset = content.index(old_bytes)
@@ -436,26 +406,10 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
 def check_plan_ordering(plan: dict, policy_plan: dict) -> None:
     """policy.plan.ordering: no `after`-kind step may precede a `before`-kind one.
 
-    The Python side of what ts/plan/prove.ts proveOrdering proves, and it has to
-    exist: the process that holds the write token re-verifies rather than
-    trusting a claim from another job, so a policy read by only one of the two
-    gates is a policy the executor does not enforce. ADR-0009's "the only legal
-    write chain is patch → push_branch → open_pr" is this rule.
-
-    Semantics kept identical to the prover's, deliberately:
-
-    - It quantifies over PAIRS at their plan indices, so the rule is about
-      relative order and not adjacency — an unrelated step between the pair does
-      not hide the violation.
-    - A plan with no orderable pair holds VACUOUSLY. proveOrdering returns early
-      rather than asserting Or() of nothing, and a suggestion-only plan (no
-      write-class step at all) is the case that matters — see
-      ts/plan/prove.test.ts and prove-cli.test.ts.
-    - First violation wins, in plan order, matching this module's other phases.
-
-    The prover states this negated and asks a solver; over a straight-line plan
-    of at most max_steps the same claim is a double loop, and the two must agree
-    on every plan. The differential is the test that keeps them honest.
+    ADR-0009's legal write chain (patch → push_branch → open_pr). The Python twin
+    of ts/plan/prove.ts proveOrdering, and semantics must stay identical to it:
+    pairs at their plan indices, so relative order matters and not adjacency; a
+    plan with no orderable pair holds vacuously; first violation wins.
     """
     steps = plan["steps"]
     for rule in policy_plan["ordering"]:
@@ -512,25 +466,16 @@ def check_plan_markdown(plan: dict, policy: dict) -> None:
 
 
 def check_plan_secrets(plan: dict, policy: dict) -> None:
-    """The whole plan through the secret scan, raw and rendered, mirroring
-    check_secrets. Raw JSON catches a secret in any arg (old and new
-    included); rendered text catches one reassembled by markdown formatting.
-    The third representation is patch/suggest old FUSED with new: a rendered
-    suggestion shows old and new adjacent, so a credential split across the
-    boundary reads complete there while neither the raw JSON (which separates
-    them with syntax) nor either fragment alone ever matches.
+    """The whole plan through the secret scan, mirroring check_secrets.
 
-    And each of those is scanned with invisible code points STRIPPED as well as
-    raw. old/new used to get the raw form only, while markdown args were scanned
-    rendered — so an invisible split every pattern while the rendered suggestion,
-    and the follow-up PR's diff, showed the key complete to a human. Same bypass
-    class as the artifact verifier's, on the side whose output becomes a merge
-    candidate.
+    Four representations, each also scanned invisible-stripped: raw JSON (any
+    arg, old and new included), rendered markdown args, and old FUSED with new —
+    a rendered suggestion shows those adjacent, so a credential split across the
+    boundary reads complete there while neither fragment nor the syntax-separated
+    JSON matches.
 
-    Stripping here is a SCAN representation and nothing else. ADR-0005's anchor
-    comparison in check_plan_containment stays raw: an `old` that matched only
-    after canonicalization is a fragment the model never saw, so it must keep
-    failing closed.
+    Stripping is a scan representation only. ADR-0005's anchor comparison stays
+    raw, or an `old` the model never saw verbatim would start matching.
     """
     texts = [json.dumps(plan, ensure_ascii=False)]
     for _, value in _iter_plan_markdown(plan, policy):

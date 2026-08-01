@@ -59,16 +59,13 @@ export interface PlanPolicy {
   readonly max_patched_files: number;
   readonly max_changed_lines: number;
   readonly path_denylist: readonly string[];
-  /** The harness-owned namespace every branch a plan pushes must sit under.
-   * push_branch.name is the one argument deciding where the executor's
-   * `contents: write` credential is pointed, and it is model-supplied — a prefix
-   * makes "not the default branch" a property of the name rather than a list of
-   * protected names someone has to keep current (ADR-0009 addendum). */
+  /** The harness-owned namespace every branch a plan pushes must sit under. A
+   * prefix rather than a denylist of protected names, so "not the default branch"
+   * is a property of the name (ADR-0009 addendum). */
   readonly branch_prefix: string;
-  /** Labels a plan may apply, matched EXACTLY. Ships empty on
-   * link_host_allowlist's precedent: a label is a control surface (this repo's
-   * evals workflow triggers on one), so a plan can apply none until a consumer
-   * names the ones it accepts. */
+  /** Labels a plan may apply, matched EXACTLY. Ships empty: a label is a control
+   * surface (this repo's evals workflow triggers on one), so a consumer names the
+   * ones it accepts. */
   readonly label_allowlist: readonly string[];
 }
 
@@ -119,9 +116,8 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
     }
   }
 
-  // Non-empty: an empty prefix would confine nothing, so it is a policy error
-  // rather than a permissive setting. There is no default — a default here would
-  // be a rule nobody reviewed.
+  // An empty prefix would confine nothing, so it is a policy error rather than a
+  // permissive setting. No default: a default here is a rule nobody reviewed.
   if (typeof plan['branch_prefix'] !== 'string' || plan['branch_prefix'].length === 0) {
     throw new PolicyError('policy.plan.branch_prefix: expected a non-empty string');
   }

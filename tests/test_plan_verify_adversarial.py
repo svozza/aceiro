@@ -310,11 +310,8 @@ class TestSecretsSplitAcrossArgs:
         verified(plan_of(anchored_patch(old='PREFIX = "AKIA"\n', new='PREFIX = get_prefix()\n')),
                  changed_files=["src/app.py"], tree=tree)
 
-    # old/new were concatenated RAW only, while markdown args were scanned in
-    # rendered form. An invisible code point splits every pattern while the
-    # rendered suggestion (and the follow-up PR's diff) shows the key complete to
-    # a human — the same bypass class as the artifact verifier's, on the side that
-    # produces a merge candidate.
+    # An invisible splits every pattern while the rendered suggestion, and the
+    # follow-up PR's diff, shows the key complete to a human.
 
     ZWSP = "​"
 

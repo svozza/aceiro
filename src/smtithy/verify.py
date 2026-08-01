@@ -213,13 +213,9 @@ def rendered_text(tokens) -> str:
                 parts.append("\n")
 
     walk(tokens)
-    # One spelling of "invisible", shared with the input fence. A general-
-    # category test (Cf/Cc) was not enough: U+034F CGJ, U+FE0F VS16, U+3164
-    # HANGUL FILLER and the rest of the Default_Ignorable table are Mn/Lo/Cn, so
-    # they survived it while GitHub renders the run they split as one contiguous,
-    # fully readable credential. canonicalize.strip_invisible keeps the
-    # deliberate \n\t\r retention: a tab renders as visible separation, and
-    # dropping it would fuse two innocent runs into a false secret.
+    # canonicalize.strip_invisible, not a category test: much of the
+    # Default_Ignorable table is Mn/Lo/Cn. It retains \n\t\r, which render as
+    # separation — dropping them would fuse two innocent runs into a false secret.
     return strip_invisible("".join(parts))
 
 
@@ -229,16 +225,12 @@ _PERCENT_RE = re.compile(r"%([0-9A-Fa-f]{2})")
 def _has_dot_segment(path: str) -> bool:
     """A path segment is `.` or `..`, in literal or percent-encoded form.
 
-    An allowlist entry like ``github.com/aws-powertools/`` is a PREFIX, and a
-    prefix constrains nothing if the path can walk back out of it: the browser
-    applies RFC 3986 remove_dot_segments before issuing the request, so
-    ``…/aws-powertools/../attacker-org/leak`` matches the prefix here and
-    resolves to an org the policy never allowlisted.
+    A browser applies RFC 3986 remove_dot_segments before issuing the request, so
+    such a path resolves somewhere the allowlist prefix never covered.
 
-    Percent-escapes are decoded before the test because ``%2e%2e`` and ``..%2f``
-    reach the same resolved path, and the separator set includes backslash
-    because browsers treat it as one in a URL path. Decoding is for DETECTION
-    only — nothing decoded is ever returned for comparison.
+    Percent-escapes are decoded first (``%2e%2e`` and ``..%2f`` reach the same
+    resolved path) and backslash counts as a separator. Decoding is for detection
+    only; nothing decoded is returned for comparison.
     """
     decoded = _PERCENT_RE.sub(lambda m: chr(int(m.group(1), 16)), path)
     return any(segment in (".", "..") for segment in re.split(r"[/\\]", decoded))
@@ -261,14 +253,9 @@ def normalize_host(url: str) -> str | None:
         return None  # userinfo/port tricks: reject rather than normalize
     if not re.fullmatch(r"[a-z0-9.-]+", authority):
         return None  # non-ASCII / punycode-ambiguous host: reject
-    # Rejected, not resolved: a link whose rendered destination differs from the
-    # text the allowlist matched has no business in a posted comment, so there is
-    # nothing to gain by computing where it would land. Dots INSIDE a segment
-    # (an ordinary filename) are untouched — only a whole segment of . or ..
     if _has_dot_segment(path):
-        return None
-    # The path keeps its case: only the authority is case-insensitive.
-    return authority + path
+        return None  # traversal out of a path prefix: reject rather than resolve
+    return authority + path  # path keeps its case; only the authority folds
 
 
 def check_link(url: str, allowlist: list[str], where: str) -> None:
@@ -371,25 +358,9 @@ def unterminated_fence(text: str) -> str | None:
 
 
 def check_markdown_field(text: str, policy_markdown: dict, where: str) -> None:
-    # "The checked text IS the posted text" — an equality, enforced, not a
-    # normalization the checker performs on a copy while post.py renders the
-    # original. It used to be the latter, which made two things reachable:
-    #
-    # - Bidi controls and invisibles survived into the comment. An RLO reverses a
-    #   run, so the rendered review reads differently from the bytes any
-    #   downstream tooling sees — Trojan-source deception in a comment whose whole
-    #   purpose is to be trusted BECAUSE it was verified. The input fence already
-    #   treats these as a threat (artifact.escape_fence); the output side, which
-    #   is what a human acts on, did not.
-    # - Length was measured on NFC and the AST walked on NFC while the NFD
-    #   original was posted, so the checked and posted strings merely happened to
-    #   agree.
-    #
-    # Rejected rather than stripped: stripping here (or in post.py) would recreate
-    # the same checked-vs-posted split one layer down, and rejection is what
-    # "allowlist a safe grammar" means. The invisible set is
-    # canonicalize.is_invisible — one spelling shared with the fence and the
-    # secret scans — which deliberately retains \n\t\r as visible separation.
+    # post.py renders the artifact's own strings, so the checked text has to BE
+    # the posted text: canonicality is rejected-if-absent, never normalized here.
+    # ADR-0011 for why rejection rather than stripping.
     if invisible := next((ch for ch in text if is_invisible(ch)), None):
         raise Rejection(
             f"{where}: contains invisible or bidirectional control U+{ord(invisible):04X}, "
@@ -498,25 +469,16 @@ def _iter_markdown_values(artifact: dict, policy: dict):
 
 
 def link_destinations(tokens) -> list[str]:
-    """Every href the document renders, entity-decoded as markdown-it decodes it.
+    """Every href the document renders, for the secret scan.
 
-    A destination is rendered content the scan has to see, and it was the one
-    rendered thing rendered_text could not collect: that walk gathers
-    text/code_inline/fence content, never attributes. So
-    ``[docs](https://host/?k=AKIA&#73;OSFODNN7EXAMPLE)`` matched no pattern in the
-    raw JSON (the entity splits the run) and none in the visible text (the href is
-    not text) — while GitHub renders a link carrying the complete credential, and
-    following it transmits it.
+    rendered_text collects text nodes, never attributes, so destinations need
+    their own collector. Only link_open survives to be rendered: images and
+    reference definitions are rejected before this runs.
 
-    Only link_open needs collecting: images are rejected outright and reference
-    definitions are rejected before this runs, so no other destination survives.
-
-    Each destination is returned twice, raw and percent-DECODED, because
-    markdown-it normalises an href by percent-encoding it: an entity for U+200B
-    comes back as ``%E2%80%8B``, which no invisible-stripping can see and no
-    pattern matches, while the browser decodes it before sending. Decoding is for
-    scanning only — nothing here feeds the allowlist, which deliberately compares
-    the undecoded form (normalize_host).
+    Each href is returned twice, raw and percent-decoded — markdown-it
+    percent-encodes an href, so an entity for U+200B arrives as ``%E2%80%8B``
+    where nothing can see it, while a browser decodes before sending. For
+    scanning only; the allowlist compares the undecoded form (normalize_host).
     """
     found: list[str] = []
 
@@ -542,31 +504,19 @@ def rendered_markdown(value: str) -> str:
 
 
 def check_secrets(artifact: dict, policy: dict) -> None:
-    # THREE representations are scanned, because markdown can make them differ:
-    #
-    # 1. The raw JSON source, verbatim and with invisible code points removed.
-    #    Verbatim catches secrets in non-markdown fields and in markdown syntax
-    #    itself; stripped catches a credential split by an invisible in a field
-    #    rendered_markdown never sees (a pattern-constrained one). Keeping both
-    #    means stripping can only ADD matches, never fuse two runs into a false
-    #    negative.
-    # 2. Each markdown field's RENDERED text. A key written as
-    #    ``AKIA**IOSF**ODNN7EXAMPLE`` or with HTML entities never matches in the
-    #    source — the formatting splits the run — but renders as one visible,
-    #    complete credential; rendered_text() sees what the reader sees (inline
-    #    boundaries removed, entities decoded, code included).
-    # 3. Each rendered LINK DESTINATION. An href is rendered content too, and the
-    #    one rendered thing the visible-text walk cannot reach, so an
-    #    entity-encoded key in a query string used to pass both other
-    #    representations while GitHub rendered a link carrying it in full.
+    # Markdown can make these differ, so all three are scanned: the raw JSON
+    # source (non-markdown fields, and markdown syntax itself), each field's
+    # rendered text (formatting and entities that split a run in the source but
+    # render as one credential), and each rendered link destination. Every one is
+    # scanned both verbatim and invisible-stripped; keeping the verbatim copy
+    # means stripping can only add matches, never fuse two runs into a false
+    # negative.
     source = json.dumps(artifact, ensure_ascii=False)
     texts = [source, strip_invisible(source)]
     for value in _iter_markdown_values(artifact, policy):
         tokens = _PARSER.parse(unicodedata.normalize("NFC", value))
-        rendered = rendered_text(tokens)
-        texts.append(rendered)
+        texts.append(rendered_text(tokens))
         for href in link_destinations(tokens):
-            # Stripped as well as verbatim, for the same reason the source is.
             texts.append(href)
             texts.append(strip_invisible(href))
     for pattern in policy["secret_scan_patterns"]:

@@ -55,9 +55,8 @@ async function main(): Promise<number> {
     await proveOrdering(plan, policy),
     await proveFrame(plan, policy, changedFiles),
     await proveTaint(plan, policy),
-    // --head-branch is optional: the executor knows the reviewed PR's head
-    // branch from live context, a standalone invocation may not, and its absence
-    // only removes the one check the namespace prefix cannot express.
+    // --head-branch is optional; its absence only removes the one check the
+    // namespace prefix cannot express.
     proveWriteTargets(plan, policy, values['head-branch']),
   ];
 

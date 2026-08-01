@@ -66,15 +66,10 @@ name: Evals
 # pull_request_target is the base branch, whereas pull_request resolves to
 # refs/pull/N/merge and would never match.
 #
-# The configuration is not self-verifying, which is why the in-code assertion
-# ADR-0006 requires now runs INSIDE this job:
+# The configuration is not self-verifying, which is why ADR-0006's in-code
+# assertion runs INSIDE this job:
 # docs/adr/0006-addendum-observed-gate-failures.md records four ways the gate has
-# silently failed open, including a rejected create call leaving an unprotected
-# environment behind and a visibility flip stripping a protection rule, and no
-# run went red for any of them. environment_gate.py is asserted from a TRUSTED
-# base-branch checkout before the PR's head is on disk and before any credential
-# exists in the job — asking the PR's own code whether the PR was approved would
-# be no check at all.
+# silently failed open with no run going red.
 
 on:
   # Every pull request, on open and on every push (ADR-0008 addendum: the
@@ -214,13 +209,9 @@ jobs:
       contents: read
       id-token: write # Bedrock role assumption only; no pull-requests scope
     steps:
-      # TRUSTED CHECKOUT FIRST, into its own directory, so the gate below is
-      # asserted by BASE-BRANCH code. Asserting it from the PR's checkout would
-      # ask attacker-controlled code whether the attacker was approved.
-      #
-      # `path:` keeps it out of the workspace root, which the PR checkout below
-      # owns — and that checkout runs with clean:false so it cannot delete this
-      # directory out from under the assertion's own audit trail.
+      # TRUSTED CHECKOUT FIRST, so the gate below is asserted by BASE-BRANCH
+      # code: asking the PR's own code whether the PR was approved is no check.
+      # `path:` keeps it out of the workspace root, which the PR checkout owns.
       - name: Check out the base-branch harness (trusted)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -230,28 +221,19 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          # NO pip cache in this job. It checks out the PR head below and then
-          # EXECUTES it, and setup-python's implicit post step saves the cache
-          # last — after that code has run. Because pull_request_target runs
-          # under the base ref, the entry would be written into the BASE
-          # BRANCH's cache scope, reachable by later runs on main and by every
-          # other PR. Keying it on a file from the untrusted checkout would
-          # additionally hand the author control of the key. The install is
-          # hash-pinned, so the cache bought little; quality_check.yml can cache
-          # safely because it is `pull_request` (PR-scoped), and
-          # ai-pr-review.yml because its key comes from the pinned harness
-          # checkout, not the consumer's tree.
+          # NO pip cache here. This job executes PR-head code, and
+          # setup-python's cache save is an implicit POST step that runs after
+          # it; under pull_request_target the entry lands in the BASE BRANCH's
+          # cache scope, reachable from main and every other PR. The install is
+          # hash-pinned, so the cache bought little.
 
-      # ADR-0006: the gate is asserted INSIDE the gated job, before any
-      # credential exists in the job AND before the PR's own code is on disk.
-      # A missing or protection-free environment makes eval_approve succeed
-      # automatically, and this job then executes contributor-controlled Python
-      # with Bedrock credentials. environment_gate.py imports only the stdlib,
-      # so it runs before any dependency install.
+      # ADR-0006: asserted INSIDE the gated job, before any credential exists AND
+      # before the PR's code is on disk. A missing or protection-free environment
+      # makes eval_approve succeed automatically. Stdlib-only, so it needs no
+      # dependency install first.
       - name: Assert the approval gate was real
-        # Only pull_request_target can be gated by an environment; schedule and
-        # workflow_dispatch have no PR and legitimately have no gate (the
-        # dispatch path is restricted to those who can dispatch).
+        # Only pull_request_target is environment-gated; schedule and dispatch
+        # have no PR and legitimately have no gate.
         if: github.event_name == 'pull_request_target'
         working-directory: trusted-base
         env:
@@ -273,9 +255,8 @@ jobs:
           # token in .git/config, where that code could read it and act as the
           # workflow. Load-bearing here, not hygiene.
           persist-credentials: false
-          # Do not wipe trusted-base/ (checked out above) while cleaning the
-          # workspace root. The PR's tree still lands in the root, which is where
-          # every step below expects it.
+          # Do not wipe trusted-base/ while cleaning the workspace root; the PR
+          # tree still lands in the root, where every step below expects it.
           clean: false
       # The generator (claude-agent-sdk) installs here too: the SDK wheel
       # bundles the Claude Code CLI binary, so the hash pin below covers both.

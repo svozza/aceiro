@@ -446,15 +446,8 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
 def find_symlinks(root: Path) -> list[Path]:
     """Every symlink at or under `root`, however deep.
 
-    The quarantine is contributor-authored: git materialises mode-120000 entries
-    from the head tree verbatim, so a PR can plant a link to ~/.aws/credentials,
-    the CLI's own config dir, or $GITHUB_ENV. The generator is granted
-    Read/Grep/Glob over the quarantine, and a permission check on the REQUESTED
-    path cannot see where a link points — a path textually inside the tree would
-    serve bytes from outside it.
-
-    Directories are walked without following links, so a link to a directory is
-    reported rather than descended into.
+    followlinks=False, so a linked directory is reported rather than descended
+    into.
     """
     found: list[Path] = []
     for parent, directories, files in os.walk(root, followlinks=False):
@@ -468,16 +461,11 @@ def find_symlinks(root: Path) -> list[Path]:
 def assert_no_symlinks(pr_root: Path, transcript: Transcript) -> None:
     """Refuse to run the generator over a quarantine containing symlinks.
 
-    Defence in depth, and deliberately not a fix by widening the secret patterns:
-    the containment property is what is wrong when a link is present, and no
-    pattern set covers every credential shape (an AWS session token, an OAuth
-    blob). The workflow strips links when it materialises the tree; this is the
-    in-code assertion that the stripping happened, in the process that is about
-    to hand the directory to the model — the same posture post.py and
-    execute_plan.py take toward work another job claims to have done.
-
-    Mirrors plan_verify.tree_content_source's discipline: a declared path must
-    name its own bytes.
+    git materialises mode-120000 entries from the head tree verbatim, and the
+    generator is granted Read/Grep/Glob here — a permission check on the requested
+    path cannot see where a link points. The workflow strips links when it
+    materialises the tree; this asserts that happened, in the process about to
+    hand the directory to the model.
     """
     links = find_symlinks(pr_root)
     if not links:
@@ -521,7 +509,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         max_rounds=MAX_SUBMISSIONS,
     )
 
-    # Before the model is granted Read/Grep/Glob over the quarantine.
+    # Before the model is granted the quarantine directory.
     try:
         assert_no_symlinks(pr_root, transcript)
     except Rejection as exc:

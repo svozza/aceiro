@@ -108,34 +108,19 @@ def render_rejection_guidance(policy: dict) -> str:
     )
 
 
-# The Default_Ignorable table moved to canonicalize.py so the input fence and
-# the secret scan share ONE spelling of "invisible": verify.py's scan used to
-# test category Cf/Cc independently, and the gap between the two spellings was a
-# confirmed bypass (a key split by U+034F reads complete to the reader). Re-
-# exported under the old private names because they are this module's tested
-# surface (tests/test_artifact.py).
+# Re-exported under the old private names, which are this module's tested
+# surface. The table itself lives in canonicalize.py so the fence and both secret
+# scans share one spelling of "invisible".
 _DEFAULT_IGNORABLE_RANGES = DEFAULT_IGNORABLE_RANGES
 _is_default_ignorable = is_default_ignorable
 _strip_invisible = strip_invisible
 
 
-# Every fence tag the harness emits, in any assembled message. Declared as ONE
-# set because escaping is set-aware: a payload fenced under one tag must not be
-# able to forge any of the others.
-#
-# The tags do not carry equal trust. `untrusted_pr_description` and
-# `untrusted_diff` announce contributor data; `changed_file_list` is presented as
-# harness data; and `commanded_finding` (plan_loop) is an element of an
-# already-accepted review that a maintainer explicitly commanded a fix for — and
-# it is emitted BEFORE the review context. Escaping only the enclosing tag left a
-# contributor free to embed a complete, well-formed <commanded_finding> block in
-# the PR description, so the planner saw two syntactically identical commanded
-# findings with no in-band way to tell the harness's from the contributor's. The
-# trust label the fence exists to carry was forgeable from inside the data it was
-# labelling.
-#
-# A tag added here without being added to this set is a hole, so the set is what
-# new fences must join; test_artifact.py parametrizes over it.
+# Every fence tag the harness emits. Escaping is set-aware over this, so a
+# payload fenced under one tag cannot forge another — the tags carry unequal
+# trust (`commanded_finding` says a maintainer commanded this), so a forgeable
+# tag is a forgeable trust label. A new fence MUST join this set;
+# test_artifact.py parametrizes over it.
 HARNESS_FENCE_TAGS = frozenset({
     "untrusted_pr_description",
     "untrusted_diff",
@@ -148,19 +133,15 @@ def escape_fence(text: str, tag: str, tags: frozenset[str] = HARNESS_FENCE_TAGS)
     """Neutralise harness fence tags so fenced content can neither terminate its
     own fence nor forge another one (in-band-signaling guard).
 
-    BOTH forms of EVERY harness tag are neutralised, not just the closing form of
-    the enclosing one: an opening tag is half of a forged block, and a payload
-    that cannot close its own fence can still open someone else's.
-
-    Only the harness's own tags are touched. Ordinary angle-bracket text — a C++
-    include, a generic, HTML in a reviewed file — passes through, because the
-    model has to see the diff as it is.
+    Both forms of every tag in `tags`, since an opening tag is half a forged
+    block. Only these tags: ordinary angle-bracket text (a C++ include, a
+    generic, HTML in a reviewed file) passes through, or the model would be shown
+    a mangled diff.
     """
     text = _strip_invisible(text)
     for candidate in sorted(tags | {tag}):
-        # Rewritten to `<_tag>` / `</_tag>`: visibly the same content, no longer
-        # the token. The leading underscore is not a valid tag start for us, so a
-        # rewritten tag can never be mistaken for a real one.
+        # `<_tag>` reads the same to the model but is no longer the token; the
+        # leading underscore is not a tag start the harness ever emits.
         text = re.sub(
             rf"<(/?)\s*{re.escape(candidate)}\s*>",
             rf"<\g<1>_{candidate}>",
@@ -178,24 +159,13 @@ WITHHELD = "[withheld: secret-scan pattern matched after redaction]"
 
 
 def redact_text(text: str, policy: dict) -> str:
-    """Redact a captured stream, line by line, with redact_secrets' full machinery.
+    """Redact a captured stream, line by line, with redact_secrets' machinery.
 
-    This used to apply the raw patterns only, justified by a docstring claiming
-    it was for output "where the key/value and dict-key cases redact_secrets
-    handles cannot arise". That was false of its only caller: cc_loop's stream
-    capture JSON-dumps every SDK message, so a tool input arrives as
-    ``{"aws_secret_access_key": "<40 chars>"}`` — and the policy's only pattern
-    for that shape needs the value to follow ``:`` with whitespace between, while
-    JSON puts a quote there. That is exactly why redact_secrets needed the
-    key/value bridge. cc_stream_*.jsonl is uploaded as a CI artifact with 90-day
-    retention, so the same value that Transcript.log would have redacted was
-    shipped verbatim.
-
-    The capture is JSONL, so each line is parsed and run through redact_secrets
-    (bridge, dict keys, fail-closed rescan). A line that is not JSON — an
-    unstructured stderr blob — still gets pattern redaction, so nothing is
-    scanned less than it was before. Line structure is preserved: the caller
-    writes this straight to a .jsonl file.
+    The capture is JSONL of serialized SDK messages, so it IS a structured-record
+    stream: each line is parsed and run through redact_secrets (label bridge,
+    dict keys, fail-closed rescan). A line that is not JSON — an unstructured
+    stderr blob — falls back to the bare pattern sweep. Line structure is
+    preserved; the caller writes the result straight to a .jsonl file.
     """
     def redact_line(line: str) -> str:
         if not line.strip():
@@ -247,21 +217,10 @@ def redact_secrets(value, policy: dict):
         return any(re.search(p, f"{label}={text}") or re.search(p, f"{label}:{text}") for p in patterns)
 
     def redact(value, labels: tuple[str, ...] = ()):
-        """`labels` is every enclosing dict KEY on the path to `value`.
-
-        ALL of them, not just the nearest, and threading them is the point. The
-        bridge check used to run only where the value under a labelled key was
-        itself a string, so one level deeper — a list element or a sub-dict —
-        nothing caught it: a bare 40-char secret matches no standalone pattern,
-        and the fail-closed rescan could not help either, because the label
-        patterns need `[=:]\\s*` immediately before the value and `: ["` defeats
-        that. Transcript.log receives model-controlled nested JSON (tool_request
-        logs block.input), so the nesting is ordinary.
-
-        Keeping the whole ancestry matters: in
-        {"aws_secret_access_key": {"v": "…"}} the NEAREST key is the innocuous
-        "v", while the label a reader sees is the outer one. A secret is redacted
-        if ANY ancestor labels it.
+        """`labels` is EVERY enclosing dict key on the path to `value`, not just
+        the nearest: in {"aws_secret_access_key": {"v": "…"}} the nearest key is
+        the innocuous "v" while the label a reader sees is the outer one. A string
+        is redacted if any ancestor labels it.
         """
         match value:
             case str():
@@ -278,10 +237,8 @@ def redact_secrets(value, policy: dict):
                     out[redact_str(key)] = redact(item, inner)
                 return out
             case list():
-                # A list inherits its container's labels, and additionally lets a
-                # string SIBLING label its neighbours — the
-                # ["aws_secret_access_key", "…"] pair shape, where the label is an
-                # element rather than a key.
+                # Inherits the container's labels, plus any string SIBLING as a
+                # label: ["aws_secret_access_key", "…"] labels by position.
                 siblings = tuple(item for item in value if isinstance(item, str))
                 return [
                     redact(item, (*labels, *(s for s in siblings if s is not item)))

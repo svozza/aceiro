@@ -1,21 +1,14 @@
-"""Workflow-shape assertions: the properties a green suite otherwise cannot see.
+"""Workflow-shape assertions: properties that are facts about YAML, not Python,
+and so invisible to every other test here.
 
-Two confirmed findings lived here, and both are invisible to every other test in
-this repo because they are facts about YAML, not about Python: the evals job
-executed PR-head code with Bedrock credentials without asserting the approval
-gate, and it wrote a pip cache into the BASE BRANCH's cache scope under a key the
-untrusted PR controlled.
+The rule, from ADR-0006: a job checking out `pull_request.head.sha` executes
+untrusted code, so it must assert the gate from trusted code BEFORE that
+checkout, hold no credential before the assertion, and never write a cache entry
+the untrusted tree influenced.
 
-Parsed with a deliberately small hand-rolled reader rather than PyYAML: adding a
-dependency to the hash-pinned lockfiles to test three properties is a worse trade
-than a parser that only understands the subset these files use. It is not a
-general YAML implementation and does not need to be — it reads step lists, step
-keys, and scalar values, and every assertion below is written against that.
-
-The rule these encode, from ADR-0006: a job that checks out
-`pull_request.head.sha` executes untrusted code, so it must assert the gate from
-trusted code BEFORE that checkout, hold no credential before the assertion, and
-never write a cache entry keyed on or influenced by the untrusted tree.
+Hand-parsed rather than adding PyYAML to the hash-pinned lockfiles for three
+properties. Not a general YAML implementation: it reads step lists, step keys and
+scalar values, which is all the assertions below use.
 """
 
 from pathlib import Path
@@ -157,9 +150,8 @@ class TestEvalsApprovalGate:
 
 class TestNoUntrustedInfluencedCache:
     """A pull_request_target job runs under the BASE ref, so a cache it saves
-    lands in the base branch's scope — reachable from main and from every other
-    PR. setup-python's cache save is an implicit POST step, so it always runs
-    after the untrusted code has executed; reordering steps cannot fix it."""
+    lands in the base branch's scope. The save is an implicit POST step that runs
+    after the untrusted code, so reordering steps cannot fix it."""
 
     def test_the_evals_job_caches_nothing(self, evals_steps):
         for step in evals_steps:
@@ -209,9 +201,8 @@ def job_names(text: str) -> list[str]:
 
 
 class TestQuarantineIsStrippedOfSymlinks:
-    """git materialises mode-120000 entries from the head tree verbatim, and the
-    generator is granted Read/Grep/Glob over the quarantine. Stripping happens
-    where the tree is materialised; cc_loop asserts it independently."""
+    """Stripping happens where the tree is materialised; cc_loop asserts it
+    independently."""
 
     def test_the_quarantine_step_strips_symlinks(self):
         text = (WORKFLOWS / "ai-pr-review.yml").read_text()

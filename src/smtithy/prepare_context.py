@@ -5,12 +5,9 @@ recorded in the triggering event: verifies the PR's current head equals that
 SHA before and after collection, so a mid-run push cannot swap the content
 under review. Applies sanity caps (files/bytes) and fails loud on breach.
 
-"Everything" includes the changed-file list, which comes from the same anchored
-compare call as the diff rather than from /pulls/{n}/files — that endpoint is
-recomputed against the base branch's CURRENT tip, which may have advanced while
-the run sat at the approval gate. The two artifacts are then asserted to describe
-the same comparison, because sharing an endpoint is an argument while an
-assertion is a check.
+"Everything" includes the changed-file list: it comes from the same anchored
+compare call as the diff, never from /pulls/{n}/files, and the two are asserted
+to describe the same comparison.
 
 Writes to --output-dir: pr.json, diff.patch, changed_files.json
 
@@ -44,10 +41,8 @@ def diff_mentioned_paths(text: str) -> set[str]:
     """Every path the diff names at all, whether or not it has hunks.
 
     The `diff --git` header is the only place a deletion (`+++ /dev/null`) or a
-    binary file ("Binary files … differ", which emits no ---/+++ pair at all) is
-    named on the new side. Deliberately over-approximating: this feeds an
-    allow-set, so a path counted loosely produces a missed check at worst, while
-    the exact direction is asserted separately below.
+    binary file (no ---/+++ pair at all) is named. Over-approximates on purpose:
+    it feeds an allow-set, so counting loosely costs a missed check at worst.
     """
     mentioned: set[str] = set()
     for line in split_diff_lines(text):
@@ -64,24 +59,16 @@ def diff_mentioned_paths(text: str) -> set[str]:
 def assert_diff_and_list_agree(diff: bytes, changed_files: list[str]) -> None:
     """Fail loud if the anchored diff and the file list describe different sets.
 
-    The two directions are checked at different strengths, because the diff and
-    the list are not symmetric by construction.
-
-    EXACT, and the direction that breaks a review: every path the diff attributes
-    hunks to must be in the list. Otherwise check_provenance rejects every finding
-    anchored there — while the prompt showed the model those very hunks — and one
-    such file discards the whole artifact. This is the direction an advancing base
-    branch produces.
-
-    LOOSE, and the direction that would silently mislead: every path in the list
-    must at least be NAMED in the diff. A deletion and a binary file legitimately
-    have no hunks, so requiring hunks here would abort every PR that deletes a
-    file; requiring only a mention still catches a list entry the anchored
-    comparison never covered.
+    Two directions at different strengths, because the diff and the list are not
+    symmetric: EXACTLY every path with hunks must be listed (otherwise
+    check_provenance rejects findings on hunks the prompt showed the model), while
+    a listed path need only be NAMED in the diff — a deletion or a binary file
+    legitimately has no hunks, so requiring them would abort every PR that
+    deletes a file.
     """
-    # utf-8 with replacement: a diff carrying binary content is not decodable, and
-    # only the path headers are read here. The decode discipline for the reviewed
-    # bytes themselves belongs to the consumers of diff.patch.
+    # errors="replace": a binary diff is not decodable and only headers are read
+    # here. Decode discipline for the reviewed bytes belongs to diff.patch's
+    # consumers.
     text = diff.decode("utf-8", errors="replace")
     listed = set(changed_files)
 
@@ -129,26 +116,16 @@ def main() -> None:
     if len(diff) > MAX_DIFF_BYTES:
         fail(f"diff is {len(diff)} bytes (cap {MAX_DIFF_BYTES}); no review")
 
-    # The changed-file list comes from the SAME anchored comparison as the diff,
-    # NOT from /pulls/{n}/files: that endpoint recomputes against the PR's CURRENT
-    # base branch tip, and the base may have advanced while the run sat at the
-    # approval gate (the reason BASE_SHA is read above). When it does, the two
-    # artifacts disagree — the diff carries hunks for a file the list omits, so
-    # every finding the model anchors there is rejected by check_provenance for a
-    # file the prompt showed it, and the whole review fails closed on a genuine
-    # finding. Everything downstream (check_provenance, plan_verify's frame,
-    # proveFrame) reads this list, so it has to describe the same comparison.
+    # From the SAME anchored comparison as the diff, never /pulls/{n}/files: that
+    # endpoint recomputes against the base branch's CURRENT tip, which may have
+    # advanced while the run sat at the approval gate.
     compare = api_json(compare_path)
     changed_files = [item["filename"] for item in compare.get("files", [])]
-    # The compare endpoint returns at most 300 files per page. MAX_CHANGED_FILES
-    # is 300 and was already enforced above, so a PR that would truncate here has
-    # been refused; the assertion below is what would catch it regardless, since a
-    # truncated list drops paths the diff still carries hunks for.
+    # The endpoint returns at most 300 files per page, and MAX_CHANGED_FILES is
+    # 300, enforced above; a truncated list would also trip the assertion below.
     if len(changed_files) > MAX_CHANGED_FILES:
         fail(f"compare lists {len(changed_files)} files (cap {MAX_CHANGED_FILES}); no review")
 
-    # And the two are asserted to agree, because "same endpoint" is an argument
-    # about provenance while this is a check on the bytes in hand.
     assert_diff_and_list_agree(diff, changed_files)
 
     # TOCTOU recheck: the head must not have moved during collection.

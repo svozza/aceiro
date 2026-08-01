@@ -256,27 +256,17 @@ jobs:
           git -C "$QUARANTINE" checkout --quiet FETCH_HEAD
           rm -rf "$QUARANTINE/.git"
 
-          # Strip symlinks. git faithfully materialises mode-120000 entries from
-          # the head tree, so a PR can plant docs/NOTES.md -> ~/.aws/credentials
-          # (or the CLI's own $CLAUDE_CONFIG_DIR/.credentials.json, or
-          # $GITHUB_ENV) inside the quarantine. The generator is granted
-          # Read/Grep/Glob over this directory, and a permission check on the
-          # REQUESTED path cannot see where a link goes — so a path that is
-          # textually inside the quarantine would serve bytes from outside it,
-          # into the captured stream (an uploaded artifact) and into the
-          # submitted artifact, where only the regex secret scan stands between
-          # it and a comment.
-          #
-          # Deleted rather than resolved: the reviewer reads the diff and the
-          # tree as DATA, and a link's target is not part of the reviewed change.
-          # Counted and echoed so a stripped tree is visible in the job log
-          # rather than a silent difference from the reviewed head.
+          # Strip symlinks: git materialises mode-120000 entries verbatim, and a
+          # permission check on the path the generator REQUESTS cannot see where
+          # a link points. Deleted rather than resolved — a link's target is not
+          # part of the reviewed change. Echoed so a stripped tree is visible in
+          # the job log rather than a silent difference from the reviewed head.
           SYMLINKS=$(find "$QUARANTINE" -type l | wc -l | tr -d ' ')
           if [ "$SYMLINKS" != "0" ]; then
             echo "::warning::stripped $SYMLINKS symlink(s) from the quarantine; they are not reviewable content"
             find "$QUARANTINE" -type l -print -delete
           fi
-          # Fail closed if any survived (a race, or a link to a link).
+          # Fail closed if any survived.
           if [ "$(find "$QUARANTINE" -type l | wc -l | tr -d ' ')" != "0" ]; then
             echo "::error::symlinks remain in the quarantine after stripping"
             exit 1

@@ -1,20 +1,14 @@
 """The differential oracle: one plan, both gates, same verdict.
 
-plan_verify.py's docstring states the obligation — "the two implementations read
-the same policy.json, so a plan the prover admitted and this module rejects (or
-the reverse) is a defect in one of them, and the differential is worth a test" —
-and ADR-0003 names the mechanism for the cutover period. Until this file existed,
-both gates were tested, but over DIFFERENT corpora: no test fed one input to both
-and compared the answers, which is why the ordering policy could be read by the
-prover and by no Python code at all without a red suite.
+The guard ADR-0003 specifies for the cutover period. Both gates were already
+tested, but over DIFFERENT corpora — no test fed one input to both and compared
+the answers, so a policy read by only one of them stayed invisible.
 
-What is compared is the VERDICT, not the message: the two are separate
-implementations in separate languages and their prose differs by design. Rules
-that hold on both sides accept; rules that fail on either side must fail on both.
+The VERDICT is compared, not the message: two implementations in two languages
+whose prose differs by design.
 
-Requires the built prover (`npm run build`); skipped, loudly, when it is absent,
-because a silently-skipped differential is the failure mode this file exists to
-prevent — CI builds the TypeScript before running pytest.
+Requires the built prover (`npm run build`) and skips loudly without it; a
+silently-skipped differential is the failure mode this file exists to prevent.
 """
 
 import json

@@ -417,11 +417,8 @@ class TestSuggestLineProvenance:
                                             old="def check(path):\n", new="def check(path=None):\n")]}
             )
 
-    # `old` occurring exactly once proves the model read SOME bytes of the file;
-    # `line` decides which bytes GitHub's suggestion block overwrites. Unless
-    # they are the same region, the anchoring property constrains nothing about
-    # what the executor destroys — ADR-0009's addendum states the binding the
-    # code was missing ("`old` IS the anchored line").
+    # `old` proves the model read SOME bytes; `line` decides which bytes the
+    # suggestion block overwrites. ADR-0009 addendum: they must be one region.
 
     def test_old_at_a_different_in_hunk_line_rejects(self):
         # `    return os.environ\n` is unique in src/app.py, at line 4. Line 2
@@ -539,15 +536,9 @@ class TestAnchoring:
 
 
 class TestWriteClassTargets:
-    """Containment bound only patch and suggest, so the three write-class kinds
-    got nothing beyond check_scalar's regex — and push_branch.name is the one
-    argument deciding where the executor's `contents: write` credential points.
-
-    ADR-0009's addendum spends its argument establishing that the harness must
-    not push to the contributor's branch and that merge targets are never
-    model-suppliable; without this phase, push_branch(name="main") and
-    push_branch(name=<the PR's own head branch>) both verified clean.
-    """
+    """push_branch.name decides where the executor's `contents: write` credential
+    points, and it is model-supplied. ADR-0009's addendum: never the default
+    branch, never the contributor's own branch."""
 
     def push(self, name):
         return {"id": "s1", "kind": "push_branch", "args": {"name": name}}

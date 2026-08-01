@@ -25,10 +25,9 @@ from typing import NamedTuple
 
 HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
-# git's C-quoting escapes, as they appear in a diff header. Octal (\NNN) is
-# handled separately because it encodes raw BYTES that must be reassembled before
-# being decoded as UTF-8 — an accented name arrives as two octal escapes, and
-# decoding them one at a time would produce mojibake rather than the character.
+# git's C-quoting escapes. Octal (\NNN) is handled separately: it encodes raw
+# BYTES that must be reassembled before UTF-8 decoding, or a two-escape accented
+# character decodes to mojibake.
 _C_ESCAPES = {
     "a": b"\a", "b": b"\b", "f": b"\f", "n": b"\n",
     "r": b"\r", "t": b"\t", "v": b"\v", "\\": b"\\", '"': b'"',
@@ -39,17 +38,13 @@ _OCTAL_RE = re.compile(r"[0-7]{1,3}")
 def unquote_path(target: str) -> str:
     """Decode a diff header's path the way git wrote it.
 
-    Git C-quotes any path that is not plain ASCII-printable: the whole target is
-    wrapped in double quotes and the offending bytes are octal-escaped, so
-    ``café.py`` arrives as ``"b/caf\\303\\251.py"`` and ``q"uote.py`` as
-    ``"b/q\\"uote.py"``. Left undecoded, the `b/` prefix strip is a no-op (the
-    string starts with a quote), and the hunk map ends up keyed on a value the
-    files API can never produce — so every finding on such a file is rejected and
-    one accented filename makes a whole review unusable.
+    Git C-quotes any path that is not plain ASCII-printable: the target is wrapped
+    in double quotes and the offending bytes octal-escaped, so ``café.py`` arrives
+    as ``"b/caf\\303\\251.py"``. Callers must unquote BEFORE stripping the `b/`
+    prefix, which otherwise sits inside the quotes.
 
-    A target that does not start with a quote is returned verbatim: only quoted
-    targets are escaped, so a literal backslash in an unquoted path is a literal
-    backslash. /dev/null is never quoted, and passes through untouched.
+    An unquoted target is returned verbatim, so a literal backslash stays literal;
+    /dev/null is never quoted and passes through.
     """
     if not (target.startswith('"') and target.endswith('"') and len(target) >= 2):
         return target
@@ -64,20 +59,18 @@ def unquote_path(target: str) -> str:
             continue
         following = body[i + 1]
         if octal := _OCTAL_RE.match(body, i + 1):
-            # Raw byte, accumulated into `out` so a multi-byte sequence is
-            # decoded as one character at the end rather than per escape.
+            # Accumulated as a byte; the decode happens once, at the end.
             out.append(int(octal.group(0), 8) & 0xFF)
             i = octal.end()
         elif following in _C_ESCAPES:
             out.extend(_C_ESCAPES[following])
             i += 2
         else:
-            # Not an escape git emits. Keep it verbatim rather than guessing.
+            # Not an escape git emits: keep it verbatim rather than guess.
             out.extend(char.encode("utf-8"))
             i += 1
-    # surrogateescape, not strict: the path is contributor-controlled, and a
-    # filename that is not valid UTF-8 must still produce a usable key rather
-    # than raising inside the shared walk.
+    # surrogateescape: a contributor-controlled name that is not valid UTF-8 must
+    # still yield a usable key rather than raise inside the shared walk.
     return out.decode("utf-8", errors="surrogateescape")
 
 
@@ -165,8 +158,6 @@ def walk_diff(diff_text: str) -> list[DiffPosition]:
 
         is_header = False
         if line.startswith("+++ "):
-            # Unquote BEFORE stripping `b/`: on a quoted target the prefix sits
-            # inside the quotes, so removeprefix would otherwise be a no-op.
             target = unquote_path(line[4:].split("\t")[0])
             current_path = None if target == "/dev/null" else target.removeprefix("b/")
         elif header := HUNK_HEADER_RE.match(line):

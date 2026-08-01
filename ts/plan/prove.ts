@@ -167,13 +167,8 @@ export async function proveOrdering(plan: Plan, policy: PlanPolicy): Promise<Pro
  * bounds WHERE the agent can write, and this is that bound as a ∀-claim over a
  * closed set the verifier already holds.
  *
- * BOTH obligations are asserted. The denylist used to be computed for the
- * counterexample only and never turned into a constraint, so `denied` could be
- * non-empty only when the frame had already failed for some other path — a
- * denylisted path that IS in changedFiles made the query unsat and this returned
- * holds:true, while src/smtithy/plan_verify.py rejected the identical plan.
- * matchesAny/globToRegExp read as enforcement while enforcing nothing, which is
- * the evaluation-order-sensitive shape ADR-0005 calls security-relevant.
+ * BOTH obligations are asserted, not just the frame: a counterexample may only
+ * report a check the query actually made.
  */
 export async function proveFrame(
   plan: Plan,
@@ -214,11 +209,9 @@ export async function proveFrame(
   for (const path of changedFiles) solver.add(touchedByPr.call(idOf(path)));
   for (const path of patchedPaths) solver.add(modifiedByPlan.call(idOf(path)));
 
-  // The denylist as facts over the SAME intern table, so the solver decides both
-  // obligations against one identity for each file. Every interned path is pinned
-  // either way — an unconstrained predicate would let the solver choose a value
-  // and invent a violation no plan expresses, the same closed-world reason the
-  // quantifier below exists.
+  // Facts over the SAME intern table, so both obligations are decided against one
+  // identity per file. Every interned path is pinned either way, or the solver
+  // could pick a value and invent a violation no plan expresses.
   for (const [path, id] of intern) {
     const denied = matchesAny(path, policy.path_denylist);
     solver.add(denied ? deniedByPolicy.call(id) : Not(deniedByPolicy.call(id)));
@@ -236,9 +229,7 @@ export async function proveFrame(
     solver.add(ForAll([f], Not(modifiedByPlan.call(f))));
   }
 
-  // Negated policy: some modified file is not touched by the PR, OR some modified
-  // file is on the denylist. unsat now covers both obligations, so 'frame: holds'
-  // cannot be printed for a denylisted path.
+  // Negated: some modified file is untouched by the PR, OR is denylisted.
   const g = Int.const('g');
   solver.add(
     Or(
@@ -254,13 +245,9 @@ export async function proveFrame(
   const ms = performance.now() - started;
   if (verdict === 'unsat') return { holds: true, policy: 'frame', ms };
 
-  // Report the offending path by name. The solver's witness is an int, so the
-  // useful answer comes from the intern table rather than the model.
-  //
-  // Escaping paths come FIRST, matching the phase order in
-  // plan_verify.check_plan_containment (frame, then denylist): a path that both
-  // escapes the frame and is denied gets the same reason from both gates rather
-  // than two defensible different ones.
+  // The witness is an int, so names come from the intern table. Escaping paths
+  // FIRST, matching plan_verify.check_plan_containment's frame-then-denylist
+  // order, so both gates give one reason for one plan.
   const changed = new Set(changedFiles);
   const escaping = patchedPaths.filter((path) => !changed.has(path));
   const denied = patchedPaths
@@ -360,30 +347,22 @@ export async function proveTaint(
   };
 }
 
-/** Which argument names a write-class kind's target. The Python twin is
+/** Which argument names a write-class kind's target. Twin of
  * plan_verify.BRANCH_ARGS. */
 const BRANCH_ARGS: Readonly<Record<string, string>> = { push_branch: 'name', open_pr: 'branch' };
 
 /**
  * Write-class targets: every branch a plan pushes is inside the harness-owned
- * namespace, and every label it applies is on the allowlist.
+ * namespace, and every label it applies is on the allowlist. Where the frame
+ * bounds which FILES change, this bounds where the write-class steps act.
  *
- * The frame condition bounds where the agent can WRITE FILES; this bounds where
- * the write-class steps ACT. Containment binds only patch and suggest, so these
- * arguments used to be constrained by nothing but a permissive regex — and
- * push_branch.name is the single argument deciding where the executor's
- * `contents: write` credential is pointed.
+ * Not a solver query — a membership test over closed sets is a ground check
+ * (CONTEXT.md), and ∀-encoding it would add an encoding layer to trust for no
+ * reachability reasoning gained. Returns the same ProofResult shape so prove-cli
+ * treats it like the rest.
  *
- * Not a solver query. It is a per-step membership test over closed sets — a
- * ground check in CONTEXT.md's terms, decidable by direct interpretation in one
- * pass, so encoding it as ∀-claims would add an encoding layer to trust for no
- * reachability reasoning gained (ADR-0003's own threshold for reaching for a
- * solver). Reported in the same ProofResult shape so prove-cli treats it
- * identically, and the counterexample names the offending step as every other
- * policy here does.
- *
- * `headBranch` is a plan input, so it is optional: undefined means "unknown",
- * which refuses nothing extra because the namespace still confines the target.
+ * `headBranch` optional: undefined means unknown, which refuses nothing extra
+ * since the namespace still bounds the target.
  */
 export function proveWriteTargets(
   plan: Plan,
@@ -398,8 +377,8 @@ export function proveWriteTargets(
     if (argName !== undefined) {
       const branch = step.args[argName];
       if (typeof branch !== 'string') continue; // the schema gate owns shape
-      // Segment-wise, so `smtithy-evil/x` cannot pass as `smtithy/` and a `..`
-      // segment cannot climb out of the namespace it matched.
+      // Segment-wise: `smtithy-evil/x` must not pass as `smtithy/`, and a `..`
+      // segment must not climb out of the namespace it matched.
       if (!branch.startsWith(policy.branch_prefix) || branch.split('/').includes('..')) {
         violations.push(
           `${index}: ${step.kind} (${step.id}) targets ${branch}: not under branch_prefix ${policy.branch_prefix}`,
@@ -434,9 +413,8 @@ function matchesAny(path: string, patterns: readonly string[]): boolean {
   return patterns.some((pattern) => globToRegExp(pattern).test(path));
 }
 
-/** The first pattern `path` matches, or undefined — the twin of
- * plan_verify.matches_denylist, so the counterexample names the same pattern the
- * Python rejection message does. */
+/** The first pattern `path` matches, or undefined. Twin of
+ * plan_verify.matches_denylist, so both gates name the same pattern. */
 function firstMatch(path: string, patterns: readonly string[]): string | undefined {
   return patterns.find((pattern) => globToRegExp(pattern).test(path));
 }
