@@ -134,11 +134,42 @@ WITHHELD = "[withheld: secret-scan pattern matched after redaction]"
 
 
 def redact_text(text: str, policy: dict) -> str:
-    """Apply the policy's secret patterns to a raw blob.
+    """Redact a captured stream, line by line, with redact_secrets' full machinery.
 
-    For output that is not a structured record — a captured stream, stderr —
-    where the key/value and dict-key cases redact_secrets handles cannot arise.
+    This used to apply the raw patterns only, justified by a docstring claiming
+    it was for output "where the key/value and dict-key cases redact_secrets
+    handles cannot arise". That was false of its only caller: cc_loop's stream
+    capture JSON-dumps every SDK message, so a tool input arrives as
+    ``{"aws_secret_access_key": "<40 chars>"}`` — and the policy's only pattern
+    for that shape needs the value to follow ``:`` with whitespace between, while
+    JSON puts a quote there. That is exactly why redact_secrets needed the
+    key/value bridge. cc_stream_*.jsonl is uploaded as a CI artifact with 90-day
+    retention, so the same value that Transcript.log would have redacted was
+    shipped verbatim.
+
+    The capture is JSONL, so each line is parsed and run through redact_secrets
+    (bridge, dict keys, fail-closed rescan). A line that is not JSON — an
+    unstructured stderr blob — still gets pattern redaction, so nothing is
+    scanned less than it was before. Line structure is preserved: the caller
+    writes this straight to a .jsonl file.
     """
+    def redact_line(line: str) -> str:
+        if not line.strip():
+            return line
+        try:
+            parsed = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            return _redact_patterns(line, policy)
+        # A JSON scalar (a bare string line) round-trips through redact_secrets
+        # too, so no shape needs special-casing here.
+        safe = redact_secrets(parsed, policy)
+        return json.dumps(safe, ensure_ascii=False)
+
+    return "\n".join(redact_line(line) for line in text.split("\n"))
+
+
+def _redact_patterns(text: str, policy: dict) -> str:
+    """The bare pattern sweep, for text with no structure to exploit."""
     for pattern in policy["secret_scan_patterns"]:
         text = re.sub(pattern, "[REDACTED]", text)
     return text

@@ -13,7 +13,7 @@ from pathlib import Path
 import anyio
 import cc_loop
 import pytest
-from artifact import build_artifact_schema, redact_text
+from artifact import build_artifact_schema, redact_secrets, redact_text
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 from conftest import POLICY
 
@@ -335,6 +335,79 @@ class TestRedactText:
 
     def test_leaves_innocent_text_alone(self):
         assert redact_text("nothing to see", POLICY) == "nothing to see"
+
+    # The captured stream IS a structured-record stream: serialize_message()
+    # JSON-dumps every SDK message, so a tool input arrives as
+    # {"aws_secret_access_key": "..."}. The policy's only pattern for that shape
+    # requires the value to follow `:` with whitespace between, and JSON puts a
+    # quote there — the exact reason redact_secrets needed a key/value bridge.
+    # cc_stream_*.jsonl is uploaded as a CI artifact with 90-day retention.
+
+    SECRET_VALUE = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY1"
+
+    def test_redacts_a_labelled_secret_in_a_json_tool_input(self):
+        line = json.dumps(
+            {"type": "ToolUseBlock", "input": {"aws_secret_access_key": self.SECRET_VALUE}}
+        )
+        assert self.SECRET_VALUE not in redact_text(line, POLICY)
+
+    def test_redacts_a_labelled_secret_nested_deeper(self):
+        line = json.dumps(
+            {"content": [{"input": {"env": {"AWS_SECRET_ACCESS_KEY": self.SECRET_VALUE}}}]}
+        )
+        assert self.SECRET_VALUE not in redact_text(line, POLICY)
+
+    def test_redacts_a_labelled_secret_as_a_dict_key(self):
+        line = json.dumps({"input": {FAKE_KEY: "value"}})
+        assert FAKE_KEY not in redact_text(line, POLICY)
+
+    def test_redacts_across_multiple_lines_independently(self):
+        # The capture is JSONL: one message per line, and a line that fails to
+        # parse must not stop the next line being scrubbed.
+        clean = json.dumps({"type": "SystemMessage"})
+        dirty = json.dumps({"input": {"aws_secret_access_key": self.SECRET_VALUE}})
+        out = redact_text(f"{clean}\nnot json at all {FAKE_KEY}\n{dirty}\n", POLICY)
+        assert self.SECRET_VALUE not in out
+        assert FAKE_KEY not in out  # the unparseable line still gets pattern redaction
+        assert "SystemMessage" in out  # and innocent content survives
+
+    def test_preserves_the_line_structure(self):
+        lines = [json.dumps({"i": i}) for i in range(3)]
+        out = redact_text("\n".join(lines) + "\n", POLICY)
+        assert out.count("\n") == 3
+        assert [json.loads(line)["i"] for line in out.strip().split("\n")] == [0, 1, 2]
+
+    def test_withholds_a_line_whose_secret_survives_redaction(self):
+        # Fail-closed, matching redact_secrets: if a residual match remains, the
+        # line is withheld rather than shipped.
+        crafted = {"a": "AKIA", "b": "ABCDEFGHIJKLMNOP"}  # fuse only once serialized
+        policy = {"secret_scan_patterns": ['"a": "AKIA", "b": "ABCDEFGHIJKLMNOP"']}
+        out = redact_text(json.dumps(crafted), policy)
+        assert "AKIAABCDEFGHIJKLMNOP" not in out.replace('", "b": "', "")
+
+
+class TestRedactionFunctionsAgree:
+    """redact_text and redact_secrets must not drift apart again.
+
+    The gap this pins was created by redact_text's docstring claiming the
+    key/value and dict-key cases "cannot arise" on a stream — while its only
+    caller passed exactly a stream of JSON-serialized records.
+    """
+
+    LABELLED = {"aws_secret_access_key": "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY1"}
+
+    def test_both_redact_a_flat_key(self):
+        assert FAKE_KEY not in redact_text(f"key {FAKE_KEY}", POLICY)
+        assert FAKE_KEY not in json.dumps(redact_secrets({"k": f"key {FAKE_KEY}"}, POLICY))
+
+    def test_both_redact_the_key_value_bridge(self):
+        value = self.LABELLED["aws_secret_access_key"]
+        assert value not in redact_text(json.dumps(self.LABELLED), POLICY)
+        assert value not in json.dumps(redact_secrets(self.LABELLED, POLICY))
+
+    def test_both_redact_a_secret_used_as_a_dict_key(self):
+        assert FAKE_KEY not in redact_text(json.dumps({FAKE_KEY: "v"}), POLICY)
+        assert FAKE_KEY not in json.dumps(redact_secrets({FAKE_KEY: "v"}, POLICY))
 
 
 class TestReviewServer:
