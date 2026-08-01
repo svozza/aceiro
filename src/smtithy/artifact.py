@@ -119,11 +119,55 @@ _is_default_ignorable = is_default_ignorable
 _strip_invisible = strip_invisible
 
 
-def escape_fence(text: str, tag: str) -> str:
-    """Neutralise embedded closing-tag sequences so fenced content cannot
-    terminate its own fence (in-band-signaling guard)."""
+# Every fence tag the harness emits, in any assembled message. Declared as ONE
+# set because escaping is set-aware: a payload fenced under one tag must not be
+# able to forge any of the others.
+#
+# The tags do not carry equal trust. `untrusted_pr_description` and
+# `untrusted_diff` announce contributor data; `changed_file_list` is presented as
+# harness data; and `commanded_finding` (plan_loop) is an element of an
+# already-accepted review that a maintainer explicitly commanded a fix for — and
+# it is emitted BEFORE the review context. Escaping only the enclosing tag left a
+# contributor free to embed a complete, well-formed <commanded_finding> block in
+# the PR description, so the planner saw two syntactically identical commanded
+# findings with no in-band way to tell the harness's from the contributor's. The
+# trust label the fence exists to carry was forgeable from inside the data it was
+# labelling.
+#
+# A tag added here without being added to this set is a hole, so the set is what
+# new fences must join; test_artifact.py parametrizes over it.
+HARNESS_FENCE_TAGS = frozenset({
+    "untrusted_pr_description",
+    "untrusted_diff",
+    "changed_file_list",
+    "commanded_finding",
+})
+
+
+def escape_fence(text: str, tag: str, tags: frozenset[str] = HARNESS_FENCE_TAGS) -> str:
+    """Neutralise harness fence tags so fenced content can neither terminate its
+    own fence nor forge another one (in-band-signaling guard).
+
+    BOTH forms of EVERY harness tag are neutralised, not just the closing form of
+    the enclosing one: an opening tag is half of a forged block, and a payload
+    that cannot close its own fence can still open someone else's.
+
+    Only the harness's own tags are touched. Ordinary angle-bracket text — a C++
+    include, a generic, HTML in a reviewed file — passes through, because the
+    model has to see the diff as it is.
+    """
     text = _strip_invisible(text)
-    return re.sub(rf"</\s*{re.escape(tag)}\s*>", f"</_{tag}>", text, flags=re.IGNORECASE)
+    for candidate in sorted(tags | {tag}):
+        # Rewritten to `<_tag>` / `</_tag>`: visibly the same content, no longer
+        # the token. The leading underscore is not a valid tag start for us, so a
+        # rewritten tag can never be mistaken for a real one.
+        text = re.sub(
+            rf"<(/?)\s*{re.escape(candidate)}\s*>",
+            rf"<\g<1>_{candidate}>",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
 
 
 def fence(text: str, tag: str) -> str:
