@@ -74,6 +74,67 @@ class TestWalkDiff:
     def test_empty_diff(self):
         assert walk_diff("") == []
 
+    # Git C-quotes any path that is not plain ASCII-printable: the whole target
+    # is wrapped in double quotes and the offending bytes are octal-escaped
+    # (verified against real `git diff` output). Undecoded, the hunk map is keyed
+    # on a string the files API can never produce, so every finding on such a
+    # file is rejected — one accented filename makes a whole review unusable.
+
+    def test_c_quoted_utf8_path_is_decoded(self):
+        diff = (
+            'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\n'
+            '--- "a/caf\\303\\251.py"\n'
+            '+++ "b/caf\\303\\251.py"\n'
+            "@@ -1,1 +1,2 @@\n ctx\n+add\n"
+        )
+        assert numbers_by_path(diff) == {"café.py": [1, 2]}
+
+    def test_c_quoted_embedded_quote_is_decoded(self):
+        diff = (
+            'diff --git "a/q\\"uote.py" "b/q\\"uote.py"\n'
+            '--- "a/q\\"uote.py"\n'
+            '+++ "b/q\\"uote.py"\n'
+            "@@ -1,1 +1,1 @@\n+one\n"
+        )
+        assert numbers_by_path(diff) == {'q"uote.py': [1]}
+
+    def test_c_quoted_backslash_and_control_escapes_are_decoded(self):
+        diff = (
+            '--- "a/back\\\\slash\\tx.py"\n'
+            '+++ "b/back\\\\slash\\tx.py"\n'
+            "@@ -1,1 +1,1 @@\n+one\n"
+        )
+        assert numbers_by_path(diff) == {"back\\slash\tx.py": [1]}
+
+    def test_c_quoted_deleted_file_still_contributes_nothing(self):
+        # /dev/null is never quoted, but the unquoting must not disturb it.
+        diff = (
+            'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\n'
+            '--- "a/caf\\303\\251.py"\n'
+            "+++ /dev/null\n"
+            "@@ -1,1 +0,0 @@\n-gone\n"
+        )
+        assert numbers_by_path(diff) == {}
+
+    def test_unquoted_path_with_a_literal_backslash_is_untouched(self):
+        # Only a target that STARTS with a quote is C-quoted. An unquoted path is
+        # taken verbatim, so a backslash in it is a literal backslash.
+        diff = "--- a/back\\slash.py\n+++ b/back\\slash.py\n@@ -1,1 +1,1 @@\n+one\n"
+        assert numbers_by_path(diff) == {"back\\slash.py": [1]}
+
+    def test_quoted_path_keys_match_the_files_api_filename(self):
+        # The end-to-end point of the decode: parse_diff_hunks' key is what
+        # check_provenance compares against changed_files.json, which holds the
+        # files API's real UTF-8 name.
+        from verify import parse_diff_hunks
+
+        diff = (
+            '--- "a/caf\\303\\251.py"\n'
+            '+++ "b/caf\\303\\251.py"\n'
+            "@@ -1,1 +1,2 @@\n ctx\n+add\n"
+        )
+        assert set(parse_diff_hunks(diff)) == {"café.py"}
+
 
 class TestSplitDiffLines:
     """Only `\\n` ends a line in a unified diff.

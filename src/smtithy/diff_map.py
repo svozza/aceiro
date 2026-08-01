@@ -13,6 +13,9 @@ The rules, encoded once:
   line that merely LOOKS like a `+++ ` header is hunk content there (an added
   line whose text starts with `++ `).
 - A hunk whose `+++ ` target is /dev/null (a deletion) contributes no positions.
+- A `+++ ` target git C-quoted (any path that is not plain ASCII-printable) is
+  decoded back to the real filename before the `b/` prefix is stripped, so the
+  hunk map's key is the same string the files API reports.
 """
 
 from __future__ import annotations
@@ -21,6 +24,61 @@ import re
 from typing import NamedTuple
 
 HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+# git's C-quoting escapes, as they appear in a diff header. Octal (\NNN) is
+# handled separately because it encodes raw BYTES that must be reassembled before
+# being decoded as UTF-8 — an accented name arrives as two octal escapes, and
+# decoding them one at a time would produce mojibake rather than the character.
+_C_ESCAPES = {
+    "a": b"\a", "b": b"\b", "f": b"\f", "n": b"\n",
+    "r": b"\r", "t": b"\t", "v": b"\v", "\\": b"\\", '"': b'"',
+}
+_OCTAL_RE = re.compile(r"[0-7]{1,3}")
+
+
+def unquote_path(target: str) -> str:
+    """Decode a diff header's path the way git wrote it.
+
+    Git C-quotes any path that is not plain ASCII-printable: the whole target is
+    wrapped in double quotes and the offending bytes are octal-escaped, so
+    ``café.py`` arrives as ``"b/caf\\303\\251.py"`` and ``q"uote.py`` as
+    ``"b/q\\"uote.py"``. Left undecoded, the `b/` prefix strip is a no-op (the
+    string starts with a quote), and the hunk map ends up keyed on a value the
+    files API can never produce — so every finding on such a file is rejected and
+    one accented filename makes a whole review unusable.
+
+    A target that does not start with a quote is returned verbatim: only quoted
+    targets are escaped, so a literal backslash in an unquoted path is a literal
+    backslash. /dev/null is never quoted, and passes through untouched.
+    """
+    if not (target.startswith('"') and target.endswith('"') and len(target) >= 2):
+        return target
+    body = target[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if char != "\\" or i + 1 >= len(body):
+            out.extend(char.encode("utf-8"))
+            i += 1
+            continue
+        following = body[i + 1]
+        if octal := _OCTAL_RE.match(body, i + 1):
+            # Raw byte, accumulated into `out` so a multi-byte sequence is
+            # decoded as one character at the end rather than per escape.
+            out.append(int(octal.group(0), 8) & 0xFF)
+            i = octal.end()
+        elif following in _C_ESCAPES:
+            out.extend(_C_ESCAPES[following])
+            i += 2
+        else:
+            # Not an escape git emits. Keep it verbatim rather than guessing.
+            out.extend(char.encode("utf-8"))
+            i += 1
+    # surrogateescape, not strict: the path is contributor-controlled, and a
+    # filename that is not valid UTF-8 must still produce a usable key rather
+    # than raising inside the shared walk.
+    return out.decode("utf-8", errors="surrogateescape")
 
 
 def split_diff_lines(diff_text: str) -> list[str]:
@@ -107,7 +165,9 @@ def walk_diff(diff_text: str) -> list[DiffPosition]:
 
         is_header = False
         if line.startswith("+++ "):
-            target = line[4:].split("\t")[0]
+            # Unquote BEFORE stripping `b/`: on a quoted target the prefix sits
+            # inside the quotes, so removeprefix would otherwise be a no-op.
+            target = unquote_path(line[4:].split("\t")[0])
             current_path = None if target == "/dev/null" else target.removeprefix("b/")
         elif header := HUNK_HEADER_RE.match(line):
             if current_path is not None:
