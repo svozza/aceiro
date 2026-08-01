@@ -617,6 +617,61 @@ class TestTreeContentSource:
         with pytest.raises(OSError, match="outside the reviewed tree"):
             tree_content_source(root)("../secret")
 
+    # Confinement was checked on the RESOLVED path only, so a symlink whose
+    # target stayed INSIDE the tree was followed happily — and the bytes of
+    # another, possibly denylisted or unchanged, path were served as the content
+    # of the declared one. The frame and denylist checks are lexical (they see
+    # only the declared string), so they cannot see through the link.
+
+    def test_in_tree_symlink_to_a_denylisted_target_reads_as_missing(self, tmp_path):
+        root = tmp_path / "pr_root"
+        (root / "src").mkdir(parents=True)
+        (root / ".github" / "workflows").mkdir(parents=True)
+        (root / ".github" / "workflows" / "ci.yml").write_bytes(b"name: ci\non: push\n")
+        (root / "src" / "link.py").symlink_to("../.github/workflows/ci.yml")
+        with pytest.raises(OSError, match="symlink"):
+            tree_content_source(root)("src/link.py")
+
+    def test_in_tree_symlink_to_an_ordinary_target_reads_as_missing(self, tmp_path):
+        # Not only denylisted targets: serving b.py's bytes as a.py's content is
+        # a false anchor whatever b.py is.
+        root = tmp_path / "pr_root"
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "real.py").write_bytes(b"anchor\n")
+        (root / "src" / "alias.py").symlink_to("real.py")
+        with pytest.raises(OSError, match="symlink"):
+            tree_content_source(root)("src/alias.py")
+
+    def test_a_symlinked_parent_directory_reads_as_missing(self, tmp_path):
+        # The component case: the leaf is a regular file, but a DIRECTORY on the
+        # way to it is a link, so the declared path still does not name the bytes.
+        root = tmp_path / "pr_root"
+        (root / "real").mkdir(parents=True)
+        (root / "real" / "a.py").write_bytes(b"anchor\n")
+        (root / "alias").symlink_to("real", target_is_directory=True)
+        with pytest.raises(OSError, match="symlink"):
+            tree_content_source(root)("alias/a.py")
+
+    def test_a_regular_file_beside_a_symlink_still_reads(self, tmp_path):
+        # False-positive guard: refusing links must not refuse the tree.
+        root = tmp_path / "pr_root"
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "real.py").write_bytes(b"anchor\n")
+        (root / "src" / "alias.py").symlink_to("real.py")
+        assert tree_content_source(root)("src/real.py") == b"anchor\n"
+
+    def test_containment_rejects_a_symlinked_path(self, tmp_path):
+        # End to end: the rejection the verifier reports is the anchoring one,
+        # so the plan is refused rather than anchored against the target's bytes.
+        root = tmp_path / "pr_root"
+        (root / "src").mkdir(parents=True)
+        (root / ".github" / "workflows").mkdir(parents=True)
+        (root / ".github" / "workflows" / "ci.yml").write_bytes(b"name: ci\non: push\n")
+        (root / "src" / "app.py").symlink_to("../.github/workflows/ci.yml")
+        plan = {"steps": [anchored_patch(path="src/app.py", old="name: ci\n", new="name: evil\n")]}
+        with pytest.raises(Rejection, match="cannot read"):
+            contained(plan, content_source=tree_content_source(root))
+
 
 class TestPlanMarkdownAndSecrets:
     def full_policy(self):

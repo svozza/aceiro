@@ -35,6 +35,7 @@ Checks, in order (mirroring verify.py's phase order):
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -193,16 +194,40 @@ def tree_content_source(root: Path):
     which IS the reviewed head, so reading from it is reading at the reviewed
     SHA with no further git plumbing.
 
-    Confinement is checked on the RESOLVED path: the tree is contributor-
-    authored data, so a symlink inside it pointing outside is an expected
-    hostile shape, and it reads as missing rather than following the link out.
+    The tree is contributor-authored data, so both hostile shapes are refused and
+    both read as missing:
+
+    - a symlink pointing OUTSIDE the tree — confinement is checked on the
+      resolved path, so the link is never followed out;
+    - a symlink pointing INSIDE the tree, which confinement alone accepts. That
+      one matters just as much: the frame and denylist checks are lexical, seeing
+      only the declared path string, so a changed `src/link.py` symlinked to
+      `.github/workflows/ci.yml` passes both and then anchors against the
+      workflow's bytes. `old` would byte-match a file the denylist exists to
+      protect, and a filesystem-based executor could go on to modify the target.
+      Serving another path's bytes as the declared path's content is a false
+      anchor whatever the target is, denylisted or not.
+
+    So the requirement is stronger than containment: the resolved path must BE
+    the lexical join, which is false if any component is a link. FileNotFoundError
+    keeps the caller's existing "reads as missing" rejection wording.
     """
     resolved_root = root.resolve()
 
     def read(path: str) -> bytes:
-        target = (resolved_root / path).resolve()
+        lexical = resolved_root / path
+        target = lexical.resolve()
         if not target.is_relative_to(resolved_root):
             raise FileNotFoundError(f"{path!r} resolves outside the reviewed tree")
+        # Equality, not containment: resolve() collapses every symlink, so a
+        # mismatch means some component was one. Compares against the resolved
+        # ROOT-relative join so a link in the path to the quarantine itself (a
+        # /tmp symlink on macOS, say) is not mistaken for one inside the tree.
+        if target != Path(os.path.normpath(lexical)):
+            raise FileNotFoundError(
+                f"{path!r} is or traverses a symlink inside the reviewed tree; "
+                "the declared path does not name these bytes"
+            )
         return target.read_bytes()
 
     return read
