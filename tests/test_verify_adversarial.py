@@ -6,6 +6,7 @@ verifier's safe grammar.
 """
 
 import copy
+import unicodedata
 
 import pytest
 
@@ -317,6 +318,90 @@ class TestImpersonation:
         rejected(artifact, sample_diff, changed_files, policy)
 
 
+class TestPostedTextIsTheCheckedText:
+    """check_markdown_field NFC-normalized a local copy for CHECKING while
+    post.py renders the artifact's original string, so its docstring's claim
+    ("the checked text is the posted text") was false. The input side of the
+    harness already treats these code points as a threat and strips them
+    (artifact._strip_invisible); the output side — what a human reads and acts
+    on — did not.
+
+    Rejected rather than stripped, deliberately: stripping in post.py while
+    verify.py checks the original recreates the same split one layer down.
+    """
+
+    @pytest.mark.parametrize(
+        "control",
+        [
+            pytest.param("‮", id="U+202E-rlo"),
+            pytest.param("‭", id="U+202D-lro"),
+            pytest.param("‪", id="U+202A-lre"),
+            pytest.param("‫", id="U+202B-rle"),
+            pytest.param("‬", id="U+202C-pdf"),
+            pytest.param("⁦", id="U+2066-lri"),
+            pytest.param("⁧", id="U+2067-rli"),
+            pytest.param("⁨", id="U+2068-fsi"),
+            pytest.param("⁩", id="U+2069-pdi"),
+            pytest.param("​", id="U+200B-zwsp"),
+            pytest.param("‍", id="U+200D-zwj"),
+            pytest.param("͏", id="U+034F-cgj"),
+            pytest.param("﻿", id="U+FEFF-bom"),
+        ],
+    )
+    def test_invisible_and_bidi_controls_reject(self, artifact, sample_diff, changed_files, policy, control):
+        artifact["summary"] = f"Reviewed{control}the change"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_the_trojan_source_summary_rejects(self, artifact, sample_diff, changed_files, policy):
+        # The concrete deception: an RLO reverses the run, so the rendered
+        # comment reads differently from the bytes any downstream tooling sees —
+        # in a comment whose whole purpose is to be trusted because it was
+        # verified.
+        artifact["summary"] = "Reviewed ‮kcatta na si sihT‬ safe code"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    @pytest.mark.parametrize("field", ["summary", "residual_risk"])
+    def test_controls_rejected_in_every_markdown_field(
+        self, artifact, sample_diff, changed_files, policy, field
+    ):
+        artifact[field] = "text with ‮reversed‬ run"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_controls_rejected_in_finding_title_and_body(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        for field in ("title", "body"):
+            fresh = copy.deepcopy(artifact)
+            fresh["findings"][0][field] = f"defect ‮ here"
+            rejected(fresh, sample_diff, changed_files, policy)
+
+    def test_controls_rejected_inside_a_code_fence(self, artifact, sample_diff, changed_files, policy):
+        # A fence does not make them visible; GitHub renders the bidi run the
+        # same way inside code.
+        artifact["summary"] = "```\nx = 1 ‮# etnemmoc\n```"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_non_nfc_text_rejects_so_the_posted_form_is_the_checked_form(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # NFD "café": length was measured on NFC and the AST walked on NFC, but
+        # post.py posted the NFD original. Rejecting makes the two the same
+        # string rather than two spellings that happened to agree.
+        artifact["summary"] = unicodedata.normalize("NFD", "café is fine")
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_ordinary_nfc_text_with_accents_passes(self, artifact, sample_diff, changed_files, policy):
+        # False-positive guard: rejecting NFD must not reject non-ASCII prose.
+        artifact["summary"] = unicodedata.normalize("NFC", "café and naïve são fine")
+        verify(artifact, sample_diff, changed_files, policy)
+
+    def test_tabs_and_newlines_still_pass(self, artifact, sample_diff, changed_files, policy):
+        # \n \t \r are visible separation, never "invisible" — the same
+        # retention canonicalize.is_invisible makes.
+        artifact["summary"] = "line one\n\nline\ttwo"
+        verify(artifact, sample_diff, changed_files, policy)
+
+
 class TestGfmAutolinks:
     """GFM renders these as links even though CommonMark surfaces no token:
     cross-repo issue/commit references and bare emails. Each must pass the
@@ -549,6 +634,9 @@ class TestSecrets:
         # An ordinary accent is Mn but NOT default-ignorable: it renders, so it
         # must not be stripped into fusing two innocent runs into a false
         # secret. The twin of test_artifact.py's
-        # test_visible_combining_marks_survive_stripping.
-        artifact["summary"] = "Prefix AKIÁ then IOSFODNN7EXAMPLE in café docs."
+        # test_visible_combining_marks_survive_stripping. NFC-composed,
+        # since check_markdown_field now requires the posted form to be the checked one.
+        artifact["summary"] = unicodedata.normalize(
+            "NFC", "Prefix AKI\u00c1 then IOSFODNN7EXAMPLE in caf\u00e9 docs."
+        )
         verify(artifact, sample_diff, changed_files, policy)

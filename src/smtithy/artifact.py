@@ -326,6 +326,11 @@ def render_constraints(policy: dict) -> str:
         "are not interchangeable). A field that ends inside a fence is "
         "rejected: the executor appends its own text after yours, and an open "
         "fence would swallow it.\n"
+        "- Plain visible characters only, in Unicode NFC form: no zero-width or "
+        "bidirectional control characters anywhere in your text. Quoting code "
+        "that contains them is not an exception — describe them instead, or the "
+        "whole artifact is rejected. The text that gets posted is the text that "
+        "was checked, so it has to be text a reader sees.\n"
     )
 
 

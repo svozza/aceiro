@@ -28,7 +28,7 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
-from canonicalize import strip_invisible
+from canonicalize import is_invisible, strip_invisible
 from diff_map import walk_diff
 
 # Over-approximates GitHub's mention grammar (no trailing boundary check:
@@ -370,8 +370,35 @@ def unterminated_fence(text: str) -> str | None:
 
 
 def check_markdown_field(text: str, policy_markdown: dict, where: str) -> None:
-    # NFC-normalize before parsing so the checked text is the posted text.
-    text = unicodedata.normalize("NFC", text)
+    # "The checked text IS the posted text" — an equality, enforced, not a
+    # normalization the checker performs on a copy while post.py renders the
+    # original. It used to be the latter, which made two things reachable:
+    #
+    # - Bidi controls and invisibles survived into the comment. An RLO reverses a
+    #   run, so the rendered review reads differently from the bytes any
+    #   downstream tooling sees — Trojan-source deception in a comment whose whole
+    #   purpose is to be trusted BECAUSE it was verified. The input fence already
+    #   treats these as a threat (artifact.escape_fence); the output side, which
+    #   is what a human acts on, did not.
+    # - Length was measured on NFC and the AST walked on NFC while the NFD
+    #   original was posted, so the checked and posted strings merely happened to
+    #   agree.
+    #
+    # Rejected rather than stripped: stripping here (or in post.py) would recreate
+    # the same checked-vs-posted split one layer down, and rejection is what
+    # "allowlist a safe grammar" means. The invisible set is
+    # canonicalize.is_invisible — one spelling shared with the fence and the
+    # secret scans — which deliberately retains \n\t\r as visible separation.
+    if invisible := next((ch for ch in text if is_invisible(ch)), None):
+        raise Rejection(
+            f"{where}: contains invisible or bidirectional control U+{ord(invisible):04X}, "
+            "which renders as nothing or reorders the text around it"
+        )
+    if text != unicodedata.normalize("NFC", text):
+        raise Rejection(
+            f"{where}: is not in Unicode NFC form; the posted text must be the checked text, "
+            "so submit the composed form"
+        )
     env: dict = {}
     tokens = _PARSER.parse(text, env)
     walk_tokens(tokens, set(policy_markdown["allowed_nodes"]), policy_markdown["link_host_allowlist"], where)

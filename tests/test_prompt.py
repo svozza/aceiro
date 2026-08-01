@@ -92,6 +92,15 @@ class TestAssembledPromptHasNoHoles:
         for line in assembled.splitlines():
             assert not line.rstrip().endswith(": .")
 
+    def test_it_states_the_canonical_text_rule(self):
+        # ADR-0011: the verifier REJECTS invisible/bidi controls and non-NFC
+        # text, so the prompt has to say so — an enforced rule the model can only
+        # discover by burning a submission is a rule stated in the wrong place.
+        assembled = PROMPT + render_constraints(SHIPPED_POLICY)
+        assert "NFC" in assembled
+        assert "bidirectional" in assembled
+        assert "zero-width" in assembled
+
 
 class TestProjectDescription:
     """The one consumer-substituted region of the prompt (ADR-0002's last
