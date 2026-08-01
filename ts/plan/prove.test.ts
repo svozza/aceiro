@@ -21,7 +21,14 @@ import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
 import { checkPlanPolicy, writeClassKinds, type PlanPolicy } from './policy.js';
 import { checkPlanSchema, type Plan } from './schema.js';
-import { globToRegExp, proveFrame, proveOrdering, proveTaint, shutdown } from './prove.js';
+import {
+  globToRegExp,
+  proveFrame,
+  proveOrdering,
+  proveTaint,
+  proveWriteTargets,
+  shutdown,
+} from './prove.js';
 
 after(async () => {
   // WASM threads keep the process alive otherwise.
@@ -73,6 +80,8 @@ const POLICY: PlanPolicy = checkPlanPolicy({
   max_patched_files: 3,
   max_changed_lines: 120,
   path_denylist: ['.github/**', '**/*.pem', '**/*.key'],
+  branch_prefix: 'smtithy/',
+  label_allowlist: ['needs-tests'],
 });
 
 function plan(...steps: readonly { kind: string; args: Record<string, string | number> }[]): Plan {
@@ -84,8 +93,8 @@ function plan(...steps: readonly { kind: string; args: Record<string, string | n
 
 const patch = (path: string) => ({ kind: 'patch', args: { path, old: 'a', new: 'b' } });
 const suggest = (path: string) => ({ kind: 'suggest', args: { path, line: 1, old: 'a', new: 'b', note: 'n' } });
-const pushBranch = (name = 'fix/x') => ({ kind: 'push_branch', args: { name } });
-const openPr = () => ({ kind: 'open_pr', args: { branch: 'fix/x', title: 't', body: 'b' } });
+const pushBranch = (name = 'smtithy/fix-x') => ({ kind: 'push_branch', args: { name } });
+const openPr = (branch = 'smtithy/fix-x') => ({ kind: 'open_pr', args: { branch, title: 't', body: 'b' } });
 const readPrFile = (path = 'src/a.py') => ({ kind: 'read_pr_file', args: { path } });
 
 describe('proveOrdering', () => {
@@ -250,6 +259,86 @@ describe('ordering with suggest steps (ADR-0009)', () => {
     const result = await proveOrdering(plan(suggest('src/a.py'), pushBranch(), patch('src/b.py')), POLICY);
     assert.equal(result.holds, false);
     assert.ok(result.counterexample?.path.some((line) => line.includes('push_branch')));
+  });
+});
+
+describe('proveWriteTargets', () => {
+  // The Python twin is tests/test_plan_verify.py TestWriteClassTargets, case for
+  // case. Containment binds only patch and suggest, so these arguments used to be
+  // constrained by nothing but a permissive regex — and push_branch.name decides
+  // where the executor's `contents: write` credential is pointed.
+
+  it('holds for a branch inside the harness namespace', () => {
+    const result = proveWriteTargets(plan(patch('src/a.py'), pushBranch('smtithy/fix-1')), POLICY);
+    assert.equal(result.holds, true);
+    assert.equal(result.counterexample, undefined);
+  });
+
+  it('CATCHES a push to the default branch', () => {
+    const result = proveWriteTargets(plan(patch('src/a.py'), pushBranch('main')), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('branch_prefix')));
+  });
+
+  it('CATCHES an unprefixed contributor branch', () => {
+    const result = proveWriteTargets(plan(pushBranch('feature/theirs')), POLICY);
+    assert.equal(result.holds, false);
+  });
+
+  it('CATCHES a namespace lookalike', () => {
+    // `smtithy-evil/` merely starts with the same characters.
+    const result = proveWriteTargets(plan(pushBranch('smtithy-evil/fix')), POLICY);
+    assert.equal(result.holds, false);
+  });
+
+  it('CATCHES a traversal out of the namespace', () => {
+    const result = proveWriteTargets(plan(pushBranch('smtithy/../main')), POLICY);
+    assert.equal(result.holds, false);
+  });
+
+  it('CATCHES open_pr.branch, the same target under another arg name', () => {
+    const result = proveWriteTargets(plan(pushBranch('smtithy/ok'), openPr('main')), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('open_pr')));
+  });
+
+  it("CATCHES a push to the reviewed PR's own head branch even when prefixed", () => {
+    // The prefix cannot express this: a contributor could name their branch
+    // inside the namespace. ADR-0009's addendum decided against this mode.
+    const result = proveWriteTargets(plan(pushBranch('smtithy/theirs')), POLICY, 'smtithy/theirs');
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes("own head branch")));
+  });
+
+  it('holds for that same plan when the head branch is unknown', () => {
+    // A standalone invocation may not know it; the namespace still confines.
+    const result = proveWriteTargets(plan(pushBranch('smtithy/theirs')), POLICY);
+    assert.equal(result.holds, true);
+  });
+
+  it('holds for an allowlisted label', () => {
+    const result = proveWriteTargets(plan({ kind: 'label', args: { name: 'needs-tests' } }), POLICY);
+    assert.equal(result.holds, true);
+  });
+
+  it('CATCHES a label off the allowlist', () => {
+    // A label is a control surface: this repo's evals workflow triggers on one.
+    const result = proveWriteTargets(plan({ kind: 'label', args: { name: 'run-evals' } }), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('label_allowlist')));
+  });
+
+  it('matches labels exactly, not by prefix', () => {
+    const result = proveWriteTargets(
+      plan({ kind: 'label', args: { name: 'needs-tests-urgently' } }),
+      POLICY,
+    );
+    assert.equal(result.holds, false);
+  });
+
+  it('holds vacuously for a plan with no write-class step', () => {
+    const result = proveWriteTargets(plan(patch('src/a.py')), POLICY);
+    assert.equal(result.holds, true);
   });
 });
 

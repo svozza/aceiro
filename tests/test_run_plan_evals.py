@@ -33,7 +33,7 @@ from test_plan_verify import (  # noqa: E402
 
 def open_pr_step(step_id="s9"):
     return {"id": step_id, "kind": "open_pr",
-            "args": {"branch": "fix/x", "title": "t", "body": "the fix"}}
+            "args": {"branch": "smtithy/fix-x", "title": "t", "body": "the fix"}}
 
 
 def label_step(step_id="s8"):

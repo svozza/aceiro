@@ -33,8 +33,8 @@ function run(plan: unknown, changedFiles: unknown): ReturnType<typeof spawnSync>
 const WELL_FORMED = {
   steps: [
     { id: 'fix', kind: 'patch', args: { path: 'src/a.py', old: 'a', new: 'b' } },
-    { id: 'push', kind: 'push_branch', args: { name: 'fix/x' } },
-    { id: 'pr', kind: 'open_pr', args: { branch: 'fix/x', title: 't', body: 'b' } },
+    { id: 'push', kind: 'push_branch', args: { name: 'smtithy/fix-x' } },
+    { id: 'pr', kind: 'open_pr', args: { branch: 'smtithy/fix-x', title: 't', body: 'b' } },
   ],
 };
 

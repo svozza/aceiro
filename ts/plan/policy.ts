@@ -59,6 +59,17 @@ export interface PlanPolicy {
   readonly max_patched_files: number;
   readonly max_changed_lines: number;
   readonly path_denylist: readonly string[];
+  /** The harness-owned namespace every branch a plan pushes must sit under.
+   * push_branch.name is the one argument deciding where the executor's
+   * `contents: write` credential is pointed, and it is model-supplied — a prefix
+   * makes "not the default branch" a property of the name rather than a list of
+   * protected names someone has to keep current (ADR-0009 addendum). */
+  readonly branch_prefix: string;
+  /** Labels a plan may apply, matched EXACTLY. Ships empty on
+   * link_host_allowlist's precedent: a label is a control surface (this repo's
+   * evals workflow triggers on one), so a plan can apply none until a consumer
+   * names the ones it accepts. */
+  readonly label_allowlist: readonly string[];
 }
 
 function requireKeys(object: Record<string, unknown>, keys: readonly string[], where: string): void {
@@ -83,6 +94,8 @@ const PLAN_KEYS = [
   'max_patched_files',
   'max_changed_lines',
   'path_denylist',
+  'branch_prefix',
+  'label_allowlist',
 ] as const;
 
 export function checkPlanPolicy(candidate: unknown): PlanPolicy {
@@ -99,11 +112,18 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
     }
   }
 
-  for (const list of ['control_flow', 'argument_forms', 'path_denylist'] as const) {
+  for (const list of ['control_flow', 'argument_forms', 'path_denylist', 'label_allowlist'] as const) {
     const value = plan[list];
     if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
       throw new PolicyError(`policy.plan.${list}: expected an array of strings`);
     }
+  }
+
+  // Non-empty: an empty prefix would confine nothing, so it is a policy error
+  // rather than a permissive setting. There is no default — a default here would
+  // be a rule nobody reviewed.
+  if (typeof plan['branch_prefix'] !== 'string' || plan['branch_prefix'].length === 0) {
+    throw new PolicyError('policy.plan.branch_prefix: expected a non-empty string');
   }
 
   const forms = plan['argument_forms'] as readonly string[];

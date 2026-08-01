@@ -25,6 +25,11 @@ from test_plan_verify import PLAN_DIFF, PLAN_CHANGED_FILES, PLAN_TREE
 POLICY = json.loads(
     (execute_plan._HARNESS_ROOT / "policy.json").read_text()
 )
+# The shipped label_allowlist is EMPTY (fail-closed: a consumer names the labels
+# it accepts), so every label step would reject for that one uninteresting reason
+# and the refusal cases below could not reach the delivery decision they exist to
+# test. Allowlisting the harness's own label keeps those cases about DELIVERY.
+POLICY["plan"]["label_allowlist"] = ["ai-remediation"]
 
 
 def suggest(step_id="s0", path="src/app.py", line=2):
@@ -42,12 +47,12 @@ def patch(step_id="s0", path="src/app.py", old="def load(path):\n"):
 
 
 def push(step_id="s8"):
-    return {"id": step_id, "kind": "push_branch", "args": {"name": "fix/x"}}
+    return {"id": step_id, "kind": "push_branch", "args": {"name": "smtithy/fix-x"}}
 
 
 def open_pr(step_id="s9"):
     return {"id": step_id, "kind": "open_pr",
-            "args": {"branch": "fix/x", "title": "Fix load()", "body": "Fixes the finding."}}
+            "args": {"branch": "smtithy/fix-x", "title": "Fix load()", "body": "Fixes the finding."}}
 
 
 def label(step_id="s7"):

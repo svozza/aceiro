@@ -360,6 +360,76 @@ export async function proveTaint(
   };
 }
 
+/** Which argument names a write-class kind's target. The Python twin is
+ * plan_verify.BRANCH_ARGS. */
+const BRANCH_ARGS: Readonly<Record<string, string>> = { push_branch: 'name', open_pr: 'branch' };
+
+/**
+ * Write-class targets: every branch a plan pushes is inside the harness-owned
+ * namespace, and every label it applies is on the allowlist.
+ *
+ * The frame condition bounds where the agent can WRITE FILES; this bounds where
+ * the write-class steps ACT. Containment binds only patch and suggest, so these
+ * arguments used to be constrained by nothing but a permissive regex — and
+ * push_branch.name is the single argument deciding where the executor's
+ * `contents: write` credential is pointed.
+ *
+ * Not a solver query. It is a per-step membership test over closed sets — a
+ * ground check in CONTEXT.md's terms, decidable by direct interpretation in one
+ * pass, so encoding it as ∀-claims would add an encoding layer to trust for no
+ * reachability reasoning gained (ADR-0003's own threshold for reaching for a
+ * solver). Reported in the same ProofResult shape so prove-cli treats it
+ * identically, and the counterexample names the offending step as every other
+ * policy here does.
+ *
+ * `headBranch` is a plan input, so it is optional: undefined means "unknown",
+ * which refuses nothing extra because the namespace still confines the target.
+ */
+export function proveWriteTargets(
+  plan: Plan,
+  policy: PlanPolicy,
+  headBranch?: string,
+): ProofResult {
+  const started = performance.now();
+  const violations: string[] = [];
+
+  for (const [index, step] of plan.steps.entries()) {
+    const argName = BRANCH_ARGS[step.kind];
+    if (argName !== undefined) {
+      const branch = step.args[argName];
+      if (typeof branch !== 'string') continue; // the schema gate owns shape
+      // Segment-wise, so `smtithy-evil/x` cannot pass as `smtithy/` and a `..`
+      // segment cannot climb out of the namespace it matched.
+      if (!branch.startsWith(policy.branch_prefix) || branch.split('/').includes('..')) {
+        violations.push(
+          `${index}: ${step.kind} (${step.id}) targets ${branch}: not under branch_prefix ${policy.branch_prefix}`,
+        );
+      } else if (headBranch !== undefined && branch === headBranch) {
+        violations.push(
+          `${index}: ${step.kind} (${step.id}) targets ${branch}: the reviewed PR's own head branch`,
+        );
+      }
+    } else if (step.kind === 'label') {
+      const name = step.args['name'];
+      if (typeof name !== 'string') continue;
+      if (!policy.label_allowlist.includes(name)) {
+        violations.push(
+          `${index}: label (${step.id}) applies ${name}: not on the policy label_allowlist`,
+        );
+      }
+    }
+  }
+
+  const ms = performance.now() - started;
+  if (violations.length === 0) return { holds: true, policy: 'write_targets', ms };
+  return {
+    holds: false,
+    policy: 'write_targets',
+    ms,
+    counterexample: { policy: 'write_targets', path: violations },
+  };
+}
+
 function matchesAny(path: string, patterns: readonly string[]): boolean {
   return patterns.some((pattern) => globToRegExp(pattern).test(path));
 }

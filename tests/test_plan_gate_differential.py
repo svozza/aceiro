@@ -124,10 +124,22 @@ CASES = [
         True,
     ),
     (
-        "label-only-no-orderable-pair",
+        # Rejected by BOTH gates on the shipped policy, whose label_allowlist
+        # ships empty — a label is a control surface, so a consumer must name the
+        # ones it accepts. The case stays here in its rejecting form because a
+        # gate that stopped enforcing the allowlist is exactly the drift this
+        # file exists to catch.
+        "label-off-the-shipped-empty-allowlist",
         {"steps": [anchored_patch("s0"), label_step("s1")]},
         PLAN_CHANGED_FILES,
-        True,
+        False,
+    ),
+    (
+        "branch-outside-the-harness-namespace",
+        {"steps": [anchored_patch("s0"), push_step("s1", name="main"),
+                   open_pr_step("s2", branch="main")]},
+        PLAN_CHANGED_FILES,
+        False,
     ),
     (
         "out-of-frame-patch",

@@ -315,7 +315,7 @@ class TestSecretsSplitAcrossArgs:
             anchored_patch(),
             push_step("s1"),
             {"id": "s2", "kind": "open_pr",
-             "args": {"branch": "fix/x", "title": "t",
+             "args": {"branch": "smtithy/fix-x", "title": "t",
                       "body": "uses AKIA**IOSF**ODNN7EXAMPLE internally"}},
         )
         rejected(plan)

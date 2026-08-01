@@ -38,6 +38,8 @@ const POLICY: PlanPolicy = checkPlanPolicy({
   max_patched_files: 3,
   max_changed_lines: 120,
   path_denylist: [],
+  branch_prefix: 'smtithy/',
+  label_allowlist: [],
 });
 
 const validStep = { id: 'p1', kind: 'patch', args: { path: 'src/a.py', old: 'a', new: 'b' } };

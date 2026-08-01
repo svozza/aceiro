@@ -45,11 +45,11 @@ def suggest_step(step_id="s0", path="src/a.py"):
     }
 
 
-def push_step(step_id="s1", name="fix/x"):
+def push_step(step_id="s1", name="smtithy/fix-x"):
     return {"id": step_id, "kind": "push_branch", "args": {"name": name}}
 
 
-def open_pr_step(step_id="s2", branch="fix/x", title="t", body="the fix"):
+def open_pr_step(step_id="s2", branch="smtithy/fix-x", title="t", body="the fix"):
     return {"id": step_id, "kind": "open_pr", "args": {"branch": branch, "title": title, "body": body}}
 
 
@@ -234,6 +234,19 @@ class TestShippedPolicyAgreement:
             args = PLAN_POLICY["step_kinds"][kind]["args"]
             assert "pattern" not in args["old"] and not args["old"].get("markdown")
             assert "pattern" not in args["new"] and not args["new"].get("markdown")
+
+    def test_branch_prefix_is_a_harness_owned_namespace(self):
+        # The one argument that decides where `contents: write` is pointed. A
+        # prefix is what makes "not the default branch, not the contributor's
+        # head branch" a property of the NAME rather than a list of exclusions.
+        # Mirrored in ts/plan/shipped-policy.test.ts.
+        assert PLAN_POLICY["branch_prefix"] == "smtithy/"
+
+    def test_label_allowlist_ships_empty(self):
+        # link_host_allowlist's precedent (ADR-0010's too): a label is a control
+        # surface — this repo's evals workflow triggers on `run-evals` — so a
+        # plan can apply none until a consumer names the ones it accepts.
+        assert PLAN_POLICY["label_allowlist"] == []
 
 
 class TestMutationDiscipline:
@@ -525,6 +538,85 @@ class TestAnchoring:
             contained({"steps": [anchored_patch(path="src/evil.py")]}, content_source=exploding)
 
 
+class TestWriteClassTargets:
+    """Containment bound only patch and suggest, so the three write-class kinds
+    got nothing beyond check_scalar's regex — and push_branch.name is the one
+    argument deciding where the executor's `contents: write` credential points.
+
+    ADR-0009's addendum spends its argument establishing that the harness must
+    not push to the contributor's branch and that merge targets are never
+    model-suppliable; without this phase, push_branch(name="main") and
+    push_branch(name=<the PR's own head branch>) both verified clean.
+    """
+
+    def push(self, name):
+        return {"id": "s1", "kind": "push_branch", "args": {"name": name}}
+
+    def test_a_prefixed_branch_passes(self):
+        contained({"steps": [anchored_patch("s0"), self.push("smtithy/fix-1"), open_pr_step("s2",
+                   branch="smtithy/fix-1")]})
+
+    def test_the_default_branch_rejects(self):
+        with pytest.raises(Rejection, match="branch_prefix"):
+            contained({"steps": [anchored_patch("s0"), self.push("main")]})
+
+    def test_an_unprefixed_branch_rejects(self):
+        with pytest.raises(Rejection, match="branch_prefix"):
+            contained({"steps": [anchored_patch("s0"), self.push("feature/contributor-branch")]})
+
+    def test_a_prefix_lookalike_rejects(self):
+        # Prefix confusion, the near-miss: a namespace that merely STARTS with
+        # the same characters is a different namespace.
+        with pytest.raises(Rejection, match="branch_prefix"):
+            contained({"steps": [anchored_patch("s0"), self.push("smtithy-evil/fix")]})
+
+    def test_a_traversal_out_of_the_namespace_rejects(self):
+        with pytest.raises(Rejection, match="branch_prefix"):
+            contained({"steps": [anchored_patch("s0"), self.push("smtithy/../main")]})
+
+    def test_open_pr_branch_is_constrained_too(self):
+        # open_pr.branch is the head of the follow-up PR: the same target under
+        # a different arg name.
+        with pytest.raises(Rejection, match="branch_prefix"):
+            contained({"steps": [anchored_patch("s0"), self.push("smtithy/ok"),
+                                 open_pr_step("s2", branch="main")]})
+
+    def test_the_reviewed_head_branch_rejects_even_when_prefixed(self):
+        # The prefix cannot express this one: if the PR's own head branch
+        # happens to live in the namespace, pushing to it is still the
+        # push-to-contributor's-branch mode ADR-0009's addendum decided against.
+        # It is a plan INPUT, so it is threaded in rather than inferred.
+        with pytest.raises(Rejection, match="reviewed pull request's own head branch"):
+            contained({"steps": [anchored_patch("s0"), self.push("smtithy/theirs")]},
+                      head_branch="smtithy/theirs")
+
+    def test_a_label_off_the_allowlist_rejects(self):
+        with pytest.raises(Rejection, match="label_allowlist"):
+            contained({"steps": [anchored_patch("s0"),
+                                 {"id": "s1", "kind": "label", "args": {"name": "run-evals"}}]})
+
+    def test_the_shipped_empty_allowlist_rejects_every_label(self):
+        assert PLAN_POLICY["label_allowlist"] == []
+        with pytest.raises(Rejection, match="label_allowlist"):
+            contained({"steps": [anchored_patch("s0"),
+                                 {"id": "s1", "kind": "label", "args": {"name": "anything"}}]})
+
+    def test_an_allowlisted_label_passes(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["label_allowlist"] = ["needs-tests"]
+        contained({"steps": [anchored_patch("s0"),
+                             {"id": "s1", "kind": "label", "args": {"name": "needs-tests"}}]},
+                  policy_plan=policy)
+
+    def test_label_matching_is_exact_not_prefix(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["label_allowlist"] = ["needs-tests"]
+        with pytest.raises(Rejection, match="label_allowlist"):
+            contained({"steps": [anchored_patch("s0"),
+                                 {"id": "s1", "kind": "label", "args": {"name": "needs-tests-urgently"}}]},
+                      policy_plan=policy)
+
+
 class TestOrdering:
     """The Python twin of ts/plan/prove.test.ts describe('proveOrdering').
 
@@ -688,7 +780,7 @@ class TestPlanMarkdownAndSecrets:
                  "args": {"path": "src/app.py", "old": old, "new": new}},
                 push_step("s2"),
                 {"id": "s3", "kind": "open_pr",
-                 "args": {"branch": "fix/x", "title": "Fix load()", "body": body}},
+                 "args": {"branch": "smtithy/fix-x", "title": "Fix load()", "body": body}},
             ]
         }
 

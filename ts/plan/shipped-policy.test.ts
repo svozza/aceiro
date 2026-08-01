@@ -105,4 +105,20 @@ describe('the shipped policy.json', () => {
     assert.ok(policy.path_denylist.includes('.github/**'), 'workflow files must be undeniably out of reach');
     assert.ok(policy.path_denylist.length >= 1);
   });
+
+  it('confines every pushable branch to a harness-owned namespace', () => {
+    // push_branch.name is the one argument deciding where the executor's
+    // `contents: write` credential is pointed, and it is model-supplied. The
+    // Python pin is tests/test_plan_verify.py TestShippedPolicyAgreement.
+    const policy = loadPlanPolicy(POLICY_PATH);
+    assert.equal(policy.branch_prefix, 'smtithy/');
+  });
+
+  it('ships an EMPTY label allowlist, so a plan can apply no label', () => {
+    // link_host_allowlist's precedent: a label is a control surface (this repo's
+    // own evals workflow triggers on `run-evals`), so a consumer must name the
+    // ones it accepts before any plan can apply one.
+    const policy = loadPlanPolicy(POLICY_PATH);
+    assert.deepEqual(policy.label_allowlist, []);
+  });
 });

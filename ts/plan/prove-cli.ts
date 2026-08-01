@@ -17,7 +17,7 @@ import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { checkPlanSchema } from './schema.js';
 import { loadPlanPolicy, Rejection } from './policy.js';
-import { proveOrdering, proveFrame, proveTaint, shutdown } from './prove.js';
+import { proveOrdering, proveFrame, proveTaint, proveWriteTargets, shutdown } from './prove.js';
 
 function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -29,6 +29,7 @@ async function main(): Promise<number> {
       plan: { type: 'string' },
       'changed-files': { type: 'string' },
       policy: { type: 'string' },
+      'head-branch': { type: 'string' },
     },
   });
   if (!values.plan || !values['changed-files'] || !values.policy) {
@@ -54,6 +55,10 @@ async function main(): Promise<number> {
     await proveOrdering(plan, policy),
     await proveFrame(plan, policy, changedFiles),
     await proveTaint(plan, policy),
+    // --head-branch is optional: the executor knows the reviewed PR's head
+    // branch from live context, a standalone invocation may not, and its absence
+    // only removes the one check the namespace prefix cannot express.
+    proveWriteTargets(plan, policy, values['head-branch']),
   ];
 
   let failed = false;

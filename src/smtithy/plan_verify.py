@@ -241,8 +241,67 @@ def _line_count(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
+BRANCH_ARGS = {"push_branch": "name", "open_pr": "branch"}
+
+
+def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | None) -> None:
+    """Confine the arguments that decide WHERE a write-class step acts.
+
+    Containment binds patch and suggest, so these three kinds used to get nothing
+    beyond check_scalar's regex — and push_branch.name is the single argument
+    deciding where the executor's `contents: write` credential is pointed. A plan
+    of push_branch(name="main") verified clean, as did push_branch(name=<the
+    reviewed PR's own head branch>), which silently implements the
+    push-to-the-contributor's-branch mode ADR-0009's addendum decided against.
+
+    Two constraints, of different shapes because the risks are different:
+
+    - Branches (push_branch.name, open_pr.branch) must sit under
+      policy.plan.branch_prefix, a harness-owned namespace. A prefix rather than
+      a denylist of protected names, so "not the default branch" is a property of
+      the name rather than a list someone has to keep current. The reviewed PR's
+      OWN head branch is refused separately: the prefix cannot express it, since a
+      contributor could name their branch inside the namespace.
+    - Labels must appear on policy.plan.label_allowlist EXACTLY. A label is a
+      control surface — this repo's evals workflow triggers on `run-evals` — and
+      the allowlist ships empty, on link_host_allowlist's precedent (ADR-0010):
+      a plan can apply none until a consumer names the ones it accepts.
+
+    `head_branch` is a plan input like changed_files, not something derivable
+    here; None means "unknown", which refuses nothing extra because the branch
+    the executor pushes to is still confined to the namespace.
+    """
+    prefix = policy_plan["branch_prefix"]
+    allowed_labels = policy_plan["label_allowlist"]
+
+    for index, step in enumerate(plan["steps"]):
+        kind = step["kind"]
+        if arg_name := BRANCH_ARGS.get(kind):
+            branch = step["args"][arg_name]
+            where = f"plan.steps[{index}].args.{arg_name}"
+            # Segment-wise, so `smtithy-evil/x` cannot pass as `smtithy/`, and a
+            # `..` segment cannot climb out of the namespace it matched.
+            if not branch.startswith(prefix) or ".." in branch.split("/"):
+                raise Rejection(
+                    f"{where}: branch {branch!r} is not under the policy branch_prefix {prefix!r}; "
+                    "a plan may only push inside the harness-owned namespace"
+                )
+            if head_branch is not None and branch == head_branch:
+                raise Rejection(
+                    f"{where}: branch {branch!r} is the reviewed pull request's own head branch; "
+                    "the harness never pushes to the contributor's branch (ADR-0009 addendum)"
+                )
+        elif kind == "label":
+            name = step["args"]["name"]
+            if name not in allowed_labels:
+                raise Rejection(
+                    f"plan.steps[{index}].args.name: label {name!r} is not on the policy "
+                    f"label_allowlist ({allowed_labels or 'empty — no label may be applied'})"
+                )
+
+
 def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
-                           policy_plan: dict, content_source) -> None:
+                           policy_plan: dict, content_source, head_branch: str | None = None) -> None:
     """ADR-0005: frame, denylist, suggest.line provenance, bounding, anchoring
     (which for a suggest step includes PLACEMENT — that `old` begins exactly at
     the addressed line, so the anchored region and the region GitHub's suggestion
@@ -257,6 +316,10 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     steps = plan["steps"]
     changed = set(changed_files)
     anchored = [(index, step) for index, step in enumerate(steps) if step["kind"] in ANCHORED_KINDS]
+
+    # Write-class targets first: decidable from the plan alone, and it is the
+    # phase that bounds where the write credential is pointed.
+    check_write_class_targets(plan, policy_plan, head_branch)
 
     # Frame: every modified path is a file the PR touched (§20 as written,
     # the Python re-verification of what proveFrame proves — the executor
@@ -471,7 +534,7 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
 
 
 def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: dict,
-                content_source) -> None:
+                content_source, head_branch: str | None = None) -> None:
     """Raise Rejection on the first policy violation; return None if verified.
 
     Mirrors verify()'s phase order (schema, provenance-shaped checks, markdown,
@@ -484,6 +547,6 @@ def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: di
     """
     check_plan_schema(plan, policy["plan"])
     check_plan_ordering(plan, policy["plan"])
-    check_plan_containment(plan, diff_text, changed_files, policy["plan"], content_source)
+    check_plan_containment(plan, diff_text, changed_files, policy["plan"], content_source, head_branch)
     check_plan_markdown(plan, policy)
     check_plan_secrets(plan, policy)
