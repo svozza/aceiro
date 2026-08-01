@@ -119,18 +119,31 @@ def pr_moved(pr: dict, reviewed_head: str, reviewed_base_ref: str) -> str | None
 REVIEW_EVENT = "COMMENT"
 
 
-def submit_review(repo: str, pr_number: int, body: str, comments: list[dict]) -> dict | list:
+def submit_review(repo: str, pr_number: int, body: str, comments: list[dict], *, head_sha: str) -> dict | list:
     """Create one review carrying every inline comment in a single request.
 
     The batch is atomic: if any comment's line cannot be resolved against the
     diff, GitHub 422s the whole call and creates ZERO comments (verified live
     in the extraction source). That is what makes "post everything or nothing"
     cheap here — the caller never has to unwind a half-posted review.
+
+    `head_sha` is the SHA the artifact was VERIFIED against, sent as commit_id.
+    Keyword-only with no default because omitting it is not a neutral choice:
+    the documented behaviour is "defaults to the most recent commit in the pull
+    request", so a review of head A attaches to head B when a push lands between
+    the executor's TOCTOU pre-check and this request, and an A-derived suggestion
+    then sits on B's version of a line that still resolves. Naming the SHA moves
+    the anchor to the commit the artifact describes: the comment is marked
+    outdated against the newer head rather than misplaced on it. The pre- and
+    post-write drift checks stay — this bounds the window they cannot close,
+    since the check and the write are not atomic.
     """
+    if not head_sha:
+        raise ValueError("submit_review needs the reviewed head SHA; an unbound review would attach to whatever is current")
     return api_json(
         f"/repos/{repo}/pulls/{pr_number}/reviews",
         method="POST",
-        payload={"event": REVIEW_EVENT, "body": body, "comments": comments},
+        payload={"event": REVIEW_EVENT, "body": body, "comments": comments, "commit_id": head_sha},
     )
 
 

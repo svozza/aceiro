@@ -177,7 +177,7 @@ class TestSubmitReview:
             {"path": "a.py", "line": 1, "side": "RIGHT", "body": "x"},
             {"path": "b.py", "line": 2, "side": "RIGHT", "body": "y"},
         ]
-        github_api.submit_review("o/r", 7, "top-level body", comments)
+        github_api.submit_review("o/r", 7, "top-level body", comments, head_sha="reviewed-sha")
 
         assert len(capture) == 1  # one atomic call, not one per comment
         call = capture[0]
@@ -187,8 +187,30 @@ class TestSubmitReview:
         assert call["payload"]["comments"] == comments
 
     def test_event_is_comment(self, capture):
-        github_api.submit_review("o/r", 7, "b", [])
+        github_api.submit_review("o/r", 7, "b", [], head_sha="reviewed-sha")
         assert capture[0]["payload"]["event"] == "COMMENT"
+
+    def test_the_review_is_bound_to_the_reviewed_head_sha(self, capture):
+        # Omitting commit_id makes GitHub default to "the most recent commit in
+        # the pull request", so a review verified against head A lands on head B
+        # if the contributor pushed while this call was in flight — and an
+        # A-derived suggestion then sits on B's version of the same line.
+        github_api.submit_review("o/r", 7, "b", [], head_sha="reviewed-sha")
+        assert capture[0]["payload"]["commit_id"] == "reviewed-sha"
+
+    def test_the_head_sha_cannot_be_omitted(self):
+        # Keyword-only with no default: the binding is the security property, so
+        # a caller must state which SHA it verified rather than inherit GitHub's
+        # "most recent commit" default by saying nothing.
+        with pytest.raises(TypeError):
+            github_api.submit_review("o/r", 7, "b", [])
+
+    def test_an_empty_head_sha_is_refused_before_the_request(self, capture):
+        # "" would be sent as commit_id and reach the same default, so it fails
+        # closed here rather than posting an unbound review.
+        with pytest.raises(ValueError, match="head SHA"):
+            github_api.submit_review("o/r", 7, "b", [], head_sha="")
+        assert capture == []
 
     def test_review_post_is_not_retried(self, monkeypatch, no_sleep):
         # A retried review POST could double-post the whole batch; POST is
@@ -201,7 +223,7 @@ class TestSubmitReview:
 
         monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
         with pytest.raises(FakeHTTPError):
-            github_api.submit_review("o/r", 7, "b", [])
+            github_api.submit_review("o/r", 7, "b", [], head_sha="reviewed-sha")
         assert len(attempts) == 1
 
 
