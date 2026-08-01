@@ -68,6 +68,25 @@ def strip_invisible(text: str) -> str:
     return "".join(ch for ch in text if not is_invisible(ch))
 
 
+def mark_invisible(text: str) -> str:
+    """Replace each invisible code point with a visible ``<U+XXXX>`` marker.
+
+    For text a HUMAN will read through a model — the fenced diff, above all.
+    strip_invisible's deletion is right where the text is being matched or
+    scanned, and wrong where it is being shown: a reviewer sent sanitised text
+    cannot report a Trojan-Source construct it was never shown, and the whole
+    class (a bidi override commenting out a guard, a ZWSP splitting one
+    identifier into two) is exactly what the deletion makes read as ordinary
+    code.
+
+    Equally strong as a splice guard: the code point is gone as a code point
+    either way, so text that only spelled a fence tag through an invisible no
+    longer spells it. The marker is ASCII, so it cannot fuse with anything into
+    a tag, and a payload writing the marker out literally gains nothing.
+    """
+    return "".join(f"<U+{ord(ch):04X}>" if is_invisible(ch) else ch for ch in text)
+
+
 def decode_contributor_bytes(data: bytes) -> str:
     """Decode bytes a contributor controls — the diff, above all.
 

@@ -58,6 +58,8 @@ from run_evals import (  # noqa: E402
     check_expect_keys,
     check_recovery_promptness,
     check_rejection_budget,
+    check_run_count,
+    guarded,
     strip_quoted,
     transcript_events,
 )
@@ -226,6 +228,10 @@ def grade(plan: dict, expect: dict, diff_text: str, changed_files: list[str],
 
 
 def run_scenario(scenario_dir: Path, output_dir: Path) -> dict:
+    return guarded(scenario_dir.name, lambda: _run_scenario(scenario_dir, output_dir))
+
+
+def _run_scenario(scenario_dir: Path, output_dir: Path) -> dict:
     name = scenario_dir.name
     expect = json.loads((scenario_dir / "expect.json").read_text())
     check_expect_keys(expect, name, PLAN_EXPECT_KEYS)
@@ -278,6 +284,14 @@ def main() -> int:
                         help="Repeat the suite N times; house rule is 3 before believing anything.")
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
+
+    # Before the output directory, exactly as run_evals does it: the two runners
+    # take the same flag and must refuse the same values.
+    try:
+        check_run_count(args.runs)
+    except EvalFailure as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 2
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     scenario_dirs = sorted(d for d in PLAN_SCENARIOS_DIR.iterdir() if d.is_dir())

@@ -262,6 +262,60 @@ class TestQuarantineIsStrippedOfSymlinks:
         assert "-delete" in quarantine
 
 
+class TestNoOidcMintingWhereUntrustedCodeRuns:
+    """`id-token: write` injects ACTIONS_ID_TOKEN_REQUEST_URL and
+    ...REQUEST_TOKEN into every step of the job, and the evals job EXECUTES the
+    PR's own code. Those two are a standing capability to mint a fresh OIDC
+    token, so PR-controlled code can assume the role again with NO inline session
+    policy — obtaining whatever the role's identity policy permits and bypassing
+    the Bedrock-only bound the credential step applies.
+
+    smtithy's own role grants nothing but two Bedrock actions, so nothing leaks
+    here today. A consumer supplying a wider role (relying on the workflow's
+    inline policy, as its comment invites) is the exposure. The capability is
+    only needed by configure-aws-credentials, which runs before the PR's code, so
+    shadowing the pair for the steps that run it costs nothing.
+    """
+
+    MINTING = ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+
+    def eval_running_steps(self, steps):
+        """The steps that execute PR-head code: everything from the untrusted
+        checkout onward that runs something."""
+        checkout = untrusted_checkout_index(steps)
+        assert checkout >= 0, "no untrusted checkout found; this assertion has gone stale"
+        return [s for s in steps[checkout:] if "run" in s]
+
+    def test_the_steps_running_pr_code_shadow_the_minting_pair(self, evals_steps):
+        for step in self.eval_running_steps(evals_steps):
+            for name in self.MINTING:
+                key = f"env.{name}"
+                assert key in step, (
+                    f"step {step.get('name')!r} runs PR-head code with {name} still in scope, so "
+                    "that code can mint another OIDC token and re-assume the role with no session "
+                    "policy"
+                )
+                assert step[key] in ("", "''", '""'), (
+                    f"step {step.get('name')!r} sets {name} to {step[key]!r}; it must be shadowed empty"
+                )
+
+    def test_the_credential_step_itself_is_not_shadowed(self, evals_steps):
+        # The one step that NEEDS the pair. Shadowing it too would leave the role
+        # unassumable and the whole suite failing on a 403 — a fail-closed
+        # outcome, but the wrong one, and the shape a copy-paste of the env block
+        # onto every step would produce.
+        creds = next(s for s in evals_steps if "configure-aws-credentials" in s.get("uses", ""))
+        for name in self.MINTING:
+            assert f"env.{name}" not in creds
+
+    def test_the_shadowing_is_per_step_not_job_wide(self, evals_steps):
+        # A job-level `env:` would also cover the credential step, so the pair is
+        # shadowed on the steps that run PR code and nowhere else. Asserted here
+        # because a reader's obvious simplification breaks the job.
+        shadowed = [s.get("name") for s in evals_steps if any(f"env.{n}" in s for n in self.MINTING)]
+        assert len(shadowed) >= 3, f"expected every PR-code step shadowed, got {shadowed}"
+
+
 class TestDraftSemanticsAgree:
     """ADR-0008: "untrusted and draft authors wait at the environment's required
     reviewer before their code runs with the credential, whatever the trigger."

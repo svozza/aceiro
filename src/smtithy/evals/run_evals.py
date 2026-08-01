@@ -148,9 +148,33 @@ def check_expect_keys(expect: dict, name: str, known: frozenset[str] = EXPECT_KE
         )
 
 
+def check_run_count(runs: int) -> None:
+    """Fail closed on a suite that would evaluate nothing.
+
+    `--runs 0` makes the output directory, calls no model, writes no
+    results.json and exits 0 — indistinguishable to anything reading the exit
+    code from eleven scenarios passing. Both runners take the flag and both
+    call this before the output directory exists.
+    """
+    if runs < 1:
+        raise EvalFailure(f"--runs {runs} would evaluate nothing; a suite that ran no scenario is not a pass")
+
+
 def transcript_events(transcript_path: Path) -> list[dict]:
-    """Parse a run's JSONL transcript once; every grader consumes the list."""
-    return [json.loads(line) for line in transcript_path.read_text().splitlines()]
+    """Parse a run's JSONL transcript once; every grader consumes the list.
+
+    An unparseable line is SKIPPED, as leak_probe skips one: a session killed
+    mid-write (wall clock, OOM, CI cancellation) leaves a partial last line, and
+    raising here propagates out of pool.map — losing results.json and every
+    other scenario's verdict to one truncated file.
+    """
+    events = []
+    for line in transcript_path.read_text().splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return events
 
 
 def check_tool_use(events: list[dict], wanted: dict, base_root: Path | None = None) -> None:
@@ -421,7 +445,36 @@ def api_error_stats(events: list[dict]) -> dict:
     }
 
 
+def guarded(name: str, run) -> dict:
+    """`run()`'s result, or a failed result for `name` if it raised.
+
+    Every scenario runs under ThreadPoolExecutor.map, which re-raises the first
+    exception out of the iterator: one scenario's unexpected fault (a truncated
+    fixture, an unreachable BASE commit, a bug here) otherwise loses results.json
+    and every other scenario's verdict with it. Both runners' run_scenario is a
+    thin call through this, so a suite always reports N verdicts for N scenarios.
+
+    Deliberately broad. The narrow failures are already results; what is left is
+    the class nobody predicted, and the honest report of one is "this scenario
+    failed, here is why", not a traceback where a suite summary should be.
+    """
+    try:
+        return run()
+    except Exception as exc:  # noqa: BLE001 - a scenario's fault is that scenario's result
+        return {
+            "name": name,
+            "passed": False,
+            "reason": f"harness error: {type(exc).__name__}: {exc}",
+            "api_errors": 0,
+            "backoff_seconds": 0.0,
+        }
+
+
 def run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
+    return guarded(scenario_dir.name, lambda: _run_scenario(cache_root, scenario_dir, output_dir))
+
+
+def _run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
     name = scenario_dir.name
     expect = json.loads((scenario_dir / "expect.json").read_text())
     # Before a model is called: an inert expectation makes the whole run
@@ -500,6 +553,14 @@ def main() -> int:
     # would put one agent per scenario on the runner at once.
     parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
+
+    # Before the output directory: a refused run must leave no trace that reads
+    # as a suite having been set up.
+    try:
+        check_run_count(args.runs)
+    except EvalFailure as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 2
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     scenario_dirs = sorted(d for d in SCENARIOS_DIR.iterdir() if d.is_dir())

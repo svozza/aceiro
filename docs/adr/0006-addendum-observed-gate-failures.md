@@ -1,4 +1,4 @@
-# Addendum to ADR-0006: five observed ways the gate goes wrong
+# Addendum to ADR-0006: six observed ways the gate goes wrong
 
 ADR-0006 reasons from GitHub's documentation that a missing Actions environment
 is auto-created without protection rules, and concludes the gate must be asserted
@@ -11,6 +11,9 @@ Failures 4 and 5 are a pair and are about the *conditions*, not the environment:
 a gate that fires more often than the job it gates, and a gate that fires for a
 job that cannot run. Both are cases of the gate condition and the worker
 condition disagreeing.
+
+Failure 6 is about neither, and is the assertion's own: a rule that exists, is
+the right type, and carries reviewers whose approval means nothing.
 
 ## 1. A rejected protection rule still creates the environment
 
@@ -132,6 +135,49 @@ job's condition.** Whenever the two are edited apart, one of the two failures
 follows — an unanswerable request (this failure) or an unconditional one (§4).
 `tests/test_workflow_shape.py::TestDraftSemanticsAgree` asserts the implication
 over both workflows, since it is a fact about YAML that no other test can see.
+
+## 6. A rule of the right type with the wrong people on it
+
+Found by review rather than by configuration, and it is the assertion's own blind
+spot rather than GitHub's. `has_required_reviewers` asked whether the environment
+carries a `required_reviewers` rule with a non-empty reviewer list, and stopped
+there. It never asked what those reviewers can do.
+
+GitHub permits a **read-only collaborator** as an environment reviewer, and a
+deployment reviewer may approve their own run. So:
+
+    reviewers: [read-only-collaborator]   ->  rule present, list non-empty
+                                              -> "gate is real", run proceeds
+
+That account opens a pull request, approves its own deployment, and executes its
+own code against the live Bedrock credential without ever holding write. It is
+§1 and §2's fail-open reached one step later: the rule exists, it is the right
+type, and it gates nothing that matters.
+
+`author_trust.py` already carries the whole argument for why the permission API
+is the only answer here — a read-only outside collaborator reports
+`COLLABORATOR`, the same value a maintainer reports on a private repo — so the
+gate resolves reviewers through `is_trusted` rather than restating it. "Trusted"
+means one thing in this harness: write-or-above, from the permission API,
+fail-closed on anything unresolvable.
+
+**EVERY eligible reviewer, not any.** Approval takes one of them, so the weakest
+decides; a rule listing four maintainers and one drive-by contributor gates
+nothing. That also disposes of `prevent_self_review`, which looks like a separate
+obligation and is not: once every eligible reviewer could push the change
+directly, approving their own run is not an escalation.
+
+Teams need their own resolution, and the vocabularies differ — the repository's
+team list reports git verbs (`pull`/`triage`/`push`/`maintain`/`admin`) while the
+collaborator API reports the legacy quartet (`admin`/`write`/`read`/`none`). Two
+sets, because one set covering both would silently mean "write" in one place and
+nothing in the other. A team the repository does not list has no access.
+
+**Consequence for the assertion, and it generalises §2's:** re-resolving the
+reviewer LIST on every run is not enough either. The list can stay identical
+while a member's permission is revoked, which is the same silent transition §2
+describes with nothing at all changing in the repository. Both halves — the rule
+and the people — are re-resolved inside the gated job on every run.
 
 ## Status
 

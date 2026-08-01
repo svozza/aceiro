@@ -5,6 +5,7 @@ transcript graders do not — they are pure logic and are pinned here so a
 harness bug can't silently pass (or fail) an eval for the wrong reason.
 """
 
+import importlib
 import json
 import os
 import re
@@ -112,6 +113,58 @@ class TestTranscriptEvents:
         path = tmp_path / "transcript.jsonl"
         path.write_text('{"event": "a"}\n{"event": "b", "round": 2}\n')
         assert run_evals.transcript_events(path) == [{"event": "a"}, {"event": "b", "round": 2}]
+
+    def test_a_truncated_final_line_is_skipped_not_raised(self, tmp_path):
+        # A session killed mid-write (wall clock, OOM, CI cancellation) leaves a
+        # partial last line. Raising here aborts the whole suite through
+        # pool.map, so results.json is never written and eleven scenarios report
+        # one traceback — leak_probe already skips unparseable lines and this is
+        # the same discipline for the file every grader reads.
+        path = tmp_path / "transcript.jsonl"
+        path.write_text('{"event": "run_start"}\n{"event": "submit_rej')
+        assert run_evals.transcript_events(path) == [{"event": "run_start"}]
+
+
+class TestARunCountBelowOneIsRefused:
+    """Fail closed on "no data": a suite that evaluated nothing must not exit 0.
+
+    --runs 0 makes the output directory, calls no model, writes no results.json
+    and returns 0 — a green eval anything reading the exit code believes. Both
+    runners take the flag, so both get the same refusal.
+    """
+
+    @pytest.mark.parametrize("runs", [0, -1])
+    def test_a_non_positive_run_count_is_rejected(self, runs):
+        with pytest.raises(run_evals.EvalFailure, match="--runs"):
+            run_evals.check_run_count(runs)
+
+    def test_one_is_accepted(self):
+        run_evals.check_run_count(1)
+
+    @pytest.mark.parametrize("module", ["run_evals", "run_plan_evals"])
+    def test_both_runners_validate_before_making_the_output_directory(self, tmp_path, monkeypatch, module):
+        runner = importlib.import_module(module)
+        out = tmp_path / "out"
+        monkeypatch.setattr(sys, "argv", [module, "--output-dir", str(out), "--runs", "0"])
+        assert runner.main() != 0
+        assert not out.exists(), "the run made an output directory for a suite it never ran"
+
+
+class TestARunFailureIsThatScenariosResultNotTheSuites:
+    """pool.map re-raises, so any exception escaping run_scenario loses every
+    other scenario's result along with the run that failed."""
+
+    def test_an_unexpected_exception_becomes_a_failed_result(self, tmp_path, monkeypatch):
+        scenario = Path(run_evals.SCENARIOS_DIR) / "clean_pr_no_findings"
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("materialise blew up")
+
+        monkeypatch.setattr(run_evals, "materialise_base", explode)
+        result = run_evals.run_scenario(tmp_path / "cache", scenario, tmp_path / "out")
+        assert result["name"] == "clean_pr_no_findings"
+        assert result["passed"] is False
+        assert "materialise blew up" in result["reason"]
 
 
 class TestApiErrorStats:

@@ -18,6 +18,7 @@ from pathlib import Path
 from canonicalize import (
     DEFAULT_IGNORABLE_RANGES,
     is_default_ignorable,
+    mark_invisible,
     read_contributor_text,
     read_harness_text,
     strip_invisible,
@@ -143,8 +144,13 @@ def escape_fence(text: str, tag: str, tags: frozenset[str] = HARNESS_FENCE_TAGS)
     block. Only these tags: ordinary angle-bracket text (a C++ include, a
     generic, HTML in a reviewed file) passes through, or the model would be shown
     a mangled diff.
+
+    Invisible code points are MARKED rather than dropped (canonicalize.
+    mark_invisible): fenced text is what a reviewer reads, and deletion is what
+    makes a Trojan-Source construct read as ordinary code. The splice guard is
+    unaffected — a tag name is only a tag name once, and it no longer spells one.
     """
-    text = _strip_invisible(text)
+    text = mark_invisible(text)
     for candidate in sorted(tags | {tag}):
         # `<_tag>` reads the same to the model but is no longer the token; the
         # leading underscore is not a tag start the harness ever emits.

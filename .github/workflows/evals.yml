@@ -271,6 +271,10 @@ jobs:
       # BEFORE the Bedrock role is assumed, so nothing during install can reach
       # the credential.
       - name: Install harness dependencies (hash-pinned)
+        env:
+          # See "NO OIDC MINTING BELOW" on the credential step.
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
         run: pip install --require-hashes -r requirements.txt
       - name: Configure AWS credentials (Bedrock-invoke only)
         uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
@@ -292,8 +296,27 @@ jobs:
                 ]
               }]
             }
+      # NO OIDC MINTING BELOW. `id-token: write` puts
+      # ACTIONS_ID_TOKEN_REQUEST_URL and ...REQUEST_TOKEN in every step's
+      # environment, and every step from here on EXECUTES the PR's own code. That
+      # pair is a standing capability to mint a fresh OIDC token, so PR-controlled
+      # code could assume the role again with NO inline session policy -- getting
+      # whatever the role's IDENTITY policy permits and bypassing the
+      # Bedrock-only bound the step above applies. The inline policy is described
+      # there as belt and braces over the role's own policy; against code that can
+      # re-assume, it is neither.
+      #
+      # smtithy's role grants two Bedrock actions and nothing else
+      # (infra/oidc-role.yaml), so nothing leaks here today. The exposure is a
+      # CONSUMER supplying a wider role and relying on the inline policy, which
+      # is exactly what that comment invites. Shadowed rather than argued about:
+      # configure-aws-credentials has already used the pair, and nothing after it
+      # needs it. tests/test_workflow_shape.py asserts this over every step that
+      # runs PR-head code, so a new step cannot reintroduce it silently.
       - name: Run review eval scenarios
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLAUDE_CODE_USE_BEDROCK: "1"
           ANTHROPIC_MODEL: ${{ env.BEDROCK_INFERENCE_PROFILE }}
           DISABLE_TELEMETRY: "1"
@@ -322,6 +345,8 @@ jobs:
       - name: Run plan eval scenarios
         if: always() && inputs.scenario == ''
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLAUDE_CODE_USE_BEDROCK: "1"
           ANTHROPIC_MODEL: ${{ env.BEDROCK_INFERENCE_PROFILE }}
           DISABLE_TELEMETRY: "1"

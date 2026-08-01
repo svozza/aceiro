@@ -7,11 +7,14 @@ name: Quality check
 # secrets, no credential of any kind — so it runs on every pull request from
 # any branch and any fork, and blocks on any failure.
 #
-# This is deliberately the ONLY job in the repo right now. The eval suite
-# (real model calls against fixed scenarios) is step 2 of the extraction and
-# arrives with its own workflow: it executes the PR's own harness code against
-# a live credential, so it needs the human gate that ADR-0006 describes, and
-# mixing it in here would put a secret behind a job that currently needs none.
+# THIS WORKFLOW HOLDS NO CREDENTIAL, AND THAT IS WHY IT NEEDS NO GATE. A
+# standing rule, not a note about a stage the repo has passed: the two workflows
+# are split on exactly this line. Everything needing a secret lives in
+# evals.yml, which executes the PR's own harness code against a live Bedrock
+# credential and therefore carries the human gate ADR-0006 describes. This one
+# runs on `pull_request` from any branch and any fork with no approval gate at
+# all, so a secret-bearing step added here would hand that secret to unreviewed
+# fork code. A step needing a credential belongs in evals.yml's gated job.
 #
 # TWO RUNNERS, deliberately (ADR-0003). pytest covers the artifact verifier,
 # which stays Python because its risk is markdown-it rendering behaviour and a
