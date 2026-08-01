@@ -353,21 +353,52 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # looking at this file, two means the executor's replacement (and a
     # suggestion's placement) is ambiguous, and an ambiguous write is refused
     # rather than guessed at.
+    # Steps apply IN SEQUENCE, so a later step's anchor is checked against the
+    # content the earlier steps leave behind, not against the reviewed SHA. The
+    # exactly-once guarantee is per-step-at-apply-time or it is not a guarantee:
+    # two steps on one path can each be unique pre-plan while the first makes the
+    # second's anchor duplicated or absent.
+    #
+    # `original` is what placement and hunk spans are measured against — those are
+    # provenance claims about the reviewed SHA, which is the diff the model read.
+    applied: dict[str, bytes] = {}
+
     for index, step in anchored:
         path = step["args"]["path"]
         where = f"plan.steps[{index}].args.old"
         try:
-            content = content_source(path)
+            original = content_source(path)
         except OSError as exc:
             raise Rejection(f"{where}: cannot read {path!r} at the reviewed SHA: {exc}")
+        pending = applied.get(path, original)
         old_bytes = step["args"]["old"].encode("utf-8")
-        occurrences = content.count(old_bytes)
-        if occurrences == 0:
+
+        # BOTH representations must admit the anchor, and for different reasons.
+        # At the reviewed SHA (ADR-0005): `old` is proof the model read the file,
+        # so an anchor matching only text an earlier step INVENTED is not anchored
+        # at all. Against the pending content: that is where the executor applies
+        # it, so exactly-once has to hold there too.
+        if original.count(old_bytes) == 0:
             raise Rejection(f"{where}: does not byte-match the content of {path!r} at the reviewed SHA")
+        if original.count(old_bytes) > 1:
+            raise Rejection(
+                f"{where}: matches {path!r} {original.count(old_bytes)} times at the reviewed SHA; "
+                "an ambiguous anchor cannot be applied"
+            )
+        occurrences = pending.count(old_bytes)
+        if occurrences == 0:
+            raise Rejection(
+                f"{where}: no longer occurs in {path!r} once the earlier steps in this plan "
+                "have applied; an anchor an earlier step destroys cannot be applied"
+            )
         if occurrences > 1:
             raise Rejection(
-                f"{where}: matches {path!r} {occurrences} times; an ambiguous anchor cannot be applied"
+                f"{where}: matches {path!r} {occurrences} times once the earlier steps in this "
+                "plan have applied; an ambiguous anchor cannot be applied"
             )
+        # new replaces old at its single occurrence, which is what the executor
+        # will do.
+        applied[path] = pending.replace(old_bytes, step["args"]["new"].encode("utf-8"), 1)
 
         # Placement (ADR-0009 addendum: "`old` IS the anchored line"). GitHub's
         # suggestion block replaces the commented line range, not the text in
@@ -375,13 +406,13 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         # in-hunk phase above because only the file content decides it.
         if step["kind"] != "suggest":
             continue
-        offset = content.index(old_bytes)
-        if offset > 0 and not content[offset - 1:offset] == b"\n":
+        offset = original.index(old_bytes)
+        if offset > 0 and not original[offset - 1:offset] == b"\n":
             raise Rejection(
                 f"{where}: does not start at the beginning of a line in {path!r}; a suggestion "
                 "replaces whole lines, so a sub-line anchor cannot describe what it overwrites"
             )
-        start_line = content.count(b"\n", 0, offset) + 1
+        start_line = original.count(b"\n", 0, offset) + 1
         line = step["args"]["line"]
         if start_line != line:
             raise Rejection(

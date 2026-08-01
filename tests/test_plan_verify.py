@@ -536,6 +536,63 @@ class TestAnchoring:
         with pytest.raises(Rejection, match="ambiguous"):
             contained({"steps": [anchored_patch(old="pass\n")]}, content_source=tree_source(tree))
 
+    # Each step's `old` was matched against the file at the reviewed SHA, so
+    # exactly-once held for the FIRST step applied to a path and no later one.
+    # The rejection message promises the executor an unambiguous application.
+
+    def test_two_disjoint_patches_into_one_file_still_pass(self):
+        # The calibration case: sequential application is fine when the regions
+        # do not interact, and this must stay legal.
+        contained({"steps": [
+            anchored_patch("s0", old="import os\n", new="import os, sys\n"),
+            anchored_patch("s1", old="    return os.environ\n", new="    return dict(os.environ)\n"),
+        ]})
+
+    def test_a_step_whose_new_duplicates_a_later_anchor_rejects(self):
+        # Each `old` occurs exactly once pre-plan; after s0 applies, s1's anchor
+        # occurs twice and its replacement is ambiguous at apply time.
+        with pytest.raises(Rejection, match="ambiguous"):
+            contained({"steps": [
+                anchored_patch("s0", old="    return os.environ\n",
+                               new="    return os.environ\n    return os.environ\n"),
+                anchored_patch("s1", old="    return os.environ\n", new="    return {}\n"),
+            ]})
+
+    def test_a_step_that_destroys_a_later_anchor_rejects(self):
+        # s0 replaces a block containing s1's anchor, so by the time s1 applies
+        # its `old` is gone.
+        with pytest.raises(Rejection, match="no longer"):
+            contained({"steps": [
+                anchored_patch("s0", old="def load(path):\n    check(path)\n", new="def load():\n"),
+                anchored_patch("s1", old="    check(path)\n", new="    check(path, strict=True)\n"),
+            ]})
+
+    def test_two_steps_with_the_same_old_on_one_path_reject(self):
+        # Both anchor the same region: whichever applies first removes the
+        # other's anchor.
+        with pytest.raises(Rejection, match="no longer|ambiguous"):
+            contained({"steps": [
+                anchored_patch("s0", old="    check(path)\n", new="    check(path, 1)\n"),
+                anchored_patch("s1", old="    check(path)\n", new="    check(path, 2)\n"),
+            ]})
+
+    def test_a_step_may_not_anchor_on_text_an_earlier_step_invented(self):
+        # The simulation narrows what is anchorable, never widens it: `old` must
+        # still byte-match the reviewed SHA (ADR-0005), so text a previous step's
+        # `new` introduced is content the model never read.
+        with pytest.raises(Rejection, match="does not byte-match"):
+            contained({"steps": [
+                anchored_patch("s0", old="def load(path):\n", new="def introduced():\n"),
+                anchored_patch("s1", old="def introduced():\n", new="y\n"),
+            ]})
+
+    def test_steps_on_different_paths_do_not_interact(self):
+        contained({"steps": [
+            anchored_patch("s0", old="def load(path):\n", new="def load(path=None):\n"),
+            anchored_patch("s1", path="src/util.py", old="def check(path):\n",
+                           new="def check(path=None):\n"),
+        ]})
+
     def test_anchoring_runs_after_the_frame(self):
         # An out-of-frame path must reject as out-of-frame, not reach the
         # content source: the filesystem is only consulted for paths that
