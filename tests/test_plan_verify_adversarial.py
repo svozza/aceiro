@@ -358,3 +358,38 @@ class TestSecretsSplitAcrossArgs:
                       "body": "uses AKIA**IOSF**ODNN7EXAMPLE internally"}},
         )
         rejected(plan)
+
+    # The plan gate's corpus must be the artifact gate's corpus. f614252 added
+    # link destinations to check_secrets and left rendered_markdown -- the plan
+    # scan's only entry point -- text-only, so one credential got opposite
+    # verdicts from the two gates depending on which one saw it.
+
+    def body_plan(self, body):
+        return plan_of(
+            anchored_patch(),
+            push_step("s1"),
+            {"id": "s2", "kind": "open_pr",
+             "args": {"branch": "smtithy/fix-x", "title": "t", "body": body}},
+        )
+
+    def test_entity_encoded_secret_in_an_open_pr_link_destination_rejects(self):
+        rejected(self.body_plan("see [d](https://docs.example.com/x?k=AKIA&#73;OSFODNN7EXAMPLE)"))
+
+    def test_invisible_split_secret_in_an_open_pr_link_destination_rejects(self):
+        rejected(self.body_plan(f"see [d](https://docs.example.com/x?k=AKIA{self.ZWSP}IOSFODNN7EXAMPLE)"))
+
+    def test_secret_in_an_open_pr_link_title_rejects(self):
+        rejected(self.body_plan('see [d](https://docs.example.com/ "key AKIA&#73;OSFODNN7EXAMPLE")'))
+
+    def test_percent_encoded_secret_in_an_open_pr_autolink_rejects(self):
+        rejected(self.body_plan("see <https://docs.example.com/AKIA%49OSFODNN7EXAMPLE>"))
+
+    def test_secret_in_a_suggestion_note_link_rejects(self):
+        # suggest.note is the other markdown arg _iter_plan_markdown yields.
+        rejected(plan_of(anchored_suggest(
+            note="see [d](https://docs.example.com/x?k=AKIA&#73;OSFODNN7EXAMPLE)",
+        )))
+
+    def test_an_allowlisted_link_with_no_secret_still_passes(self):
+        # Calibration: the plan gate must not start refusing ordinary links.
+        verified(self.body_plan('see [the docs](https://docs.example.com/guide "the guide")'))

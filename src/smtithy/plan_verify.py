@@ -41,7 +41,13 @@ import re
 from pathlib import Path
 
 from canonicalize import strip_invisible
-from verify import Rejection, check_markdown_field, check_scalar, parse_diff_hunks, rendered_markdown
+from verify import (
+    Rejection,
+    check_markdown_field,
+    check_scalar,
+    parse_diff_hunks,
+    scanned_representations,
+)
 
 # Ids exist so steps can be referred to; a duplicate makes a reference
 # ambiguous, and a counterexample naming a step becomes unactionable. Kept
@@ -667,14 +673,17 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
     raw, or an `old` the model never saw verbatim would start matching.
     """
     texts = [json.dumps(plan, ensure_ascii=False)]
-    for _, value in _iter_plan_markdown(plan, policy):
-        texts.append(rendered_markdown(value))
     for step in plan["steps"]:
         if step["kind"] in ANCHORED_KINDS:
             texts.append(step["args"]["old"] + step["args"]["new"])
     # Keeping the raw forms alongside means stripping can only ADD matches: it
     # cannot fuse two innocent runs into a false negative.
     texts.extend(strip_invisible(text) for text in list(texts))
+    # scanned_representations already carries its own stripped forms, and it is
+    # the artifact gate's corpus builder: a markdown arg the two gates scan
+    # differently is one credential with two verdicts.
+    for _, value in _iter_plan_markdown(plan, policy):
+        texts.extend(scanned_representations(value))
     for pattern in policy["secret_scan_patterns"]:
         for text in texts:
             if re.search(pattern, text):

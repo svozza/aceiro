@@ -561,28 +561,34 @@ def _iter_markdown_values(artifact: dict, policy: dict):
             yield finding[field]
 
 
-def link_destinations(tokens) -> list[str]:
-    """Every href the document renders, for the secret scan.
+def link_attributes(tokens) -> list[str]:
+    """Every reader-visible link attribute the document renders, for the secret
+    scan.
 
-    rendered_text collects text nodes, never attributes, so destinations need
-    their own collector. Only link_open survives to be rendered: images and
-    reference definitions are rejected before this runs.
+    rendered_text collects text nodes, never attributes, so these need their own
+    collector. Both href and title: GitHub renders the title as the anchor's
+    tooltip, so a credential there is as readable as one in the prose. Only
+    link_open survives to be rendered — images and reference definitions are
+    rejected before this runs.
 
-    Each href is returned twice, raw and percent-decoded — markdown-it
-    percent-encodes an href, so an entity for U+200B arrives as ``%E2%80%8B``
-    where nothing can see it, while a browser decodes before sending. For
-    scanning only; the allowlist compares the undecoded form (normalize_host).
+    Each value is returned raw and percent-decoded — markdown-it percent-encodes
+    an href, so an entity for U+200B arrives as ``%E2%80%8B`` where nothing can
+    see it, while a browser decodes before sending. For scanning only; the
+    allowlist compares the undecoded form (normalize_host).
     """
     found: list[str] = []
 
     def walk(token_list) -> None:
         for token in token_list:
             if token.type == "link_open":
-                href = token.attrGet("href") or ""
-                found.append(href)
-                decoded = unquote(href)
-                if decoded != href:
-                    found.append(decoded)
+                for name in ("href", "title"):
+                    value = token.attrGet(name) or ""
+                    if not value:
+                        continue
+                    found.append(value)
+                    decoded = unquote(value)
+                    if decoded != value:
+                        found.append(decoded)
             if token.children:
                 walk(token.children)
 
@@ -590,10 +596,21 @@ def link_destinations(tokens) -> list[str]:
     return found
 
 
-def rendered_markdown(value: str) -> str:
-    """A markdown field's visible rendered text, NFC-normalized first — the
-    one spelling of "what the reader sees" that every secret scan uses."""
-    return rendered_text(_PARSER.parse(unicodedata.normalize("NFC", value)))
+def scanned_representations(value: str) -> list[str]:
+    """Every form of one markdown field a secret scan must see.
+
+    The one spelling of "what the reader sees", shared by both gates: the
+    rendered text, plus every rendered link attribute. Each is also returned
+    invisible-stripped, so a credential split by something that renders as
+    nothing is matched — the verbatim copies stay, so stripping can only ADD
+    matches and never fuse two innocent runs into a false negative.
+
+    Both gates call this rather than each assembling its own corpus: a field
+    scanned by one and not the other is one credential with two verdicts.
+    """
+    tokens = _PARSER.parse(unicodedata.normalize("NFC", value))
+    texts = [rendered_text(tokens), *link_attributes(tokens)]
+    return [*texts, *(strip_invisible(text) for text in texts)]
 
 
 def check_secrets(artifact: dict, policy: dict) -> None:
@@ -607,11 +624,7 @@ def check_secrets(artifact: dict, policy: dict) -> None:
     source = json.dumps(artifact, ensure_ascii=False)
     texts = [source, strip_invisible(source)]
     for value in _iter_markdown_values(artifact, policy):
-        tokens = _PARSER.parse(unicodedata.normalize("NFC", value))
-        texts.append(rendered_text(tokens))
-        for href in link_destinations(tokens):
-            texts.append(href)
-            texts.append(strip_invisible(href))
+        texts.extend(scanned_representations(value))
     for pattern in policy["secret_scan_patterns"]:
         for text in texts:
             if re.search(pattern, text):

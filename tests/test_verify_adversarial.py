@@ -787,8 +787,39 @@ class TestSecrets:
         artifact["summary"] = "[d](https://docs.powertools.aws.dev/?k=AKIA&#8203;IOSFODNN7EXAMPLE)"
         rejected(artifact, sample_diff, changed_files, policy)
 
+    # A link TITLE is the other rendered attribute. GitHub emits it as the
+    # anchor's tooltip, so the reader can see it and rendered_text cannot.
+
+    def test_entity_encoded_key_in_a_link_title(self, artifact, sample_diff, changed_files, policy):
+        artifact["summary"] = '[d](https://docs.powertools.aws.dev/ "key AKIA&#73;OSFODNN7EXAMPLE")'
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_invisible_split_key_in_a_link_title(self, artifact, sample_diff, changed_files, policy):
+        artifact["summary"] = '[d](https://docs.powertools.aws.dev/ "key AKIA&#8203;IOSFODNN7EXAMPLE")'
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_key_in_a_link_title_in_a_finding_body(self, artifact, sample_diff, changed_files, policy):
+        artifact["findings"][0]["body"] = '[r](https://docs.powertools.aws.dev/ "AKIA&#73;OSFODNN7EXAMPLE")'
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_percent_encoded_key_in_an_angle_bracket_autolink(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # An autolink IS a link token, so its href is collected — but markdown-it
+        # leaves %49 encoded, and the browser decodes before sending. The
+        # percent-decoded representation is what the scan has to see.
+        artifact["summary"] = "<https://docs.powertools.aws.dev/AKIA%49OSFODNN7EXAMPLE>"
+        rejected(artifact, sample_diff, changed_files, policy)
+
     def test_an_allowlisted_link_with_no_secret_still_passes(self, artifact, sample_diff, changed_files, policy):
         artifact["summary"] = "[docs](https://docs.powertools.aws.dev/lambda/python/latest/)"
+        verify(artifact, sample_diff, changed_files, policy)
+
+    def test_an_allowlisted_link_with_a_harmless_title_still_passes(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # False-positive guard: titles are ordinary markdown.
+        artifact["summary"] = '[docs](https://docs.powertools.aws.dev/ "the powertools docs")'
         verify(artifact, sample_diff, changed_files, policy)
 
     def test_bold_marker_in_prose_does_not_false_positive(self, artifact, sample_diff, changed_files, policy):
