@@ -541,6 +541,28 @@ class TestSuggestLineProvenance:
             contained({"steps": [anchored_suggest(line=2, old="load(path):\n",
                                                   new="load(path=None):\n")]})
 
+    def test_old_not_ending_at_a_line_boundary_rejects(self):
+        # `def load` starts at line 2 and stops mid-line, so the replaced range
+        # extends past the anchor: applying it deletes `(path):`, bytes `old`
+        # never named.
+        with pytest.raises(Rejection, match="does not end at the end of a line"):
+            contained({"steps": [anchored_suggest(line=2, old="def load", new="def safe")]})
+
+    def test_multi_line_old_ending_mid_line_rejects(self):
+        with pytest.raises(Rejection, match="does not end at the end of a line"):
+            contained({"steps": [anchored_suggest(line=2, old="def load(path):\n    check",
+                                                  new="def safe(path):\n    ok")]})
+
+    def test_old_ending_at_end_of_file_without_a_newline_passes(self):
+        # The last line of a file with no final newline ends at a line boundary
+        # — there is no byte after it to overwrite.
+        tree = {"src/app.py": b"import os\ndef load(path):\n    check(path)\n    return os.environ"}
+        contained(
+            {"steps": [anchored_suggest(line=4, old="    return os.environ",
+                                        new="    return dict(os.environ)")]},
+            content_source=tree_source(tree),
+        )
+
 
 class TestBounding:
     def test_at_cap_distinct_files_pass(self):

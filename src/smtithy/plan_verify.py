@@ -403,9 +403,9 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                            policy_plan: dict, content_source, head_branch: str | None = None,
                            commanded_finding: dict | None = None) -> None:
     """ADR-0005: frame, denylist, suggest.line provenance, bounding, anchoring
-    (which for a suggest step includes PLACEMENT — that `old` begins exactly at
-    the addressed line, so the anchored region and the region GitHub's suggestion
-    block replaces are the same region).
+    (which for a suggest step includes PLACEMENT — that `old` begins at the
+    addressed line and ends at a line end, so the anchored region and the region
+    GitHub's suggestion block replaces are the same region).
 
     Phase-by-phase across all steps, first violation wins, mirroring
     verify.py's structure. Anchoring runs LAST because it is the only check
@@ -564,6 +564,20 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
             raise Rejection(
                 f"{where}: does not start at the beginning of a line in {path!r}; a suggestion "
                 "replaces whole lines, so a sub-line anchor cannot describe what it overwrites"
+            )
+        # And it must END at one. GitHub replaces the whole addressed range, so
+        # any byte left on the anchor's last line is overwritten without having
+        # been anchored. Three ways to be at a line end and no others: the anchor
+        # consumed the terminator, the terminator is the next byte, or the file
+        # stops there — a last line with no final newline must still verify.
+        end = offset + len(old_bytes)
+        at_line_end = (
+            old_bytes.endswith(b"\n") or end == len(original) or original[end:end + 1] == b"\n"
+        )
+        if not at_line_end:
+            raise Rejection(
+                f"{where}: does not end at the end of a line in {path!r}; a suggestion replaces "
+                "whole lines, so the rest of the anchor's last line would be overwritten unanchored"
             )
         start_line = original.count(b"\n", 0, offset) + 1
         line = step["args"]["line"]

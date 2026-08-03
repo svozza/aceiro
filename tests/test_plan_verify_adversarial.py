@@ -263,6 +263,17 @@ class TestSuggestLineNearMisses:
         rejected(plan_of(anchored_suggest(path="src/util.py", line=4,
                                           old="def check(path):\n", new="def check(p):\n")))
 
+    def test_old_stopping_one_character_short_of_the_line_end_rejects(self):
+        # The near-miss of the honest suggestion below: `old` names the line
+        # minus its last byte, so GitHub's block still replaces the whole line
+        # and `):` is overwritten without ever having been anchored.
+        rejected(plan_of(anchored_suggest(line=2, old="def load(path)",
+                                          new="def load(path=None)")))
+
+    def test_the_same_suggestion_covering_the_whole_line_verifies(self):
+        verified(plan_of(anchored_suggest(line=2, old="def load(path):\n",
+                                          new="def load(path=None):\n")))
+
     def test_line_in_a_deleted_files_hunk_rejects(self):
         deletion_diff = (
             "diff --git a/gone.py b/gone.py\n"
