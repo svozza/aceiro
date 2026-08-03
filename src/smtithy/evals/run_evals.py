@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -217,6 +218,39 @@ def transcript_events(transcript_path: Path) -> list[dict]:
     return events
 
 
+# The input fields of the read-only tools that name a LOCATION. Deliberately not
+# every field: `pattern` and `command` carry content to search for, and a path
+# appearing in one says nothing about where the call looked.
+PATH_INPUT_FIELDS = ("path", "file_path", "notebook_path")
+
+
+def looks_under(tool_input: dict, base_root: Path) -> bool:
+    """True if a tool call's input names a location inside base_root.
+
+    Real containment rather than substring matching, on the path-bearing fields
+    only. Substring matching over the whole serialised input accepts two things
+    that are not evidence: a base path named in a `pattern` (content, not a
+    location — one rejected Grep searching elsewhere satisfied the gate), and a
+    sibling directory whose name merely starts with the base path.
+
+    A relative path is not resolved against base_root, because it is resolved
+    against the harness's cwd at request time and cannot be shown to be under it —
+    the same reason an absent path does not count.
+    """
+    base = base_root.resolve()
+    for field in PATH_INPUT_FIELDS:
+        value = tool_input.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            continue
+        resolved = Path(os.path.normpath(str(candidate)))
+        if resolved == base or base in resolved.parents:
+            return True
+    return False
+
+
 def check_tool_use(events: list[dict], wanted: dict, base_root: Path | None = None) -> None:
     """Assert the transcript shows a real investigation, not just diff
     pattern-matching.
@@ -243,10 +277,11 @@ def check_tool_use(events: list[dict], wanted: dict, base_root: Path | None = No
     for record in events:
         if record.get("event") != "tool_request" or record.get("tool") not in tools:
             continue
-        haystack = json.dumps(record.get("input", {})).lower()
+        tool_input = record.get("input", {})
+        haystack = json.dumps(tool_input).lower()
         # The transcript records what was REQUESTED. A call naming no path at all
         # relies on the CLI's cwd, which is not evidence about where it looked.
-        if require_base and (base is None or base.lower() not in haystack):
+        if require_base and not (base_root is not None and looks_under(tool_input, base_root)):
             continue
         if any(needle in haystack for needle in any_needles):
             matched_any = True

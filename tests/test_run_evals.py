@@ -559,6 +559,61 @@ class TestCheckToolUse:
         events = [self.call("Grep", pattern="popitem", path=self.PR_ROOT)]
         run_evals.check_tool_use(events, wanted, base_root=Path(self.PR_ROOT))
 
+    def test_the_base_path_named_in_a_pattern_does_not_satisfy_the_gate(self):
+        # The BASE requirement is about where the call LOOKED. A pattern is
+        # content to search for, not a location searched, so a single Grep whose
+        # regex mentions the base path while its path argument points elsewhere
+        # satisfied every expectation without reading either file.
+        wanted = {
+            "tools": ["Grep"],
+            "input_contains_all": ["slice_dictionary", "parameters/ssm.py"],
+            "input_must_reference_base": True,
+        }
+        events = [self.call(
+            "Grep",
+            pattern=f"{self.BASE}/x/slice_dictionary|{self.BASE}/x/parameters/ssm.py",
+            path="/somewhere/else",
+        )]
+        with pytest.raises(run_evals.EvalFailure, match="BASE"):
+            run_evals.check_tool_use(events, wanted, base_root=Path(self.BASE))
+
+    def test_a_path_merely_prefixed_by_base_does_not_count_as_under_it(self):
+        # Substring containment makes a sibling directory whose name starts with
+        # the base path read as inside it.
+        events = [self.call("Grep", pattern="slice_dictionary", path=f"{self.BASE}-evil/x")]
+        with pytest.raises(run_evals.EvalFailure, match="BASE"):
+            run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_relative_path_is_not_evidence_about_where_it_looked(self):
+        # Resolved against the harness's cwd rather than BASE, so it cannot be
+        # shown to be under it — the same reasoning as the no-path case.
+        events = [self.call("Grep", pattern="slice_dictionary", path="aws_lambda_powertools")]
+        with pytest.raises(run_evals.EvalFailure, match="BASE"):
+            run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_base_itself_counts_as_under_base(self):
+        # The boundary: the scenario's own passing shape greps BASE directly.
+        events = [self.call("Grep", pattern="slice_dictionary", path=self.BASE)]
+        run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_read_names_its_path_in_file_path(self):
+        # Each tool spells the location differently; the gate has to read the
+        # field that holds one rather than the whole serialised input.
+        events = [self.call("Read", file_path=f"{self.BASE}/x/slice_dictionary.py")]
+        run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_path_traversing_out_of_base_does_not_count(self):
+        # Textual containment would accept this: the base path is a prefix of it.
+        events = [self.call("Grep", pattern="slice_dictionary", path=f"{self.BASE}/../elsewhere")]
+        with pytest.raises(run_evals.EvalFailure, match="BASE"):
+            run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_path_traversing_back_into_base_still_counts(self):
+        # The other direction: normalising must not reject a legitimate path that
+        # happens to be spelled with a dot-segment.
+        events = [self.call("Grep", pattern="slice_dictionary", path=f"{self.BASE}/x/../y")]
+        run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
 
 class TestExpectKeysAreValidated:
     """An expectation nobody reads asserts nothing, silently.
