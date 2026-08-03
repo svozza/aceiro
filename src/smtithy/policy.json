@@ -77,7 +77,7 @@
         "write_class": true,
         "args": {
           "branch": { "type": "string", "min_length": 1, "max_length": 240, "pattern": "[A-Za-z0-9][A-Za-z0-9._/-]*" },
-          "title": { "type": "string", "min_length": 1, "max_length": 120, "pattern": "[^\\r\\n]+" },
+          "title": { "type": "string", "min_length": 1, "max_length": 120, "markdown": true, "pattern": "[^\\r\\n]+" },
           "body": { "type": "string", "min_length": 1, "max_length": 4000, "markdown": true }
         }
       },

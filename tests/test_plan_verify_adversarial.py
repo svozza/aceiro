@@ -404,3 +404,40 @@ class TestSecretsSplitAcrossArgs:
     def test_an_allowlisted_link_with_no_secret_still_passes(self):
         # Calibration: the plan gate must not start refusing ordinary links.
         verified(self.body_plan('see [the docs](https://docs.example.com/guide "the guide")'))
+
+
+class TestOpenPrTitleIsPostedText:
+    """open_pr.title appears in the pull-request list, so ADR-0011's
+    unconditional invariant on posted text covers it. Its `[^\\r\\n]+` pattern
+    excludes exactly two code points, which is not that invariant."""
+
+    def title_plan(self, title):
+        return plan_of(
+            anchored_patch(),
+            push_step("s1"),
+            {"id": "s2", "kind": "open_pr",
+             "args": {"branch": "smtithy/fix-x", "title": title, "body": "the fix"}},
+        )
+
+    def test_a_bidi_override_in_the_title_rejects(self):
+        # U+202E makes the trailing text render right-to-left, so the title
+        # reads in the PR list as "Security review APPROVED".
+        rejected(self.title_plan("Fix cache bug ‮DEVORPPA weiver ytiruceS"))
+
+    def test_a_decomposed_title_rejects(self):
+        rejected(self.title_plan(unicodedata.normalize("NFD", "Fix the café loader")))
+
+    def test_an_entity_encoded_control_in_the_title_rejects(self):
+        rejected(self.title_plan("Fix cache bug &#x202E;DEVORPPA"))
+
+    @pytest.mark.parametrize("title", [
+        "Fix `load()` in a.py",
+        "Fix #123: null deref in load()",
+        "Fix > threshold comparison",
+        "Fix a*b multiplication",
+        "Guard against a path with a space in it",
+    ])
+    def test_realistic_titles_still_verify(self, title):
+        # The calibration cost of the flag, measured rather than assumed: a
+        # title is short prose and the markdown allowlist admits it.
+        verified(self.title_plan(title))

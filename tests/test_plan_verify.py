@@ -226,17 +226,28 @@ class TestShippedPolicyAgreement:
         # is pinned exactly. Mirrored in ts/plan/shipped-policy.test.ts.
         assert sorted(PLAN_POLICY["step_kinds"]["open_pr"]["args"]) == ["body", "branch", "title"]
 
-    def test_every_string_arg_is_markdown_checked_or_pattern_constrained(self):
-        # verify.py's markdown_fields rule, applied to plan args: a string
-        # that is neither would flow into a posted comment or a git ref
-        # unchecked. Enforced against the shipped policy so adding a lax arg
-        # spec fails here before it ships.
+    def test_every_string_arg_is_markdown_checked_or_charset_constrained(self):
+        # verify.py's markdown_fields rule, applied to plan args, with the hole
+        # that made open_pr.title ungated closed: "has a pattern" was sufficient,
+        # and `[^\r\n]+` is a pattern that excludes two code points and admits
+        # every other one — including the U+202E that makes a title read as an
+        # approval. ADR-0011 makes invisible and bidirectional controls an
+        # unconditional invariant on posted text and plan text inherits it, so a
+        # NEGATED class is not a constraint for the property that matters. An arg
+        # is gated by the markdown allowlist or by a pattern that allowlists its
+        # characters; old/new are file bytes, never rendered as prose.
         for kind, spec in PLAN_POLICY["step_kinds"].items():
             for arg_name, arg_spec in spec["args"].items():
-                if arg_spec["type"] != "string":
+                if arg_spec["type"] != "string" or arg_name in ("old", "new"):
                     continue
-                constrained = arg_spec.get("markdown") or "pattern" in arg_spec or arg_name in ("old", "new")
-                assert constrained, f"{kind}.{arg_name}: string arg with no markdown flag and no pattern"
+                if arg_spec.get("markdown"):
+                    continue
+                pattern = arg_spec.get("pattern")
+                assert pattern, f"{kind}.{arg_name}: string arg with no markdown flag and no pattern"
+                assert "[^" not in pattern, (
+                    f"{kind}.{arg_name}: pattern {pattern!r} is a negated class, which allowlists "
+                    "nothing — either give it a charset or mark it markdown"
+                )
 
     def test_old_and_new_are_exempt_because_they_are_never_rendered(self):
         # patch/suggest old+new are file bytes, not prose: old must byte-match
