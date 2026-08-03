@@ -39,11 +39,43 @@ from test_plan_verify import (  # noqa: E402
 
 PROVER_JS = REPO_ROOT / "dist" / "plan" / "prove-cli.js"
 POLICY_PATH = REPO_ROOT / "src" / "smtithy" / "policy.json"
+TS_SOURCE_DIR = REPO_ROOT / "ts" / "plan"
 
+
+def _stale_sources() -> list[str]:
+    """TypeScript sources newer than the built prover.
+
+    A dist/ older than its source makes this whole corpus a green test of the
+    PREVIOUS prover: verified by deleting the denylist disjunct from prove.ts and
+    running without `npm run build`, which left every case passing. Existence was
+    checked and currency was not.
+    """
+    if not PROVER_JS.exists():
+        return []
+    built = PROVER_JS.stat().st_mtime
+    return sorted(
+        source.name
+        for source in TS_SOURCE_DIR.glob("*.ts")
+        if not source.name.endswith(".test.ts") and source.stat().st_mtime > built
+    )
+
+
+# Skip rather than fail when dist/ is absent: CI's test_verifier job sets up only
+# Python and runs `pytest tests/` with no Node at all, so failing collection there
+# would break a job that is right to have no build. A STALE build is different --
+# it is a wrong answer rather than an absent one, and it fails.
 pytestmark = pytest.mark.skipif(
     not PROVER_JS.exists(),
     reason=f"prover not built at {PROVER_JS} — run `npm run build` (CI does this before pytest)",
 )
+
+
+def test_the_built_prover_is_not_older_than_its_sources():
+    stale = _stale_sources()
+    assert not stale, (
+        f"dist/plan/prove-cli.js is older than {stale}; every case below would be "
+        "testing the previously built prover. Run `npm run build`."
+    )
 
 
 def prover_admits(plan, changed_files, tmp_path) -> bool:
