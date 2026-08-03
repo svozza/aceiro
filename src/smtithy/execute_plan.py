@@ -35,7 +35,8 @@ input was unreadable or because the solver could not decide a query.
 
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA
 (the diff anchor), BASE_REF (the reviewed base BRANCH, which is what a retarget
-changes — ADR-0012).
+changes — ADR-0012), HEAD_REF (the reviewed head BRANCH, the one push target both
+gates refuse — ADR-0009 addendum).
 Arguments: --artifact-dir (plan.json; the bundle's diff.patch and
 changed_files.json travel as evidence only, since both gates' provenance inputs
 are re-fetched here), --pr-root (the quarantine-fetched reviewed head, the anchor
@@ -135,7 +136,8 @@ def decide_delivery(steps: list[dict]) -> Delivery:
     return Delivery("stacked_pr", None)
 
 
-def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, policy_path: Path) -> None:
+def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, policy_path: Path,
+               *, head_branch: str) -> None:
     """Re-prove the plan by running prove-cli as a subprocess; fail closed.
 
     Exit 0: every policy holds. Exit 1: a policy is DISPROVED and stdout
@@ -155,6 +157,7 @@ def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, polic
         "--plan", str(plan_path),
         "--changed-files", str(changed_files_path),
         "--policy", str(policy_path),
+        "--head-branch", head_branch,
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=PROVER_TIMEOUT_SECONDS)
@@ -224,6 +227,13 @@ def main() -> None:
     # live base.sha tracks the branch tip.
     reviewed_base_sha = os.environ["BASE_SHA"]
     reviewed_base_ref = os.environ["BASE_REF"]
+    # The reviewed head BRANCH, which is the push target both gates must refuse
+    # (ADR-0009 addendum: the harness never pushes to the contributor's branch).
+    # From the event, not from pr_snapshot: that fetch is deliberately single and
+    # happens after both gates, and hoisting it to get this value would widen the
+    # TOCTOU window it exists to close. Absent is a KeyError rather than a
+    # default, ADR-0012's reading -- a default here silently disables the check.
+    reviewed_head_ref = os.environ["HEAD_REF"]
 
     plan_path = args.artifact_dir / "plan.json"
     plan = json.loads(read_harness_text(plan_path))
@@ -267,14 +277,16 @@ def main() -> None:
     try:
         verify_plan(
             plan, diff_text, changed_files, policy, tree_content_source(args.pr_root),
-            commanded_finding=commanded_finding,
+            head_branch=reviewed_head_ref, commanded_finding=commanded_finding,
         )
     except Rejection as exc:
         fail(f"plan rejected, nothing executed: {exc}")
 
     # And re-proved: the ordering/frame/taint policies live in the TypeScript
-    # prover (ADR-0003), reached as a subprocess. Fail-closed either way.
-    run_prover(args.prover, plan_path, changed_files_path, args.policy)
+    # prover (ADR-0003), reached as a subprocess. Fail-closed either way. The head
+    # branch goes to both gates or the prover admits what the verifier refuses.
+    run_prover(args.prover, plan_path, changed_files_path, args.policy,
+               head_branch=reviewed_head_ref)
 
     try:
         delivery = decide_delivery(plan["steps"])

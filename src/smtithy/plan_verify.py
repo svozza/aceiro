@@ -307,8 +307,11 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
     namespace (ADR-0009 addendum). Labels must appear on
     policy.plan.label_allowlist exactly.
 
-    `head_branch` is a plan input, not derivable here; None means unknown, which
-    refuses nothing extra since the namespace still bounds the target.
+    `head_branch` is a plan input, not derivable here. The executor supplies it
+    from the event (HEAD_REF, required there), which is what makes the refusal
+    reachable; the generator lane passes what it has, since an eval fixture has no
+    pull request. None means unknown and refuses nothing extra — an allowance for
+    a caller with no value, never for one that has one and omits it.
     """
     prefix = policy_plan["branch_prefix"]
     allowed_labels = policy_plan["label_allowlist"]

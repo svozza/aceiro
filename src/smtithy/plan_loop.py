@@ -285,11 +285,20 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path,
     # anchor tree is this process's trust decision, never a submission's.
     content_source = tree_content_source(pr_root.resolve())
 
+    # The reviewed head branch, so a plan targeting it is refused in-session with
+    # a reason the model can act on rather than surviving to the executor. Read
+    # with a default, unlike execute_plan's os.environ["HEAD_REF"]: this gate is a
+    # PRE-CHECK feeding the generator, and the executor re-verifies with the value
+    # required. An eval scenario is a fixture with no pull request, so there is no
+    # head branch to supply and nothing to fail closed about.
+    head_branch = os.environ.get("HEAD_REF") or None
+
     # The commanded finding is pinned HERE for the same reason the content source
     # is: which finding was commanded is this process's trust decision, read from
     # the context the maintainer's command produced, never from a submission.
     def checked(artifact, diff, files, pol):
-        verify_fn(artifact, diff, files, pol, content_source, commanded_finding=commanded_finding)
+        verify_fn(artifact, diff, files, pol, content_source,
+                  head_branch=head_branch, commanded_finding=commanded_finding)
 
     return drive_session(
         transcript=transcript,

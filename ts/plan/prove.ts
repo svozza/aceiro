@@ -569,8 +569,11 @@ const BRANCH_ARGS: Readonly<Record<string, string>> = { push_branch: 'name', ope
  * reachability reasoning gained. Returns the same ProofResult shape so prove-cli
  * treats it like the rest.
  *
- * `headBranch` optional: undefined means unknown, which refuses nothing extra
- * since the namespace still bounds the target.
+ * `headBranch` optional because a caller may genuinely not have one: undefined
+ * refuses nothing extra, since the namespace still bounds the target. The
+ * executor always passes it (`--head-branch`, from the event's HEAD_REF), which
+ * is what makes the ADR-0009-addendum refusal reachable in the shipped pipeline
+ * rather than disabled by omission.
  */
 export function proveWriteTargets(
   plan: Plan,

@@ -47,13 +47,13 @@ def patch(step_id="s0", path="src/app.py", old="def load(path):\n"):
             "args": {"path": path, "old": old, "new": "def load(path=None):\n"}}
 
 
-def push(step_id="s8"):
-    return {"id": step_id, "kind": "push_branch", "args": {"name": "smtithy/fix-x"}}
+def push(step_id="s8", name="smtithy/fix-x"):
+    return {"id": step_id, "kind": "push_branch", "args": {"name": name}}
 
 
-def open_pr(step_id="s9"):
+def open_pr(step_id="s9", branch="smtithy/fix-x"):
     return {"id": step_id, "kind": "open_pr",
-            "args": {"branch": "smtithy/fix-x", "title": "Fix load()", "body": "Fixes the finding."}}
+            "args": {"branch": branch, "title": "Fix load()", "body": "Fixes the finding."}}
 
 
 def label(step_id="s7"):
@@ -161,14 +161,14 @@ def prover_inputs(tmp_path):
 class TestRunProver:
     def test_exit_zero_passes_and_echoes_verdicts(self, stub_prover, prover_inputs, capsys):
         prover = stub_prover(0, stdout="ordering: holds (1.0ms)\n")
-        execute_plan.run_prover(prover, *prover_inputs)
+        execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
         assert "ordering: holds" in capsys.readouterr().out
 
     def test_exit_one_fails_with_the_counterexample(self, stub_prover, prover_inputs, capsys):
         # Exit 1 is an audit record: the counterexample must reach the log.
         prover = stub_prover(1, stdout="frame: VIOLATED (2.0ms)\n  step s0 writes src/evil.py\n")
         with pytest.raises(SystemExit):
-            execute_plan.run_prover(prover, *prover_inputs)
+            execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
         err = capsys.readouterr().err
         assert "DISPROVED" in err
         assert "step s0 writes src/evil.py" in err
@@ -178,7 +178,7 @@ class TestRunProver:
         # the run, not evidence about the plan, and logged as such.
         prover = stub_prover(2, stderr="prove-cli: changed-files: expected an array of strings\n")
         with pytest.raises(SystemExit):
-            execute_plan.run_prover(prover, *prover_inputs)
+            execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
         err = capsys.readouterr().err
         assert "operational failure" in err
         assert "expected an array of strings" in err
@@ -195,7 +195,7 @@ class TestRunProver:
                    "  solver reason: max. resource limit exceeded\n",
         )
         with pytest.raises(SystemExit):
-            execute_plan.run_prover(prover, *prover_inputs)
+            execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
         err = capsys.readouterr().err
         assert "operational failure" in err
         assert "max. resource limit exceeded" in err
@@ -203,7 +203,7 @@ class TestRunProver:
 
     def test_unrunnable_prover_fails_closed(self, tmp_path, prover_inputs, capsys):
         with pytest.raises(SystemExit):
-            execute_plan.run_prover(tmp_path / "does-not-exist.js", *prover_inputs)
+            execute_plan.run_prover(tmp_path / "does-not-exist.js", *prover_inputs, head_branch="feature/x")
         assert "nothing was proved" in capsys.readouterr().err
 
 
@@ -307,6 +307,9 @@ def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
     monkeypatch.setenv("HEAD_SHA", "reviewed-sha")
     monkeypatch.setenv("BASE_SHA", "event-base-sha")
     monkeypatch.setenv("BASE_REF", "main")
+    # The reviewed head BRANCH. Outside the harness namespace here, so the fixture
+    # plans stay admissible and the refusal is tested by naming it deliberately.
+    monkeypatch.setenv("HEAD_REF", "feature/x")
     monkeypatch.setattr(sys, "argv", [
         "execute_plan.py",
         "--artifact-dir", str(artifact_dir),
@@ -356,6 +359,45 @@ class TestMain:
         # The base comes from the live PR context, never the plan (open_pr
         # has no base argument — ADR-0009 addendum).
         assert "stacked PR based on 'feature/x'" in capsys.readouterr().out
+
+    def test_a_push_to_the_reviewed_head_branch_is_rejected_here(
+            self, main_env, monkeypatch, capsys):
+        # dd7f879 called the head-branch refusal the check branch_prefix cannot
+        # express -- the one stopping the push-to-the-contributor's-branch mode
+        # ADR-0009's addendum spends its argument rejecting. It was reachable from
+        # no production caller: head_branch defaulted to None here and in
+        # plan_loop, so a contributor branch legally named inside the namespace
+        # (which the addendum names as the case) was a legal push target.
+        monkeypatch.setenv("HEAD_REF", "smtithy/theirs")
+        (main_env / "plan.json").write_text(json.dumps(
+            {"steps": [patch(), push(name="smtithy/theirs"),
+                       open_pr(branch="smtithy/theirs")]}))
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "own head branch" in capsys.readouterr().err
+
+    def test_the_head_ref_reaches_the_prover_too(self, main_env, monkeypatch, capsys):
+        # Both gates or neither: a Python-only wiring leaves the prover admitting
+        # what the verifier refuses, which is the divergence the differential
+        # corpus exists to catch.
+        monkeypatch.setenv("HEAD_REF", "smtithy/theirs")
+        seen = []
+        monkeypatch.setattr(execute_plan, "run_prover",
+                            lambda *args, **kwargs: seen.append(kwargs.get("head_branch")))
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert seen == ["smtithy/theirs"]
+
+    def test_a_missing_head_ref_fails_closed(self, main_env, monkeypatch, capsys):
+        # ADR-0012's reading for BASE_REF, applied to this one: absence is a
+        # KeyError rather than a default, because a default would silently
+        # re-disable the check.
+        monkeypatch.delenv("HEAD_REF", raising=False)
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(KeyError):
+            execute_plan.main()
 
     def test_rejected_plan_never_reaches_the_prover_or_network(
             self, main_env, monkeypatch, capsys):
@@ -526,7 +568,7 @@ class TestProvenanceInputsAreFirstParty:
         )
         seen = {}
 
-        def spy_prover(prover_js, plan_path, changed_files_path, policy_path):
+        def spy_prover(prover_js, plan_path, changed_files_path, policy_path, **kwargs):
             seen["listed"] = json.loads(Path(changed_files_path).read_text())
 
         monkeypatch.setattr(execute_plan, "run_prover", spy_prover)
