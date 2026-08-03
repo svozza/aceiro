@@ -495,3 +495,23 @@ class TestBuildArtifactSchema:
     def test_the_findings_cap_is_expressed_to_the_generator(self):
         schema = build_artifact_schema(POLICY)
         assert schema["properties"]["findings"]["maxItems"] == POLICY["artifact_schema"]["findings"]["max_items"]
+
+    def test_a_policy_added_scalar_reaches_the_generator_contract(self):
+        # The contract restated the three shipped names, so a policy-added field
+        # was required by the verifier and absent from the schema the model is
+        # given — with additionalProperties false, the model cannot send it and is
+        # rejected for not sending it. Both readers must move together, the way
+        # render_rejection_guidance already iterates the policy.
+        extended = copy.deepcopy(POLICY)
+        extended["artifact_schema"]["ticket"] = {"type": "string", "min_length": 1, "max_length": 10}
+        schema = build_artifact_schema(extended)
+        assert "ticket" in schema["properties"], "the model is told a shape the verifier rejects"
+        assert "ticket" in schema["required"]
+        assert schema["properties"]["ticket"]["maxLength"] == 10
+
+    def test_the_required_list_is_every_declared_field(self):
+        # Not the three names spelled again: `required` and the schema's own keys
+        # cannot disagree.
+        schema = build_artifact_schema(POLICY)
+        assert set(schema["required"]) == set(POLICY["artifact_schema"])
+        assert set(schema["properties"]) == set(POLICY["artifact_schema"])

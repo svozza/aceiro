@@ -75,31 +75,36 @@ def _scalar_to_json_schema(spec: dict) -> dict:
 
 def build_artifact_schema(policy: dict) -> dict:
     """Translate policy.json's artifact_schema into a JSON Schema for the
-    generator's submit_review tool input."""
+    generator's submit_review tool input.
+
+    Derived by iterating the policy rather than restating its field names: with
+    `additionalProperties: False`, a field the verifier requires and this schema
+    omits is one the model is forbidden to send and then rejected for omitting.
+    `required` is every declared field, which is what check_schema enforces.
+    """
     schema = policy["artifact_schema"]
     findings = schema["findings"]
-    json_schema = {
+    findings_schema = {
+        "type": "array",
+        "maxItems": findings["max_items"],
+        "items": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                field: _scalar_to_json_schema(spec) for field, spec in findings["item_fields"].items()
+            },
+            "required": list(findings["item_fields"]),
+        },
+    }
+    return {
         "type": "object",
         "additionalProperties": False,
         "properties": {
-            "summary": _scalar_to_json_schema(schema["summary"]),
-            "findings": {
-                "type": "array",
-                "maxItems": findings["max_items"],
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        field: _scalar_to_json_schema(spec) for field, spec in findings["item_fields"].items()
-                    },
-                    "required": list(findings["item_fields"]),
-                },
-            },
-            "residual_risk": _scalar_to_json_schema(schema["residual_risk"]),
+            name: findings_schema if name == "findings" else _scalar_to_json_schema(spec)
+            for name, spec in schema.items()
         },
-        "required": ["summary", "findings", "residual_risk"],
+        "required": list(schema),
     }
-    return json_schema
 
 
 def rejection_fingerprint(reason: str) -> str:
