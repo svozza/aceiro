@@ -424,6 +424,36 @@ describe('proveWriteTargets', () => {
     assert.ok(result.counterexample?.path.some((line) => line.includes('open_pr')));
   });
 
+  it('CATCHES an open_pr that opens from a branch the plan did not push', () => {
+    // Both inside the namespace, both confined -- and different. The executor
+    // would push the verified patch to one and open the follow-up PR from the
+    // other, whose content no step of this plan described.
+    const result = proveWriteTargets(plan(pushBranch('smtithy/a'), openPr('smtithy/b')), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(
+      result.counterexample?.path.some(
+        (line) => line.includes('smtithy/a') && line.includes('smtithy/b'),
+      ),
+      `counterexample should name both branches, got ${JSON.stringify(result.counterexample?.path)}`,
+    );
+  });
+
+  it('holds when open_pr opens from exactly the pushed branch', () => {
+    const result = proveWriteTargets(plan(pushBranch('smtithy/fix-1'), openPr('smtithy/fix-1')), POLICY);
+    assert.equal(result.holds, true);
+  });
+
+  it('holds for a push with no open_pr, which has no relation to check', () => {
+    const result = proveWriteTargets(plan(pushBranch('smtithy/fix-1')), POLICY);
+    assert.equal(result.holds, true);
+  });
+
+  it('reports the prefix violation, not the mismatch, when a branch is off-namespace', () => {
+    const result = proveWriteTargets(plan(pushBranch('smtithy/ok'), openPr('main')), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path[0]?.includes('branch_prefix'));
+  });
+
   it("CATCHES a push to the reviewed PR's own head branch even when prefixed", () => {
     // The prefix cannot express this: a contributor could name their branch
     // inside the namespace. ADR-0009's addendum decided against this mode.

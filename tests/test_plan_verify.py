@@ -800,6 +800,40 @@ class TestWriteClassTargets:
             contained({"steps": [anchored_patch("s0"), self.push("smtithy/theirs")]},
                       head_branch="smtithy/theirs")
 
+    def test_the_pull_request_must_open_from_the_branch_that_was_pushed(self):
+        # Each branch was confined independently, so both could sit inside the
+        # namespace and name DIFFERENT branches. The executor would then push the
+        # verified patch to one and open the follow-up PR from another, whose
+        # content the plan never described and whose bytes no frame bounded --
+        # `smtithy/b` surviving from an earlier command is enough.
+        with pytest.raises(Rejection, match="opens from"):
+            contained({"steps": [anchored_patch("s0"), self.push("smtithy/a"),
+                                 open_pr_step("s2", branch="smtithy/b")]})
+
+    def test_the_prefix_message_still_wins_when_the_branch_is_also_unprefixed(self):
+        # Ordering: confinement first. An off-namespace branch is a worse fault
+        # than a mismatched one, and this is what the reader needs named.
+        with pytest.raises(Rejection, match="branch_prefix"):
+            contained({"steps": [anchored_patch("s0"), self.push("smtithy/ok"),
+                                 open_pr_step("s2", branch="main")]})
+
+    def test_a_push_with_no_open_pr_is_unaffected(self):
+        # The relation is only expressible when both steps exist; cardinality
+        # deliberately admits this shape.
+        contained({"steps": [anchored_patch("s0"), self.push("smtithy/fix-1")]})
+
+    def test_a_non_string_branch_is_named_as_a_shape_fault(self):
+        # Shape is the schema phase's business, and it runs first, so a malformed
+        # branch must be reported as one rather than as a mismatch. Through
+        # verify_plan, because that is where the phase order lives.
+        plan = {"steps": [anchored_patch("s0"), self.push("smtithy/a"),
+                          open_pr_step("s2", branch="smtithy/a")]}
+        plan["steps"][1]["args"]["name"] = 7
+        with pytest.raises(Rejection) as caught:
+            verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
+        assert "expected string" in str(caught.value)
+        assert "opens from" not in str(caught.value)
+
     def test_a_label_off_the_allowlist_rejects(self):
         with pytest.raises(Rejection, match="label_allowlist"):
             contained({"steps": [anchored_patch("s0"),

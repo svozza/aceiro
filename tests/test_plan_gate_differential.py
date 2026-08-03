@@ -168,6 +168,24 @@ CASES = [
         False,
     ),
     (
+        # Both branches confined, both inside the namespace, and DIFFERENT: a
+        # relation between two steps, which a per-step loop cannot see.
+        "open-pr-from-a-branch-the-plan-never-pushed",
+        {"steps": [anchored_patch("s0"), push_step("s1", name="smtithy/a"),
+                   open_pr_step("s2", branch="smtithy/b")]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # The admitting direction, so the rule is shown to have made the gates
+        # agree rather than to have widened one.
+        "open-pr-from-exactly-the-pushed-branch",
+        {"steps": [anchored_patch("s0"), push_step("s1", name="smtithy/fix-1"),
+                   open_pr_step("s2", branch="smtithy/fix-1")]},
+        PLAN_CHANGED_FILES,
+        True,
+    ),
+    (
         # Fits max_steps and is correctly ordered (all pushes before all opens),
         # so only cardinality stands between it and eighteen external effects.
         "nine-write-chains-for-one-patch",

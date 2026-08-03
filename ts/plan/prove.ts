@@ -607,6 +607,25 @@ export function proveWriteTargets(
     }
   }
 
+  // A relation between two steps, so it is a second pass: both branches passing
+  // confinement independently still leaves them free to name DIFFERENT branches,
+  // and the executor would push the verified patch to one and open the follow-up
+  // pull request from the other. Appended after the per-step violations so an
+  // off-namespace branch is still reported first. Only when both are strings --
+  // the schema gate owns shape, exactly as the loop above assumes.
+  const pushStep = plan.steps.find((step) => step.kind === 'push_branch');
+  const openStep = plan.steps.find((step) => step.kind === 'open_pr');
+  if (pushStep !== undefined && openStep !== undefined) {
+    const pushed = pushStep.args['name'];
+    const opened = openStep.args['branch'];
+    if (typeof pushed === 'string' && typeof opened === 'string' && pushed !== opened) {
+      violations.push(
+        `open_pr (${openStep.id}) opens from ${opened} but push_branch (${pushStep.id}) pushes ` +
+          `${pushed}: the follow-up pull request must open from the branch this plan pushed`,
+      );
+    }
+  }
+
   const ms = performance.now() - started;
   if (violations.length === 0) return { holds: true, policy: 'write_targets', ms };
   return {

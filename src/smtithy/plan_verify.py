@@ -338,6 +338,29 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
                     f"label_allowlist ({allowed_labels or 'empty — no label may be applied'})"
                 )
 
+    # A relation between two steps, so it cannot live in the loop above: both
+    # branches passing confinement independently still leaves them free to name
+    # DIFFERENT branches, and the executor would push the verified patch to one
+    # and open the follow-up pull request from the other — whose content this plan
+    # never described and whose bytes no frame bounded.
+    #
+    # After the per-step confinement, so an off-namespace branch is still reported
+    # as one: that is the worse fault and the one a reader needs named. Only when
+    # both values are strings, because shape belongs to the schema phase, and only
+    # when both steps exist — cardinality admits a push with no open_pr.
+    branches = {
+        step["kind"]: step["args"][BRANCH_ARGS[step["kind"]]]
+        for step in plan["steps"]
+        if step["kind"] in BRANCH_ARGS
+    }
+    pushed, opened = branches.get("push_branch"), branches.get("open_pr")
+    if isinstance(pushed, str) and isinstance(opened, str) and pushed != opened:
+        raise Rejection(
+            f"plan.steps: open_pr opens from {opened!r} but push_branch pushes {pushed!r}; "
+            "the follow-up pull request must open from the branch this plan pushed, or its "
+            "content is bytes no step of this plan described"
+        )
+
 
 def check_commanded_scope(plan: dict, commanded_finding: dict | None) -> None:
     """ADR-0007: the command names ONE finding, so the fix must touch its file.
