@@ -381,6 +381,16 @@ CASES = [
         False,
     ),
     (
+        # The denylist's admitting direction, which had no case: `.github/**` must
+        # not match a directory merely NAMED github, and `**/*.pem` must not match
+        # a name that merely contains it. A denylist with no admitting case can be
+        # over-broad without any test noticing.
+        "denylist-near-miss-that-must-be-admitted",
+        {"steps": [anchored_patch("s0", path="github/workflows.py", old="x\n", new="y\n")]},
+        [*PLAN_CHANGED_FILES, "github/workflows.py"],
+        True,
+    ),
+    (
         # A fixless write chain: ordered legally, each write-class kind once, and
         # it verified AND proved clean on both gates -- containment quantifies over
         # the paths a plan modifies, and there are none.
@@ -793,3 +803,68 @@ def test_every_rejecting_case_names_the_policy_that_must_reject_it():
         f"rejecting cases with no named policy: {sorted(rejecting - set(REJECTION_POLICY))}; "
         f"named policies for no such case: {sorted(set(REJECTION_POLICY) - rejecting)}"
     )
+
+
+# The coverage census: for each plan-policy field, the cases that exercise it in
+# each direction. Written down because "which fields does this corpus actually
+# bound?" was answerable only by reading all of it, and the answer was that some
+# fields had no case at all.
+#
+# An empty ADMIT list must carry its reason. label_allowlist ships empty by
+# deliberate fail-closed default (ADR-0010), so no admitting case is constructible
+# at all -- and that is a fact about the policy, not a gap in the corpus.
+POLICY_FIELD_COVERAGE = {
+    "max_steps": (["several-steps-well-under-max-steps"], ["over-max-steps"]),
+    "max_patched_files": (["well-inside-every-bound"], ["over-max-patched-files"]),
+    "max_changed_lines": (
+        ["long-single-line-rewrite-under-the-line-cap"],
+        ["over-max-changed-lines-in-one-step", "over-both-the-line-and-byte-caps"],
+    ),
+    "max_changed_bytes": (
+        ["well-inside-every-bound"],
+        ["long-single-line-rewrite-under-the-line-cap", "astral-content-over-the-byte-budget"],
+    ),
+    "max_plan_changed_bytes": (["well-inside-every-bound"], ["per-step-bounds-met-plan-total-exceeded"]),
+    "path_denylist": (
+        ["denylist-near-miss-that-must-be-admitted"],
+        ["denylisted-path-that-is-a-changed-file", "denylisted-pem-that-is-a-changed-file"],
+    ),
+    "branch_prefix": (["legal-write-chain"], ["branch-outside-the-harness-namespace"]),
+    # ADR-0010: ships empty, so every label is off it and no admitting case exists.
+    "label_allowlist": ([], ["label-off-the-shipped-empty-allowlist"]),
+}
+
+UNCOVERABLE_ADMIT = {"label_allowlist"}
+
+
+def test_the_census_covers_every_enforced_plan_policy_field():
+    """No enforced field may be absent from the census.
+
+    A field with no case in either direction is one this corpus does not bound at
+    all: max_steps was exactly that, and raising it from 20 to 2000 left everything
+    green. Structural fields (step_kinds, ordering rules and ADR-0004's reserved
+    closures) are shapes rather than scalar bounds and are covered by their own
+    cases, so they are named here as excluded rather than silently skipped.
+    """
+    structural = {"step_kinds", "ordering", "control_flow", "argument_forms"}
+    enforced = {key for key in _full_policy()["plan"]} - structural
+    assert enforced == set(POLICY_FIELD_COVERAGE), (
+        f"fields with no census entry: {sorted(enforced - set(POLICY_FIELD_COVERAGE))}; "
+        f"census entries for no such field: {sorted(set(POLICY_FIELD_COVERAGE) - enforced)}"
+    )
+
+
+@pytest.mark.parametrize("field", sorted(POLICY_FIELD_COVERAGE))
+def test_every_field_is_bounded_in_both_directions(field):
+    admitting, rejecting = POLICY_FIELD_COVERAGE[field]
+    known = _cases_by_id()
+    assert rejecting, f"{field} has no rejecting case, so nothing shows the bound binds"
+    if field in UNCOVERABLE_ADMIT:
+        assert not admitting, f"{field} is listed as uncoverable but names admitting cases"
+    else:
+        assert admitting, (
+            f"{field} has no admitting case, so nothing shows the bound admits what it should "
+            "-- an over-broad rule would pass this corpus"
+        )
+    for case_id in [*admitting, *rejecting]:
+        assert case_id in known, f"{field} names {case_id}, which is not a case"
