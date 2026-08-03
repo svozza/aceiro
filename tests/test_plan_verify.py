@@ -361,6 +361,76 @@ class TestReservedClosures:
         check_plan_schema({"steps": [patch_step()]}, PLAN_POLICY)
 
 
+class TestSpecsAreValidatedEagerly:
+    """A spec the enforcer cannot use is a policy fault, and it is decided before
+    any step is read.
+
+    Checked eagerly rather than where the value is consumed, because a lazy check
+    only ever sees the step kinds a plan happens to USE: a malformed write-class
+    spec stays latent until some later plan exercises it, which is the worst time
+    to discover the policy does not load. Twin of ts/plan/policy.ts, whose loader
+    validates the whole plan section up front.
+    """
+
+    def test_a_pattern_the_enforcer_cannot_compile_is_a_policy_error(self):
+        # `\p{L}` compiles under JS both plainly and with `u`, and is a
+        # PatternError to Python's re — so it is the direction of this divergence
+        # that a TS-only loader check would leave live in the Python gate.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["patch"]["args"]["path"]["pattern"] = r"\p{L}"
+        with pytest.raises(Rejection, match="policy error.*pattern"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_a_non_integer_minimum_is_a_policy_error(self):
+        # `{"type": "integer", "minimum": "bogus"}` reads as a floor. Python's
+        # comparison raises TypeError rather than Rejection, so the gate crashed
+        # instead of producing a verdict; the prover admitted line -9999 outright.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["suggest"]["args"]["line"]["minimum"] = "bogus"
+        with pytest.raises(Rejection, match="policy error.*minimum"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_a_non_integer_length_bound_is_a_policy_error(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["patch"]["args"]["old"]["max_length"] = "20000"
+        with pytest.raises(Rejection, match="policy error.*max_length"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_a_non_list_enum_values_is_a_policy_error(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["label"]["args"]["name"] = {"type": "enum", "values": "automated"}
+        with pytest.raises(Rejection, match="policy error.*values"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_the_sweep_reaches_a_kind_the_plan_never_uses(self):
+        # The whole point of eager. This plan carries only a patch step, so a
+        # lazily-checked open_pr spec would never be read at all — and open_pr is
+        # write-class, where a latent policy fault costs the most.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["open_pr"]["args"]["title"]["pattern"] = r"(?<x>a)"
+        with pytest.raises(Rejection, match="policy error.*pattern"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_a_pattern_only_the_other_engine_refuses_is_left_to_it(self):
+        # `a{,3}` is a valid Python pattern (a literal brace run) and a SyntaxError
+        # to JS under `u`. Each gate refuses what ITS enforcer cannot compile, so
+        # this one is the prover's to reject and not a policy error here — mirrored
+        # by the TypeScript loader's own case for it.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["open_pr"]["args"]["title"]["pattern"] = "a{,3}"
+        check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_the_refusal_precedes_any_step_check(self):
+        # A policy fault reported as a bad plan sends a reader to the generator.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["patch"]["args"]["path"]["pattern"] = r"\p{L}"
+        with pytest.raises(Rejection, match="policy error"):
+            check_plan_schema({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
+
+    def test_the_shipped_plan_policy_loads(self):
+        check_plan_schema({"steps": [patch_step()]}, PLAN_POLICY)
+
+
 class TestMutationDiscipline:
     def test_gate_rejects_are_not_order_dependent_smoke(self):
         # A quick differential guard: shuffling which violation comes first

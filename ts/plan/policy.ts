@@ -223,9 +223,24 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
       if (type === 'enum' && !Array.isArray(scalar['values'])) {
         throw new PolicyError(`${where}: an enum arg must declare values`);
       }
+      // A key with no reader is refused above; these are keys whose VALUE the
+      // reader cannot use. `minimum: "bogus"` makes `value < spec.minimum` false
+      // for every integer, so a bound that reads as present admits everything —
+      // and the Python twin raises TypeError on the same comparison rather than
+      // returning a verdict.
+      for (const key of ['min_length', 'max_length', 'minimum'] as const) {
+        if (key in scalar && !Number.isInteger(scalar[key])) {
+          throw new PolicyError(`${where}: ${key} is ${JSON.stringify(scalar[key])}, not an integer bound`);
+        }
+      }
       if (typeof scalar['pattern'] === 'string') {
         try {
-          new RegExp(scalar['pattern'] as string);
+          // Exactly what checkScalar compiles, anchors and flags included. `u` is
+          // stricter than the default, so a pattern compiled plainly here could
+          // load and then throw SyntaxError at enforcement time — a gate raising
+          // instead of producing a verdict. Compiling what the enforcer will
+          // compile is the only way the loader's judgement means anything.
+          new RegExp(`^(?:${scalar['pattern'] as string})$`, 'u');
         } catch (cause) {
           throw new PolicyError(`${where}: pattern is not a valid regex: ${String(cause)}`);
         }

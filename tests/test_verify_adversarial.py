@@ -154,6 +154,36 @@ class TestEveryTopLevelSpecIsEnforced:
         with pytest.raises(Rejection, match="unknown scalar type"):
             verify(artifact, sample_diff, changed_files, extended)
 
+    def test_a_pattern_the_enforcer_cannot_compile_is_a_policy_error(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # A spec value the enforcer cannot use is the same class of fault as a
+        # spec KEY no reader consults, and the same gate refuses it. re.fullmatch
+        # raised PatternError from the middle of the check, which is a crash
+        # rather than a verdict.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["summary"]["pattern"] = r"\p{L}"
+        with pytest.raises(Rejection, match="policy error.*pattern"):
+            verify(artifact, sample_diff, changed_files, extended)
+
+    def test_a_non_integer_minimum_is_a_policy_error(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["findings"]["item_fields"]["line"]["minimum"] = "bogus"
+        with pytest.raises(Rejection, match="policy error.*minimum"):
+            verify(artifact, sample_diff, changed_files, extended)
+
+    def test_a_bad_spec_is_refused_even_where_no_artifact_value_reaches_it(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # findings is the array, so its own spec is never handed to check_scalar.
+        # Eager means the sweep still reads the item_fields under it.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["findings"]["item_fields"]["title"]["max_length"] = "120"
+        with pytest.raises(Rejection, match="policy error.*max_length"):
+            verify(artifact, sample_diff, changed_files, extended)
+
 
 class TestProvenance:
     def test_unchanged_file(self, artifact, sample_diff, changed_files, policy):

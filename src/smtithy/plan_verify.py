@@ -42,9 +42,11 @@ from pathlib import Path
 
 from canonicalize import strip_invisible
 from verify import (
+    SCALAR_KEYS,
     Rejection,
     check_markdown_field,
     check_scalar,
+    check_scalar_spec,
     parse_diff_hunks,
     scanned_representations,
 )
@@ -103,6 +105,41 @@ def check_reserved_closures(policy_plan: dict) -> None:
         )
 
 
+def check_plan_arg_specs(policy_plan: dict) -> None:
+    """Validate every step kind's arg specs, whether or not a plan uses that kind.
+
+    Swept eagerly for the reason check_reserved_closures is: the policy this gate
+    interprets must be one it can enforce, and that is settled before a step is
+    read. A lazy check reaches only the kinds a plan happens to carry, so a
+    malformed write-class spec — the ones deciding where `contents: write` points
+    — stays latent until some later plan exercises it.
+
+    Twin of ts/plan/policy.ts's loader, which validates the whole plan section up
+    front. The two compile patterns with their OWN engines deliberately: each gate
+    must refuse what it cannot enforce, and the two regex dialects disagree in
+    both directions.
+    """
+    for kind, spec in policy_plan["step_kinds"].items():
+        args = spec.get("args")
+        if not isinstance(args, dict):
+            raise Rejection(f"policy error: plan.step_kinds.{kind}.args is not an object")
+        for name, arg_spec in args.items():
+            where = f"plan.step_kinds.{kind}.args.{name}"
+            if not isinstance(arg_spec, dict):
+                raise Rejection(f"policy error: scalar spec at {where} is not an object")
+            if arg_spec.get("type") not in ("string", "integer", "enum"):
+                raise Rejection(
+                    f"policy error: unknown scalar type {arg_spec.get('type')!r} at {where}"
+                )
+            if extra := set(arg_spec) - SCALAR_KEYS[arg_spec["type"]]:
+                raise Rejection(
+                    f"policy error: scalar spec at {where} carries keys no reader consults "
+                    f"{sorted(extra)} (allowed for {arg_spec['type']}: "
+                    f"{sorted(SCALAR_KEYS[arg_spec['type']])})"
+                )
+            check_scalar_spec(arg_spec, where)
+
+
 def check_plan_schema(candidate, policy_plan: dict) -> None:
     """Raise Rejection on the first structural violation; return None if the
     plan is well-shaped. Shape only: containment (ADR-0005) and markdown are
@@ -111,6 +148,7 @@ def check_plan_schema(candidate, policy_plan: dict) -> None:
     # that is decided before any step is read: a policy fault reported as a bad
     # plan sends a reader to the generator.
     check_reserved_closures(policy_plan)
+    check_plan_arg_specs(policy_plan)
     if not isinstance(candidate, dict):
         raise Rejection("plan: expected a JSON object")
 

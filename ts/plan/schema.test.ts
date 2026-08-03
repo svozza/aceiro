@@ -515,4 +515,47 @@ describe('the policy itself is validated', () => {
       { name: 'PolicyError', message: /not a valid regex/ },
     );
   });
+
+  it('rejects a pattern only the ENFORCER would refuse', () => {
+    // The loader compiled the pattern plainly while checkScalar compiles it
+    // anchored and with `u`, which is stricter: `a{,3}` and `\p{Foo}` both load
+    // under plain new RegExp and throw SyntaxError at enforcement time, so the
+    // gate raised out of the middle of a check instead of returning a verdict.
+    // Both also compile under Python's re, so the policy looked loadable
+    // everywhere it was tried.
+    for (const pattern of ['a{,3}', '\\p{Foo}']) {
+      assert.throws(
+        () =>
+          checkPlanPolicy({
+            ...POLICY,
+            step_kinds: {
+              patch: { write_class: false, args: { p: { type: 'string', max_length: 5, pattern } } },
+            },
+            ordering: [],
+          }),
+        { name: 'PolicyError', message: /not a valid regex/ },
+        `loader admitted ${pattern}, which checkScalar cannot compile`,
+      );
+    }
+  });
+
+  it('rejects a spec VALUE the enforcer cannot use', () => {
+    // A key with no reader is already refused; these are keys whose VALUE the
+    // reader cannot use. `{"type":"integer","minimum":"bogus"}` loaded, and
+    // `value < "bogus"` is `false` in JS, so a plan carrying line -9999 verified
+    // against a policy that reads as bounding it at 1. Python raises TypeError on
+    // the same comparison — one policy, two behaviours, neither a verdict.
+    for (const args of [
+      { n: { type: 'integer', minimum: 'bogus' } },
+      { s: { type: 'string', max_length: '5' } },
+      { t: { type: 'string', max_length: 5, min_length: true } },
+      { e: { type: 'enum', values: 'automated' } },
+    ]) {
+      assert.throws(
+        () => checkPlanPolicy({ ...POLICY, step_kinds: { patch: { write_class: false, args } }, ordering: [] }),
+        PolicyError,
+        `loader admitted ${JSON.stringify(args)}`,
+      );
+    }
+  });
 });

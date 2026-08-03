@@ -97,6 +97,44 @@ SCALAR_KEYS = {
 }
 
 
+def check_scalar_spec(spec: dict, where: str) -> None:
+    """Refuse a scalar spec this gate cannot enforce as written.
+
+    SCALAR_KEYS refuses a key with no reader; this refuses a VALUE the reader
+    cannot use. Both are policy faults rather than claims about an artifact, and
+    both must be decided before any value is checked: `{"minimum": "bogus"}`
+    reads as a floor, and `value < "bogus"` raises TypeError from the middle of a
+    check — a crash where the caller expects a verdict — while the TypeScript twin
+    evaluates it as `false` and admits a negative integer.
+
+    A pattern is compiled here, not merely inspected, because "valid regex" is
+    the compiler's judgement and it differs between the two gates: `\\p{L}` is a
+    PatternError to Python's re and legal to JS, and `a{,3}` is the reverse. Each
+    side must refuse what ITS enforcer cannot compile, or the loader admits a
+    policy that throws at enforcement time.
+    """
+    if isinstance(spec.get("pattern"), str):
+        try:
+            re.compile(spec["pattern"])
+        except re.error as exc:
+            raise Rejection(
+                f"policy error: scalar spec at {where} has a pattern this gate cannot "
+                f"compile ({exc}); it would raise rather than reject"
+            ) from exc
+    for key in ("min_length", "max_length", "minimum"):
+        # bool is an int in Python, and `minimum: true` is not a bound.
+        if key in spec and (not isinstance(spec[key], int) or isinstance(spec[key], bool)):
+            raise Rejection(
+                f"policy error: scalar spec at {where} declares {key}="
+                f"{spec[key]!r}, which is not an integer bound"
+            )
+    if spec["type"] == "enum" and not isinstance(spec.get("values"), list):
+        raise Rejection(
+            f"policy error: scalar spec at {where} declares values="
+            f"{spec.get('values')!r}, which is not a list"
+        )
+
+
 def check_scalar(value, spec: dict, where: str) -> None:
     if allowed := SCALAR_KEYS.get(spec["type"]):
         if extra := set(spec) - allowed:
@@ -141,8 +179,27 @@ def top_level_scalars(schema: dict) -> dict[str, dict]:
     return {name: spec for name, spec in schema.items() if spec.get("type") != "array"}
 
 
+def sweep_scalar_specs(schema: dict, where: str) -> None:
+    """Validate every scalar spec in an artifact_schema, before any value is read.
+
+    Eagerly, so a spec the enforcer cannot use is a load-time fault rather than
+    one that waits for an artifact to reach the field it is on. Recurses into the
+    findings array's item_fields, whose own specs no check_scalar call sees until
+    a finding carries them.
+    """
+    for name, spec in schema.items():
+        if not isinstance(spec, dict):
+            raise Rejection(f"policy error: scalar spec at {where}.{name} is not an object")
+        if spec.get("type") == "array":
+            sweep_scalar_specs(spec.get("item_fields") or {}, f"{where}.{name}.item_fields")
+            continue
+        check_scalar_spec(spec, f"{where}.{name}")
+
+
 def check_schema(artifact: dict, policy: dict) -> None:
     schema = policy["artifact_schema"]
+    # Before the artifact is looked at: a policy fault is not a claim about it.
+    sweep_scalar_specs(schema, "artifact_schema")
     if not isinstance(artifact, dict):
         raise Rejection("artifact: expected a JSON object")
     extra = set(artifact) - set(schema)
