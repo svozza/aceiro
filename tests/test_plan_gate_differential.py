@@ -139,8 +139,13 @@ def prover_rejection_reasons(plan, changed_files, tmp_path) -> set[str]:
         for line in result.stdout.splitlines()
         if line.split(":", 1)[0] and " VIOLATED" in line
     }
+    # Only the counterexample lines, which are indented under their policy. The
+    # verdict lines carry a policy NAME whether it held or not, so scanning the
+    # whole output made every case look rejected by `ordering` — the word appears
+    # in `ordering: holds`.
+    audit = "\n".join(line for line in result.stdout.splitlines() if line.startswith("  "))
     for key in PLAN_POLICY_KEYS:
-        if key in result.stdout:
+        if key in audit:
             reasons.add(key)
     return reasons
 
@@ -737,6 +742,46 @@ def test_each_rejecting_case_is_rejected_by_the_policy_it_names(case_id, tmp_pat
     assert expected in violated, (
         f"{case_id} was rejected by {sorted(violated) or 'nothing'}, not by {expected}; "
         "the case is no longer testing the check it was written for"
+    )
+
+
+# Cases whose rejection legitimately names more than the policy they are calibrated
+# for, with the reason. Everything else must be rejected by its named reason ALONE,
+# so a calibration change that makes a case reject for a DIFFERENT reason goes red
+# rather than staying green on somebody else's check.
+EXPECTED_EXTRA_REASONS = {
+    # `bounds` is the policy; the specific cap is the calibration. Both are named
+    # by design, one on the verdict line and one in the counterexample.
+    "astral-content-over-the-byte-budget": {"bounds"},
+    "long-single-line-rewrite-under-the-line-cap": {"bounds"},
+    "over-max-changed-lines-in-one-step": {"bounds"},
+    "over-max-patched-files": {"bounds"},
+    "per-step-bounds-met-plan-total-exceeded": {"bounds"},
+    # The case that exists BECAUSE both caps fire; see its comment in CASES.
+    "over-both-the-line-and-byte-caps": {"bounds", "max_changed_bytes"},
+    # write_targets is the policy, the allowlist key the calibration.
+    "branch-outside-the-harness-namespace": {"branch_prefix"},
+    "label-off-the-shipped-empty-allowlist": {"label_allowlist"},
+    # The denylist is asserted inside the frame policy (one intern table).
+    "denylisted-path-that-is-a-changed-file": {"frame"},
+    "denylisted-pem-that-is-a-changed-file": {"frame"},
+}
+
+
+@pytest.mark.parametrize("case_id", sorted(REJECTION_POLICY))
+def test_no_case_rejects_for_a_reason_it_was_not_written_for(case_id, tmp_path):
+    """A case must not drift onto somebody else's check.
+
+    `expected in violated` alone would stay green if a calibration change made the
+    case reject for an additional, unrelated reason -- which is how a case stops
+    testing what its name says while the corpus reports success.
+    """
+    plan, changed_files = _cases_by_id()[case_id]
+    violated = prover_rejection_reasons(plan, changed_files, tmp_path)
+    allowed = {REJECTION_POLICY[case_id]} | EXPECTED_EXTRA_REASONS.get(case_id, set())
+    assert violated <= allowed, (
+        f"{case_id} is also rejected by {sorted(violated - allowed)}; it is no longer "
+        "isolating the check it was written for"
     )
 
 
