@@ -409,7 +409,16 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
 
     `verify_fn` is passed in addition to being closed over by `make_tool`
     because this loop is what decides where a session begins, and a stateful
-    verifier (the eval harness's fault injector) has to be told."""
+    verifier (the eval harness's fault injector) has to be told.
+
+    The quarantine assertion lives here, not in the callers: this is the function
+    that grants `pr_root` to a session, so every channel inherits the refusal
+    rather than each caller remembering to make it."""
+    try:
+        assert_no_symlinks(pr_root, transcript)
+    except Rejection as exc:
+        return fail(transcript, str(exc))
+
     # The submission breaker is scoped to the RUN, not to a session: its budget
     # and its abort verdict are properties of the one artifact being produced,
     # so an api_error retry inherits them rather than being forgiven them.
@@ -619,12 +628,6 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         policy_sha256=sha256(policy_text),
         max_rounds=MAX_SUBMISSIONS,
     )
-
-    # Before the model is granted the quarantine directory.
-    try:
-        assert_no_symlinks(pr_root, transcript)
-    except Rejection as exc:
-        return fail(transcript, str(exc))
 
     # Context assembly reads four contributor-adjacent files. A failure here used
     # to raise past the open transcript, leaving an uploaded artifact with no

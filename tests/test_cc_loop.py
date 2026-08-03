@@ -8,6 +8,7 @@ in production it runs in this process either way.
 """
 
 import json
+import shutil
 from pathlib import Path
 
 import anyio
@@ -770,6 +771,54 @@ class TestQuarantineContainment:
         ]
         rejected = [e for e in events if e["event"] == "quarantine_rejected"]
         assert rejected and rejected[0]["paths"] == ["docs/NOTES.md"]
+
+    # The helper tests above pass with the CALL removed, so they pin the check and
+    # not the containment. These drive the real loops: the assertion has to run
+    # BEFORE the model is granted the directory, so the load-bearing observation
+    # is that query() was never invoked -- a guard that refused afterwards would
+    # satisfy a return-code-only test while the bytes had already been read.
+
+    def plant_link(self, pr_root, tmp_path):
+        outside = tmp_path / "credentials"
+        outside.write_text("[default]\naws_secret_access_key=REALSECRET\n")
+        (pr_root / "docs").mkdir(parents=True, exist_ok=True)
+        (pr_root / "docs" / "NOTES.md").symlink_to(outside)
+
+    def assert_refused_before_the_model_ran(self, run_result, query, out):
+        assert run_result == 1
+        assert query.calls == [], "the generator was handed a quarantine containing a symlink"
+        events = [
+            json.loads(line)
+            for line in (out / "transcript.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        assert any(e["event"] == "quarantine_rejected" for e in events)
+
+    def test_the_review_lane_refuses_before_the_session_starts(self, tmp_path, monkeypatch):
+        pr_root = tmp_path / "pr_root"
+        shutil.copytree(SCENARIO / "pr_root", pr_root)
+        self.plant_link(pr_root, tmp_path)
+        query = fake_query([[result_message()]])
+        monkeypatch.setattr(cc_loop, "query", query)
+        out = tmp_path / "out"
+        self.assert_refused_before_the_model_ran(
+            cc_loop.run(REPO_ROOT, pr_root, SCENARIO / "context", out), query, out
+        )
+
+    def test_the_plan_lane_refuses_before_the_session_starts(self, tmp_path, monkeypatch):
+        # 551b9bb calls the containment two independent layers. The in-process
+        # layer was wired into one lane, so the plan generator had one.
+        import plan_loop
+        from test_plan_loop import TestRunWiring
+
+        context, pr_root = TestRunWiring().scenario(tmp_path)
+        self.plant_link(pr_root, tmp_path)
+        query = fake_query([[result_message()]])
+        monkeypatch.setattr(cc_loop, "query", query)
+        out = tmp_path / "out"
+        self.assert_refused_before_the_model_ran(
+            plan_loop.run(REPO_ROOT, pr_root, context, out), query, out
+        )
 
 
 class TestOptions:
