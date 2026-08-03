@@ -57,20 +57,38 @@ def fetch_pr(repo: str, pr_number: int) -> dict:
     return api_json(f"/repos/{repo}/pulls/{pr_number}")
 
 
-DIFF_GIT_RE = re.compile(r'^diff --git (?:"a/.*"|a/.*) (?:"(b/.*)"|(b/.*))$')
+# Only the QUOTED form is read from `diff --git`. Unquoted, the line is
+# genuinely ambiguous: git does not quote a path merely for containing a space, so
+# `diff --git a/x b/z.png b/x b/z.png` has no parse — every split point is a
+# candidate, and a greedy `a/.*` picks the wrong one, yielding `z.png` for a file
+# named `x b/z.png`.
+DIFF_GIT_QUOTED_RE = re.compile(r'^diff --git "a/.*" "(b/.*)"$')
+
+# A binary file has no ---/+++ pair, so this line is where its path is named.
+# Anchored on ` and b/` rather than split on ` and `, which a filename containing
+# that substring would defeat; the trailing ` differ` is stripped by the pattern.
+BINARY_FILES_RE = re.compile(r'^Binary files (?:"?a/.*?"?) and (?:"(b/.*)"|(b/.*)) differ$')
 
 
 def diff_mentioned_paths(text: str) -> set[str]:
     """Every path the diff names at all, whether or not it has hunks.
 
-    The `diff --git` header is the only place a deletion (`+++ /dev/null`) or a
-    binary file (no ---/+++ pair at all) is named. Over-approximates on purpose:
-    it feeds an allow-set, so counting loosely costs a missed check at worst.
+    Over-approximates on purpose: it feeds an allow-set, so counting loosely costs
+    a missed check at worst.
+
+    Read from the ---/+++ headers and the `Binary files` line, each of which names
+    one path per line. The `diff --git` header names two on one line with a space
+    between them and no quoting when the path itself contains a space, so it is
+    read only in its quoted form — a path with a space in it is exactly the case
+    where trusting it fails a legitimate pull request.
     """
     mentioned: set[str] = set()
     for line in split_diff_lines(text):
-        if match := DIFF_GIT_RE.match(line):
-            target = unquote_path(f'"{match.group(1)}"' if match.group(1) else match.group(2) or "")
+        if match := DIFF_GIT_QUOTED_RE.match(line):
+            mentioned.add(unquote_path(f'"{match.group(1)}"').removeprefix("b/"))
+        elif match := BINARY_FILES_RE.match(line):
+            quoted, bare = match.group(1), match.group(2)
+            target = unquote_path(f'"{quoted}"') if quoted else bare or ""
             mentioned.add(target.removeprefix("b/"))
         elif line.startswith("+++ ") or line.startswith("--- "):
             target = unquote_path(line[4:].split("\t")[0])

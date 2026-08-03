@@ -240,6 +240,35 @@ class TestChangedFilesAreAnchoredToTheEventBase:
         prepare_context.main()
         assert json.loads((env / "changed_files.json").read_text()) == ["x.py", "img.png"]
 
+    def test_a_binary_file_in_a_directory_with_a_space_does_not_trip_the_assertion(self, env, stubs):
+        # Reproduced against real git: a directory named `x b/` makes the header
+        # `diff --git a/x b/z.png b/x b/z.png`, which cannot be split on a space
+        # at all — git does not quote a path merely for containing one. A binary
+        # file has no ---/+++ pair either, so the header was the only mention, and
+        # the run ABORTED on a legitimate PR: "changed-file list names
+        # ['x b/z.png'] which the anchored diff never mentions".
+        stubs["diff"] = (
+            diff_for("x.py")
+            + b"diff --git a/x b/z.png b/x b/z.png\n"
+            + b"Binary files a/x b/z.png and b/x b/z.png differ\n"
+        )
+        stubs["compare_pages"] = [{"files": [{"filename": "x.py"}, {"filename": "x b/z.png"}]}]
+        prepare_context.main()
+        assert json.loads((env / "changed_files.json").read_text()) == ["x.py", "x b/z.png"]
+
+    def test_a_text_file_in_a_directory_with_a_space_does_not_trip_the_assertion(self, env, stubs):
+        # The same path shape with hunks, where the +++ header names it
+        # unambiguously and must be what decides.
+        stubs["diff"] = (
+            b"diff --git a/x b/z.py b/x b/z.py\n"
+            b"--- a/x b/z.py\n"
+            b"+++ b/x b/z.py\n"
+            b"@@ -1,1 +1,1 @@\n+one\n"
+        )
+        stubs["compare_pages"] = [{"files": [{"filename": "x b/z.py"}]}]
+        prepare_context.main()
+        assert json.loads((env / "changed_files.json").read_text()) == ["x b/z.py"]
+
 
 class TestTheHeadTreeIsBounded:
     """The diff caps cannot bound the checkout. A binary addition produces a
