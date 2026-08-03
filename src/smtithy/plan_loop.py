@@ -170,6 +170,18 @@ def check_commanded_finding(finding, policy: dict) -> None:
     exact field set — rather than a second set of bounds that could drift from it.
     Fenced as well, since it quotes contributor code either way; the fence stops
     the text impersonating the harness, and this stops it being unbounded.
+
+    SHAPE, not membership. A well-shaped finding that no accepted artifact
+    contains passes this, which both review engines raised independently. It is
+    left as shape deliberately: nothing here can establish membership, because the
+    accepted artifact is another job's output and re-reading it from the same
+    bundle would compare the input against a copy an attacker who could forge one
+    could forge too. The property that would carry it is a signature over the
+    accepted artifact, which the harness has no key for.
+    What bounds it today is who writes the directory: the remediation lane has no
+    workflow, so no contributor-reachable path composes context_dir. Wiring one
+    without binding the commanded finding to an accepted artifact would make this a
+    live gap rather than a latent one.
     """
     item_fields = policy["artifact_schema"]["findings"]["item_fields"]
     if not isinstance(finding, dict):
