@@ -293,6 +293,32 @@ class TestTheHeadTreeIsBounded:
     def test_a_normal_tree_passes(self):
         prepare_context.assert_head_tree_within_caps(self.tree(1000, 2000, 3000))
 
+    def test_a_blob_with_no_size_is_refused_by_path(self):
+        # Both arithmetic sites coerced an absent size to zero, so an entry with no
+        # `size` passed the per-blob and the aggregate cap alike, and the
+        # `git fetch --depth 1` that follows has no bound of its own. Cheap
+        # hardening rather than a measured bypass: neither review engine could
+        # produce a real tree response with a blob entry missing `size`, which is
+        # why the refusal names the path -- so a first sighting is diagnosable.
+        listing = {"truncated": False, "tree": [{"path": "opaque.bin", "type": "blob"}]}
+        with pytest.raises(SystemExit):
+            prepare_context.assert_head_tree_within_caps(listing)
+
+    def test_a_blob_whose_size_is_not_an_integer_is_refused(self):
+        listing = {"truncated": False, "tree": [{"path": "odd.bin", "type": "blob", "size": "1024"}]}
+        with pytest.raises(SystemExit):
+            prepare_context.assert_head_tree_within_caps(listing)
+
+    def test_a_non_blob_entry_needs_no_size(self):
+        # Trees and submodules legitimately carry none, and refusing them would
+        # abort every repository with a subdirectory.
+        listing = {"truncated": False, "tree": [
+            {"path": "src", "type": "tree"},
+            {"path": "vendor/lib", "type": "commit"},
+            {"path": "a.py", "type": "blob", "size": 10},
+        ]}
+        prepare_context.assert_head_tree_within_caps(listing)
+
     def test_an_oversized_aggregate_aborts(self, capsys):
         over = prepare_context.MAX_TREE_BYTES // 2 + 1
         with pytest.raises(SystemExit):

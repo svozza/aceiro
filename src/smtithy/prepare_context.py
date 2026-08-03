@@ -147,12 +147,24 @@ def assert_head_tree_within_caps(listing: dict) -> None:
         )
     blobs = [entry for entry in listing.get("tree", []) if entry.get("type") == "blob"]
     for entry in blobs:
-        if (size := entry.get("size") or 0) > MAX_BLOB_BYTES:
+        # Refused rather than coerced to zero, the way `truncated` is refused: an
+        # unsized blob cannot be bounded, and both arithmetic sites below would
+        # have read it as free. Blobs only — a tree or submodule entry carries no
+        # size and refusing those would abort every repository with a
+        # subdirectory. Names the path, because no real listing is known to omit a
+        # blob size and a first sighting should be diagnosable.
+        size = entry.get("size")
+        if not isinstance(size, int) or isinstance(size, bool):
+            fail(
+                f"head tree entry {entry.get('path')!r} is a blob whose size is {size!r}, "
+                "so the tree cannot be bounded; no review"
+            )
+        if size > MAX_BLOB_BYTES:
             fail(
                 f"head tree contains {entry['path']} at {size} bytes (per-file cap "
                 f"{MAX_BLOB_BYTES}); no review"
             )
-    total = sum(entry.get("size") or 0 for entry in blobs)
+    total = sum(entry["size"] for entry in blobs)
     if total > MAX_TREE_BYTES:
         fail(
             f"head tree is {total} bytes across {len(blobs)} files (cap {MAX_TREE_BYTES}); "
