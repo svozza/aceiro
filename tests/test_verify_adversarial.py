@@ -11,6 +11,7 @@ import unicodedata
 import pytest
 
 from conftest import DELETED_FILE_DIFF
+import verify as verify_module
 from verify import Rejection, verify
 
 
@@ -173,6 +174,26 @@ class TestEveryTopLevelSpecIsEnforced:
         extended["artifact_schema"]["findings"]["item_fields"]["line"]["minimum"] = "bogus"
         with pytest.raises(Rejection, match="policy error.*minimum"):
             verify(artifact, sample_diff, changed_files, extended)
+
+    def test_an_unknown_findings_array_key_is_a_policy_error(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # The scalar rule one level out: `min_items` reads as a floor on the
+        # findings array and no reader consults it, so a zero-finding artifact was
+        # admitted against a policy that appears to require one.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["findings"]["min_items"] = 1
+        artifact["findings"] = []
+        with pytest.raises(Rejection, match="policy error.*min_items"):
+            verify(artifact, sample_diff, changed_files, extended)
+
+    def test_the_supported_findings_array_keys_still_load(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # The complement: the shipped spelling must keep working, or the rule has
+        # cost the policy its expressiveness.
+        assert set(policy["artifact_schema"]["findings"]) <= verify_module.ARRAY_KEYS
+        verify(artifact, sample_diff, changed_files, policy)
 
     def test_a_second_array_field_is_not_left_wholly_unchecked(
         self, artifact, sample_diff, changed_files, policy

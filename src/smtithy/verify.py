@@ -96,6 +96,12 @@ SCALAR_KEYS = {
     "enum": frozenset({"type", "values"}),
 }
 
+# The findings array's own keys, being exactly the ones check_schema reads for it.
+# The same rule as SCALAR_KEYS and for the same reason: `min_items` reads as a
+# floor on the array and no reader consults it, so a policy appearing to require a
+# finding admitted an artifact with none.
+ARRAY_KEYS = frozenset({"type", "max_items", "item_fields"})
+
 
 def check_scalar_spec(spec: dict, where: str) -> None:
     """Refuse a scalar spec this gate cannot enforce as written.
@@ -190,12 +196,19 @@ def sweep_scalar_specs(schema: dict, where: str) -> None:
     Eagerly, so a spec the enforcer cannot use is a load-time fault rather than
     one that waits for an artifact to reach the field it is on. Recurses into the
     findings array's item_fields, whose own specs no check_scalar call sees until
-    a finding carries them.
+    a finding carries them, and checks the array spec's OWN keys against
+    ARRAY_KEYS on the way past — check_scalar never sees an array spec, so that
+    rule has nowhere else to live.
     """
     for name, spec in schema.items():
         if not isinstance(spec, dict):
             raise Rejection(f"policy error: scalar spec at {where}.{name} is not an object")
         if spec.get("type") == "array":
+            if extra := sorted(set(spec) - ARRAY_KEYS):
+                raise Rejection(
+                    f"policy error: array spec at {where}.{name} carries keys no reader consults "
+                    f"{extra} (allowed: {sorted(ARRAY_KEYS)})"
+                )
             sweep_scalar_specs(spec.get("item_fields") or {}, f"{where}.{name}.item_fields")
             continue
         check_scalar_spec(spec, f"{where}.{name}")
