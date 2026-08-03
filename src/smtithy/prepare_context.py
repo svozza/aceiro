@@ -203,8 +203,19 @@ def fetch_anchored_pair(repo: str, base_sha: str, head_sha: str) -> tuple[bytes,
     # object's count: the two are computed against different bases, so the count
     # can read under the cap while this enumerates more. The byte ceiling is the
     # dimension the count cannot express at all.
-    if len(changed_files) > MAX_CHANGED_FILES:
-        fail(f"compare lists {len(changed_files)} files (cap {MAX_CHANGED_FILES}); no review")
+    # >=, not >: the endpoint returns at most 300 files per page and this reads one
+    # page, so a list of exactly MAX_CHANGED_FILES is indistinguishable from a
+    # truncated one. assert_diff_and_list_agree cannot tell either — omitted files
+    # are absent from the list AND from the diff, so both its directions hold while
+    # the frame condition is quantified over a SUBSET of what the PR changed.
+    # main() also refuses on the PR object's own count, but that count is computed
+    # against a different base, and post.py and execute_plan.py call this directly.
+    if len(changed_files) >= MAX_CHANGED_FILES:
+        fail(
+            f"compare lists {len(changed_files)} files, at or over the {MAX_CHANGED_FILES}-file "
+            "page limit, so the list may be truncated and cannot be shown to name every "
+            "changed file; no review"
+        )
     list_bytes = len(json.dumps(changed_files).encode())
     if list_bytes > MAX_CHANGED_FILES_BYTES:
         fail(

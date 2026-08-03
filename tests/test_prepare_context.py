@@ -131,7 +131,9 @@ class TestTheCollectedListIsBoundedItself:
         return [f"{'a' * segment}/{'b' * segment}/f{i}.py" for i in range(count)]
 
     def test_a_list_over_the_byte_ceiling_aborts(self, env, stubs):
-        paths = self.long_paths(300)
+        # 299, not 300: at the page limit the count refusal fires first, and this
+        # case exists to prove the BYTE ceiling binds independently of the count.
+        paths = self.long_paths(299)
         stubs["diff"] = diff_for(*paths)
         stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
         with pytest.raises(SystemExit):
@@ -139,7 +141,7 @@ class TestTheCollectedListIsBoundedItself:
         assert not (env / "changed_files.json").exists()
 
     def test_the_refusal_names_the_ceiling(self, env, stubs, capsys):
-        paths = self.long_paths(300)
+        paths = self.long_paths(299)
         stubs["diff"] = diff_for(*paths)
         stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
         with pytest.raises(SystemExit):
@@ -148,14 +150,39 @@ class TestTheCollectedListIsBoundedItself:
             prepare_context.MAX_CHANGED_FILES_BYTES
         ) in capsys.readouterr().err
 
+    def test_a_list_at_exactly_the_cap_is_refused_as_possibly_truncated(self, env, stubs):
+        # The compare endpoint returns at most 300 files per PAGE and this reads one
+        # page, so a list of exactly MAX_CHANGED_FILES is indistinguishable from a
+        # truncated one. `>` let it through, and the agreement assertion cannot
+        # notice: the omitted files are in neither the list nor the diff, so both
+        # directions hold and the frame condition is quantified over a SUBSET of
+        # what the PR changed.
+        #
+        # main() is guarded by the PR object's own count, but post.py and
+        # execute_plan.py call fetch_anchored_pair directly with no such check, and
+        # the two counts are computed against different bases anyway.
+        paths = [f"src/f{i}.py" for i in range(300)]
+        stubs["diff"] = diff_for(*paths)
+        stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
+        with pytest.raises(SystemExit):
+            prepare_context.fetch_anchored_pair("o/r", "event-base-sha", "head-sha")
+
+    def test_a_list_below_the_cap_is_accepted(self, env, stubs):
+        # The bound is "fewer than the page size", so one under must pass.
+        paths = [f"src/f{i}.py" for i in range(299)]
+        stubs["diff"] = diff_for(*paths)
+        stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
+        _diff, changed = prepare_context.fetch_anchored_pair("o/r", "event-base-sha", "head-sha")
+        assert len(changed) == 299
+
     def test_an_ordinary_list_passes(self, env, stubs):
-        # Calibration: 300 files of ordinary path length is under the ceiling, so
-        # the byte bound must not become a second, tighter file-count cap.
-        paths = [f"src/module_{i}/file.py" for i in range(300)]
+        # Calibration: a full page less one of ordinary path length is under the
+        # ceiling, so the byte bound must not become a second, tighter count cap.
+        paths = [f"src/module_{i}/file.py" for i in range(299)]
         stubs["diff"] = diff_for(*paths)
         stubs["compare_pages"] = [{"files": [{"filename": p} for p in paths]}]
         prepare_context.main()
-        assert len(json.loads((env / "changed_files.json").read_text())) == 300
+        assert len(json.loads((env / "changed_files.json").read_text())) == 299
 
 
 class TestChangedFilesAreAnchoredToTheEventBase:
