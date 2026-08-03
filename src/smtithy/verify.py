@@ -167,16 +167,21 @@ def check_scalar(value, spec: dict, where: str) -> None:
 
 
 def top_level_scalars(schema: dict) -> dict[str, dict]:
-    """The artifact's top-level scalar specs: everything that is not the
-    findings array.
+    """The artifact's top-level scalar specs: everything except `findings`.
 
     One definition, used by the schema gate, the markdown walk and the secret
     scan, so a field the policy adds cannot be enforced by some of them and not
-    others. Selected by NOT being the array rather than by naming the scalar
-    types, so an unrecognised `type` reaches check_scalar's policy-error path
-    instead of being silently skipped.
+    others.
+
+    Selected by name rather than by type, because `findings` is the one array
+    check_schema actually loops over. Excluding every array instead would put a
+    second array field in no reader at all — neither here nor in that loop — so
+    its max_items and item_fields would be read by nothing. Naming the exception
+    means a new array field lands in check_scalar and is refused as an
+    unsupported type until a reader for it exists, which is the fail-closed
+    direction.
     """
-    return {name: spec for name, spec in schema.items() if spec.get("type") != "array"}
+    return {name: spec for name, spec in schema.items() if name != "findings"}
 
 
 def sweep_scalar_specs(schema: dict, where: str) -> None:

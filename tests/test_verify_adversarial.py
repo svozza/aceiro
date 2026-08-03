@@ -174,6 +174,22 @@ class TestEveryTopLevelSpecIsEnforced:
         with pytest.raises(Rejection, match="policy error.*minimum"):
             verify(artifact, sample_diff, changed_files, extended)
 
+    def test_a_second_array_field_is_not_left_wholly_unchecked(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # top_level_scalars selects by NOT being an array, and check_schema loops
+        # over `findings` by name — so a second array field is in neither set.
+        # 322b779's "all three readers or none" held for scalars only: 50 items
+        # against max_items 1, each body far over max_length, all admitted.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["warnings"] = {
+            "type": "array", "max_items": 1,
+            "item_fields": {"body": {"type": "string", "max_length": 10}},
+        }
+        artifact["warnings"] = [{"body": "x" * 500}] * 50
+        with pytest.raises(Rejection):
+            verify(artifact, sample_diff, changed_files, extended)
+
     def test_a_bad_spec_is_refused_even_where_no_artifact_value_reaches_it(
         self, artifact, sample_diff, changed_files, policy
     ):
