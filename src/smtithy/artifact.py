@@ -194,26 +194,32 @@ def redact_text(text: str, policy: dict) -> str:
     stderr blob — falls back to the bare pattern sweep. Line structure is
     preserved; the caller writes the result straight to a .jsonl file.
     """
-    def redact_line(line: str) -> str:
+    def redact_record(line: str) -> str:
         if not line.strip():
             return line
         try:
             parsed = json.loads(line)
         except (json.JSONDecodeError, ValueError):
-            return _redact_patterns(line, policy)
+            return redact_line(line, policy)
         # A JSON scalar (a bare string line) round-trips through redact_secrets
         # too, so no shape needs special-casing here.
         safe = redact_secrets(parsed, policy)
         return json.dumps(safe, ensure_ascii=False)
 
-    return "\n".join(redact_line(line) for line in text.split("\n"))
+    return "\n".join(redact_record(line) for line in text.split("\n"))
 
 
-def _redact_patterns(text: str, policy: dict) -> str:
-    """The bare pattern sweep, for text with no structure to exploit.
+def redact_line(text: str, policy: dict) -> str:
+    """The bare pattern sweep, for one line of text with no structure to exploit.
 
     Withholds the line when only the invisible-stripped form matches, for
     redact_secrets' reason: the match has no span in these bytes to replace.
+
+    Also what a Rejection message goes through before it reaches a job log. A
+    Rejection interpolates the value it refused, so the message is prose carrying
+    attacker-supplied text, and the log has its own retention and audience.
+    Callers holding the policy do this; github_api.fail cannot, having no policy
+    in scope, and Rejection cannot, being raised from checks that take none.
     """
     patterns = policy["secret_scan_patterns"]
     for pattern in patterns:
@@ -331,6 +337,17 @@ class Transcript:
         record = {"ts": time.time(), "event": event, **safe}
         self._fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         self._fh.flush()
+
+    def redact(self, text: str) -> str:
+        """One line of text through this transcript's policy, for a caller that
+        is about to emit it somewhere unredacted.
+
+        Here rather than at the caller because the policy a message is redacted
+        against must be the one the record beside it was redacted against: the
+        job log and the transcript describe the same failure, and two policies
+        would make them describe it differently.
+        """
+        return redact_line(text, self._policy)
 
     def close(self) -> None:
         self._fh.close()

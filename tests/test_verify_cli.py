@@ -72,6 +72,21 @@ def test_offsite_link_exits_one(run_main, valid_artifact):
     assert run_main(valid_artifact) == 1
 
 
+def test_a_rejection_naming_a_credential_does_not_print_it(run_main, valid_artifact, capsys):
+    # A Rejection interpolates the offending VALUE, and this print is the third
+    # emit path: the transcript is redacted (263f187) and the stream capture is
+    # redacted (16510bc), so the job log was the one place the value survived —
+    # with its own retention and its own audience.
+    valid_artifact["summary"] = "see [d](http://logs.evil/?k=AKIAIOSFODNN7EXAMPLE)"
+    assert run_main(valid_artifact) == 1
+    err = capsys.readouterr().err
+    assert "REJECTED" in err
+    assert "AKIAIOSFODNN7EXAMPLE" not in err
+    # Still legible as a rejection about a link, or the redaction has cost the
+    # reader the reason.
+    assert "logs.evil" in err and "[REDACTED]" in err
+
+
 def test_malformed_artifact_json_exits_two(tmp_path, monkeypatch, capsys):
     argv = write_inputs(tmp_path, {"summary": "x", "findings": [], "residual_risk": ""})
     (tmp_path / "review.json").write_text("{not valid json")

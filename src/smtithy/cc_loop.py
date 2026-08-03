@@ -392,9 +392,13 @@ def fail(transcript: Transcript, reason: str, **fields) -> int:
     The echo is why this exists: the transcript lands in an uploaded artifact, so
     without it a failed run leaves an EMPTY job log and the reason is only
     visible to someone who thinks to download the artifact.
+
+    The reason is a Rejection message on several paths, and a Rejection
+    interpolates the value it refused, so the echo goes through the transcript's
+    own policy — a job log has its own retention and audience.
     """
     transcript.log("run_failed", reason=reason, **fields)
-    print(f"::error::ai-review generator failed: {reason}", file=sys.stderr)
+    print(f"::error::ai-review generator failed: {transcript.redact(reason)}", file=sys.stderr)
     transcript.close()
     return 1
 

@@ -52,6 +52,7 @@ import subprocess
 from pathlib import Path
 from typing import NamedTuple, cast
 
+from artifact import redact_line
 from github_api import api_json, fail, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from plan_loop import check_commanded_finding
@@ -254,7 +255,8 @@ def main() -> None:
     try:
         check_commanded_finding(commanded_finding, policy)
     except Rejection as exc:
-        fail(f"the bundle's commanded finding is not a review artifact's finding: {exc}")
+        fail("the bundle's commanded finding is not a review artifact's finding: "
+             f"{redact_line(str(exc), policy)}")
 
     # The provenance inputs are re-fetched, not read from the bundle. The plan
     # must come from the plan job — it IS that job's output — but the diff and
@@ -280,7 +282,11 @@ def main() -> None:
             head_branch=reviewed_head_ref, commanded_finding=commanded_finding,
         )
     except Rejection as exc:
-        fail(f"plan rejected, nothing executed: {exc}")
+        # Redacted at the caller, which is where the policy is: a Rejection
+        # interpolates the value it refused, github_api.fail is policy-free by
+        # design, and this print is the emit path the transcript redaction never
+        # covered.
+        fail(f"plan rejected, nothing executed: {redact_line(str(exc), policy)}")
 
     # And re-proved: the ordering/frame/taint policies live in the TypeScript
     # prover (ADR-0003), reached as a subprocess. Fail-closed either way. The head

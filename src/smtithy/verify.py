@@ -32,6 +32,11 @@ from markdown_it import MarkdownIt
 from canonicalize import is_invisible, read_contributor_text, read_harness_text, strip_invisible
 from diff_map import walk_diff
 
+# Imported inside main() rather than at module scope: redaction lives in
+# artifact.py (263f187, centrally so a new field cannot reintroduce a leak), and
+# only this module's CLI driver needs it — the checks themselves must not depend
+# on the generator-facing contract module.
+
 # Over-approximates GitHub's mention grammar (no trailing boundary check:
 # rejecting a near-mention is safe, missing a real one is not).
 MENTION_RE = re.compile(r"(?<![\w/])@[a-zA-Z0-9][a-zA-Z0-9-]{0,38}")
@@ -685,6 +690,8 @@ def verify(artifact: dict, diff_text: str, changed_files: list[str], policy: dic
 
 
 def main() -> int:
+    from artifact import redact_line
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--artifact", required=True, type=Path)
     parser.add_argument("--diff", required=True, type=Path)
@@ -704,7 +711,11 @@ def main() -> int:
     try:
         verify(artifact, diff_text, changed_files, policy)
     except Rejection as exc:
-        print(f"REJECTED: {exc}", file=sys.stderr)
+        # Redacted, because the message interpolates the value it refused and
+        # this print is the emit path with no scrubbing of its own: the
+        # transcript and the stream capture both have one, and a job log has its
+        # own retention and audience.
+        print(f"REJECTED: {redact_line(str(exc), policy)}", file=sys.stderr)
         return 1
 
     print("verified")

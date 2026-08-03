@@ -47,6 +47,7 @@ import re
 from pathlib import Path
 from typing import cast
 
+from artifact import redact_line
 from github_api import api_json, fail, graphql, paginate, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from prepare_context import fetch_anchored_pair
@@ -382,7 +383,12 @@ def main() -> None:
     try:
         verify(artifact, diff_text, changed_files, policy)
     except Rejection as exc:
-        fail(f"artifact rejected, nothing posted: {exc}")
+        # Redacted here rather than in github_api.fail: that module imports only
+        # stdlib and is shared with prepare_context, so it has no policy in scope,
+        # and a Rejection cannot redact itself either — it is raised from checks
+        # that take no policy argument. The caller holding the policy is the one
+        # place both facts are available.
+        fail(f"artifact rejected, nothing posted: {redact_line(str(exc), policy)}")
 
     # TOCTOU guard, first half: the PR must still point at the reviewed head
     # and base before we render anything.

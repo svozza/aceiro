@@ -736,6 +736,27 @@ class TestCapturedStreamIsRedacted:
         assert tool_requests[0]["input"] == {"pattern": "popitem"}
 
 
+class TestFailEchoIsRedacted:
+    """fail() writes the same reason twice: a transcript record, which redaction
+    covers, and a ::error:: line to the job log, which had none. Several of its
+    reasons are Rejection messages, and a Rejection interpolates the value it
+    refused."""
+
+    def test_the_job_log_line_does_not_carry_the_value(self, tmp_path, capsys):
+        transcript = cc_loop.Transcript(tmp_path / "t.jsonl", POLICY)
+        cc_loop.fail(transcript, f"cannot assemble the review context: key {FAKE_KEY} leaked")
+
+        err = capsys.readouterr().err
+        assert "cannot assemble the review context" in err
+        assert FAKE_KEY not in err
+        assert "[REDACTED]" in err
+
+    def test_the_transcript_record_is_redacted_too(self, tmp_path):
+        transcript = cc_loop.Transcript(tmp_path / "t.jsonl", POLICY)
+        cc_loop.fail(transcript, f"key {FAKE_KEY} leaked")
+        assert FAKE_KEY not in (tmp_path / "t.jsonl").read_text()
+
+
 class TestRedactText:
     def test_redacts_a_key(self):
         assert FAKE_KEY not in redact_text(f"key {FAKE_KEY} here", POLICY)
