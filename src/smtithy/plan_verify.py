@@ -61,6 +61,25 @@ ID_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 PLAN_KEYS = frozenset({"steps"})
 STEP_KEYS = frozenset({"id", "kind", "args"})
 
+# Every key of the policy's `plan` section, being exactly the ones this gate
+# reads. Twin of ts/plan/policy.ts's PLAN_KEYS, whose loader refuses a policy
+# carrying anything outside it — this gate read its keys ad hoc, so an unknown key
+# was silently ignored here and rejected there: one policy meaning two things.
+PLAN_POLICY_KEYS = frozenset({
+    "max_steps",
+    "control_flow",
+    "argument_forms",
+    "step_kinds",
+    "ordering",
+    "max_patched_files",
+    "max_changed_lines",
+    "max_changed_bytes",
+    "max_plan_changed_bytes",
+    "path_denylist",
+    "branch_prefix",
+    "label_allowlist",
+})
+
 # JSON permits \ud800 and both parsers accept it, so a plan can carry a string
 # that is not encodable text: every later phase encodes it (containment for the
 # anchor, the transcript for the audit record) and raises UnicodeEncodeError,
@@ -102,6 +121,29 @@ def check_reserved_closures(policy_plan: dict) -> None:
             f"policy error: plan.argument_forms declares {forms} — this gate implements "
             '["literal"] only, so an execution-time binding would pass a check that never '
             "looked at it"
+        )
+
+
+def check_plan_policy_keys(policy_plan: dict) -> None:
+    """Refuse a plan policy carrying a key no reader consults, or missing one.
+
+    Both directions, because both fail without saying so: an unknown key reads as
+    a bound to whoever reviews policy.json while nothing enforces it, and a missing
+    one raises KeyError from the middle of whichever check indexes it first rather
+    than naming the absent field.
+
+    A policy error rather than a claim about the plan, and decided before any step
+    is read — the reasoning check_reserved_closures records.
+    """
+    if extra := sorted(set(policy_plan) - PLAN_POLICY_KEYS):
+        raise Rejection(
+            f"policy error: plan declares keys no reader consults {extra}; a bound this gate "
+            f"does not enforce reads as a constraint while constraining nothing "
+            f"(known: {sorted(PLAN_POLICY_KEYS)})"
+        )
+    if missing := sorted(PLAN_POLICY_KEYS - set(policy_plan)):
+        raise Rejection(
+            f"policy error: plan is missing keys {missing}, which this gate's checks index"
         )
 
 
@@ -147,6 +189,9 @@ def check_plan_schema(candidate, policy_plan: dict) -> None:
     # The policy this gate is about to interpret must be one it implements, and
     # that is decided before any step is read: a policy fault reported as a bad
     # plan sends a reader to the generator.
+    # First of the three: check_reserved_closures and the sweep both index policy
+    # keys, so a missing one must be named here rather than raising KeyError there.
+    check_plan_policy_keys(policy_plan)
     check_reserved_closures(policy_plan)
     check_plan_arg_specs(policy_plan)
     if not isinstance(candidate, dict):

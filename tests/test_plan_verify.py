@@ -361,6 +361,41 @@ class TestReservedClosures:
         check_plan_schema({"steps": [patch_step()]}, PLAN_POLICY)
 
 
+class TestPlanPolicyKeysAreAllowlisted:
+    """A plan-policy key with no reader here is the twin divergence g1-6 was about,
+    one level out: ts/plan/policy.ts's PLAN_KEYS refuses an unknown key at load,
+    and this gate read its keys ad hoc and ignored the rest."""
+
+    def test_an_unknown_plan_policy_key_is_a_policy_error(self):
+        # `max_suggestions_per_file: 1` reads as a real bound to whoever reviews
+        # policy.json. The prover refuses to load it; this gate ignored it, so the
+        # same policy meant two different things to the two gates.
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["max_suggestions_per_file"] = 1
+        with pytest.raises(Rejection, match="policy error.*max_suggestions_per_file"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_the_refusal_precedes_any_step_check(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["bogus_key"] = True
+        with pytest.raises(Rejection, match="policy error"):
+            check_plan_schema({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
+
+    def test_a_missing_plan_policy_key_is_a_policy_error(self):
+        # The other direction: a key every reader indexes must be present, or the
+        # gate raises KeyError from the middle of a check rather than saying which
+        # policy field is absent.
+        policy = copy.deepcopy(PLAN_POLICY)
+        del policy["max_changed_bytes"]
+        with pytest.raises(Rejection, match="policy error.*max_changed_bytes"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_the_shipped_policy_declares_exactly_the_expected_keys(self):
+        # The allowlist and the shipped policy must agree, or one of them is wrong.
+        import plan_verify
+        assert set(PLAN_POLICY) == plan_verify.PLAN_POLICY_KEYS
+
+
 class TestSpecsAreValidatedEagerly:
     """A spec the enforcer cannot use is a policy fault, and it is decided before
     any step is read.
