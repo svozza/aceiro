@@ -426,6 +426,34 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         "round": 0, "repeated": 0, "last_fingerprint": None,
         "accepted": None, "abort_reason": None, "tool_calls": 0, "model": None,
     }
+    # An acceptance is a verdict the verifier already reached, so it outlives the
+    # session that produced it: a later attempt cannot unmake it, and no ending
+    # short of the breaker's may discard it. Held here rather than in `state`
+    # because the per-attempt reset below is deliberate — leaving `state`
+    # populated would make session 2's handler refuse every submission with "a
+    # review has already been accepted" and burn its turns.
+    verified: dict | None = None
+
+    def deliver(artifact: dict) -> int:
+        """Write the artifact and close the run successfully.
+
+        One spelling for every ending that reaches an accepted artifact, so a new
+        ending inherits the metadata write and the completion records instead of
+        reproducing them.
+        """
+        (output_dir / artifact_filename).write_text(json.dumps(artifact, indent=2, ensure_ascii=False))
+        # Written by the arm that ran, for the executor to stamp into what it
+        # posts. Configuration cannot supply this: both arms are configured on
+        # every run and only one of them invoked a model.
+        (output_dir / "run_metadata.json").write_text(json.dumps({"model": state["model"]}))
+        transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
+        # The model that answered joins the completion record, so the transcript
+        # carries both halves of the attribution: what was configured (run_start)
+        # and what actually ran.
+        transcript.log("run_complete", rounds=state["round"], model=state["model"])
+        transcript.close()
+        return 0
+
     for attempt in range(1, MAX_ATTEMPTS + 1):
         # What a restarted session does start over on: it may submit again, and
         # its tool calls are counted against it alone.
@@ -437,12 +465,18 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
                                 server_name, submit_tool_name)
 
+        timed_out = False
         try:
             result = anyio.run(_run_session, user_message, options, transcript, state, output_dir, attempt, policy)
         except TimeoutError:
-            return fail(
-                transcript,
-                f"wall-clock timeout after {WALL_CLOCK_SECONDS}s on attempt {attempt}",
+            # Recorded here and decided below: the session was cut off, but it may
+            # already have got an artifact through the verifier, and this branch
+            # runs before the breaker gate that outranks an acceptance.
+            timed_out, result = True, None
+            transcript.log(
+                "wall_clock_timeout",
+                round=attempt,
+                seconds=WALL_CLOCK_SECONDS,
                 tool_calls=state["tool_calls"],
             )
         except ProcessError as exc:
@@ -453,6 +487,11 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
             )
         except ClaudeSDKError as exc:
             return fail(transcript, f"claude-agent-sdk error: {exc}")
+
+        # Promoted the moment the session ends, so every branch below decides
+        # against the run's acceptance rather than this session's.
+        if state["accepted"] is not None:
+            verified = state["accepted"]
 
         # Checked before the session is classified, because the breaker's
         # verdict outranks how the session happened to end: a run told it was
@@ -479,13 +518,25 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # {tool_display_name}" would be a false reason for a run that succeeded.
         # The acceptance is checked here and not before the breaker above,
         # because an aborted run must not be resurrected by one.
-        if result is not None and result.subtype == "error_max_turns" and state["accepted"] is None:
+        if result is not None and result.subtype == "error_max_turns" and verified is None:
             return fail(
                 transcript,
                 f"agent hit the {MAX_TURNS}-turn limit without calling {tool_display_name}",
                 num_turns=result.num_turns,
                 tool_calls=state["tool_calls"],
             )
+
+        # A cut-off session, decided on the same rule as the turn limit: the
+        # artifact if one is verified, the failure if none is. Placed after the
+        # breaker gate so an exhausted budget still outranks it.
+        if timed_out:
+            if verified is None:
+                return fail(
+                    transcript,
+                    f"wall-clock timeout after {WALL_CLOCK_SECONDS}s on attempt {attempt}",
+                    tool_calls=state["tool_calls"],
+                )
+            return deliver(verified)
 
         # Reports `subtype: success` with no submission, so it must be matched
         # on terminal_reason or a dead run counts as a successful one. No
@@ -509,6 +560,12 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
                 backoff_seconds=backoff,
                 tool_calls=state["tool_calls"],
             )
+            # An error in the stream is not a verdict on an artifact the verifier
+            # already accepted: this session may have submitted and then died on
+            # the NEXT turn. Delivering beats retrying, since a retry can only
+            # produce a second artifact for a run that already has one.
+            if verified is not None:
+                return deliver(verified)
             if retrying:
                 time.sleep(backoff)
                 continue
@@ -539,27 +596,19 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
             permission_denials=result.permission_denials,
         )
 
-        artifact = state["accepted"]
-        if artifact is None:
+        if verified is None:
             return fail(
                 transcript,
                 f"agent completed without calling {tool_display_name} (subtype={result.subtype})",
                 num_turns=result.num_turns,
             )
 
-        (output_dir / artifact_filename).write_text(json.dumps(artifact, indent=2, ensure_ascii=False))
-        # Written by the arm that ran, for the executor to stamp into what it
-        # posts. Configuration cannot supply this: both arms are configured on
-        # every run and only one of them invoked a model.
-        (output_dir / "run_metadata.json").write_text(json.dumps({"model": state["model"]}))
-        transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
-        # The model that answered joins the completion record, so the transcript
-        # carries both halves of the attribution: what was configured (run_start)
-        # and what actually ran.
-        transcript.log("run_complete", rounds=state["round"], model=state["model"])
-        transcript.close()
-        return 0
+        return deliver(verified)
 
+    # Reached only when every attempt was consumed by a retry. An artifact
+    # verified along the way is still the run's answer.
+    if verified is not None:
+        return deliver(verified)
     return fail(transcript, "attempt budget exhausted without a verified artifact")
 
 

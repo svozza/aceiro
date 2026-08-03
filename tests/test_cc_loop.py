@@ -489,6 +489,121 @@ class TestRunFailureModes:
         assert code == 1
         assert not (tmp_path / "review.json").exists()
 
+    def test_an_accepted_artifact_survives_an_api_error_retry(self, tmp_path, monkeypatch):
+        # 0f12f81 guarded the turn-limit exit only. Session 1 gets an artifact
+        # through the verifier, then the stream reports api_error (which carries
+        # subtype=success, so it is matched on terminal_reason); the loop retries
+        # and the per-attempt reset erased the artifact the verifier had already
+        # accepted. A review that passed every gate was lost.
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: None)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "a complete verified review", "findings": [], "residual_risk": ""}
+        sessions = []
+
+        async def _query(prompt, options):
+            sessions.append(len(sessions) + 1)
+            if len(sessions) == 1:
+                await created[-1].handler(artifact)
+                yield result_message(terminal_reason="api_error", result="API Error: 503")
+            else:
+                # Session 2 submits nothing at all: the artifact from session 1
+                # is the only one this run ever produced. Reaching here at all
+                # means the acceptance was thrown away.
+                yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        # No second session: a retry can only produce a second artifact for a run
+        # that already has one, so the verified one ends the run.
+        assert sessions == [1]
+
+    def test_a_wall_clock_timeout_keeps_an_already_accepted_artifact(self, tmp_path, monkeypatch):
+        # The likelier of the two in production: the model submits, is verified,
+        # and burns its remaining seconds re-reading the diff to double-check
+        # itself. WALL_CLOCK_SECONDS defaults to 150 and neither workflow sets it.
+        monkeypatch.setattr(cc_loop, "WALL_CLOCK_SECONDS", 1)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "verified before the clock ran out", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            await created[-1].handler(artifact)
+            await anyio.sleep(5)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        # The timeout is still recorded: keeping the artifact must not hide that
+        # the session was cut off.
+        assert any(e["event"] == "wall_clock_timeout" for e in transcript_events(tmp_path))
+
+    def test_a_wall_clock_timeout_with_no_artifact_still_fails(self, tmp_path, monkeypatch):
+        # The complement, and the half that had no test at all before: consulting
+        # the acceptance must not turn an empty timeout into a success.
+        monkeypatch.setattr(cc_loop, "WALL_CLOCK_SECONDS", 1)
+
+        async def _query(prompt, options):
+            await anyio.sleep(5)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 1
+        assert not (tmp_path / "review.json").exists()
+        reasons = [e["reason"] for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
+        assert any("wall-clock timeout" in r for r in reasons)
+
+    def test_an_aborted_run_is_not_rescued_by_a_timeout_acceptance(self, tmp_path, monkeypatch):
+        # adcd943's ordering, applied to the new path: the breaker's verdict
+        # outranks an acceptance, so a run that exhausted its budget must not
+        # succeed because a timeout arrived after something got through.
+        from verify import Rejection
+
+        monkeypatch.setattr(cc_loop, "WALL_CLOCK_SECONDS", 1)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        rejections = []
+
+        def verify_fn(args, *_a):
+            if len(rejections) < cc_loop.MAX_REPEATED_REJECTIONS:
+                rejections.append(1)
+                raise Rejection("findings[0]: line 5 is not inside a diff hunk")
+
+        async def _query(prompt, options):
+            for _ in range(cc_loop.MAX_REPEATED_REJECTIONS):
+                await created[-1].handler({"summary": "p", "findings": [], "residual_risk": ""})
+            await anyio.sleep(5)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path,
+                           verify_fn=verify_fn)
+        assert code == 1
+        assert not (tmp_path / "review.json").exists()
+
     def test_the_transcript_records_the_model_that_answered_not_a_placeholder(self, tmp_path, monkeypatch):
         # run_start logged CC_MODEL or the literal "default", and CC_MODEL is set
         # by nothing in either workflow — so every production run recorded
