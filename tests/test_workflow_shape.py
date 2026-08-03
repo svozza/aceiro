@@ -514,3 +514,71 @@ class TestOtherWorkflowsStayCorrect:
                         f"checkout, not the consumer's tree; got {value!r}"
                     )
 
+
+
+class TestSupplyChainPinning:
+    """Every third-party action and every install is pinned, in every workflow.
+
+    A raw-text scan rather than the step parser: the property is about all four
+    files including their reusable-workflow `uses:`, and a step-level reader would
+    miss a line the parser's job filter skips. Comment lines are excluded, since
+    the documentation of how to pin necessarily shows an unpinned form.
+    """
+
+    SHA_LENGTH = 40
+
+    @staticmethod
+    def lines_containing(needle: str):
+        """Every non-comment line holding `needle`, as (workflow, line number, text).
+
+        By content rather than by leading key, because a `run:` block scalar puts
+        its commands on continuation lines that begin with neither.
+        """
+        found = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for number, raw in enumerate(path.read_text().splitlines(), start=1):
+                stripped = raw.strip()
+                if stripped.startswith("#") or needle not in stripped:
+                    continue
+                found.append((path.name, number, stripped))
+        return found
+
+    def test_the_scan_finds_something(self):
+        # A filter that matched nothing would make every assertion below vacuous.
+        assert len(self.lines_containing("uses:")) >= 5
+        assert len(self.lines_containing("pip install")) >= 5
+        assert len(self.lines_containing("npm ")) >= 2
+
+    def test_every_action_is_pinned_to_a_full_commit_sha(self):
+        # A moving tag is a supply-chain hole wherever it appears, but especially
+        # in the jobs holding a Bedrock role or a write token: @v6 re-resolves on
+        # every run, so a compromised tag executes in a credentialed job.
+        for workflow, number, text in self.lines_containing("uses:"):
+            reference = text.partition("uses:")[2].strip().split()[0]
+            if reference.startswith("./"):
+                continue  # a local path, not a fetched third party
+            assert "@" in reference, f"{workflow}:{number} uses {reference!r} with no pin"
+            revision = reference.rsplit("@", 1)[1]
+            assert len(revision) == self.SHA_LENGTH and all(
+                character in "0123456789abcdef" for character in revision
+            ), (
+                f"{workflow}:{number} pins {reference!r} to a moving reference; "
+                "a tag or branch re-resolves on every run"
+            )
+
+    def test_every_pip_install_requires_hashes(self):
+        installs = self.lines_containing("pip install")
+        assert installs, "no pip install found; this assertion has gone stale"
+        for workflow, number, text in installs:
+            assert "--require-hashes" in text, (
+                f"{workflow}:{number} installs without --require-hashes, so a compromised "
+                f"index can substitute a dependency: {text!r}"
+            )
+
+    def test_every_npm_install_is_ci(self):
+        # `npm install` may resolve outside the lockfile; `npm ci` may not.
+        for workflow, number, text in self.lines_containing("npm install"):
+            raise AssertionError(
+                f"{workflow}:{number} runs `npm install`, which may resolve outside "
+                f"the lockfile; use `npm ci`: {text!r}"
+            )
