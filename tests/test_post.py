@@ -318,7 +318,11 @@ class TestUpsertComment:
         assert calls[0]["method"] == "PATCH"
         assert "/comments/2" in calls[0]["path"]
 
-    @pytest.mark.parametrize("marker", ["", "   ", "\n"], ids=["empty", "blank", "newline"])
+    @pytest.mark.parametrize(
+        "marker",
+        ["", "   ", "\n", " <!-- custom-review --> ", "<!-- custom-review -->\t"],
+        ids=["empty", "blank", "newline", "padded", "trailing-tab"],
+    )
     def test_an_empty_or_blank_marker_is_refused(self, capture_api, marker):
         # A consumer passing --marker "" made every comment ours: `"" in body` is
         # always true, so the first bot comment on the PR was replaced with the

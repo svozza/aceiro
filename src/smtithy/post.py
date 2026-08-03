@@ -217,6 +217,12 @@ def check_marker(marker: str) -> None:
     newline can never BE that line — it would search for a comment it does not
     post and create a new one every run.
 
+    Surrounding whitespace is the same failure once more: find_own_comments
+    compares the STRIPPED first line — the strip absorbs the CRLF GitHub returns —
+    against the marker as given, so a padded marker never matches the comment it
+    posted. The run posts, sees no comment it owns next time, and posts again,
+    without bound.
+
     Refused rather than accommodated: there is no honest reading of "identify my
     comment by nothing", and this value decides which comments the write token
     may edit.
@@ -225,6 +231,12 @@ def check_marker(marker: str) -> None:
         fail("--marker is empty; an empty marker matches every comment, so nothing identifies ours")
     if "\n" in marker or "\r" in marker:
         fail(f"--marker spans lines ({marker!r}); the marker is the comment's first line, so it must be one line")
+    if marker != marker.strip():
+        fail(
+            f"--marker carries surrounding whitespace ({marker!r}); ownership compares the "
+            "stripped first line, so this marker would never match its own comment and every "
+            "run would post another"
+        )
 
 
 def find_own_comments(repo: str, pr_number: int, marker: str, bot_login: str) -> list[dict]:
