@@ -588,6 +588,28 @@ class TestExpectKeysAreValidated:
         with pytest.raises(run_evals.EvalFailure, match="input_contains_al"):
             run_evals.check_expect_keys(expect, "x")
 
+    def test_a_misspelled_findings_any_sub_key_is_a_hard_error(self):
+        # The level check_expect_keys did not reach. `body_contains_anyy` is
+        # dropped by finding_matches' `.get`, so the substance half of the match
+        # goes away and path+severity alone accepts a finding about anything on
+        # the right file — the gate the scenario exists for, silently off.
+        expect = {"verify_must_pass": True,
+                  "findings_any": [{"path": "a.py", "severity_at_least": "low",
+                                    "body_contains_anyy": ["x"]}]}
+        with pytest.raises(run_evals.EvalFailure, match="body_contains_anyy"):
+            run_evals.check_expect_keys(expect, "x")
+
+    def test_a_findings_any_element_missing_a_required_matcher_is_a_hard_error(self):
+        # finding_matches indexes both, so a missing one is a KeyError from inside
+        # the grader rather than a stated expectation failure.
+        for element in ({"severity_at_least": "low"}, {"path": "a.py"}):
+            with pytest.raises(run_evals.EvalFailure, match="findings_any"):
+                run_evals.check_expect_keys({"findings_any": [element]}, "x")
+
+    def test_a_findings_any_element_that_is_not_an_object_is_a_hard_error(self):
+        with pytest.raises(run_evals.EvalFailure, match="findings_any"):
+            run_evals.check_expect_keys({"findings_any": ["a.py"]}, "x")
+
     def test_every_shipped_scenario_uses_only_known_keys(self):
         for scenario in sorted(Path(run_evals.SCENARIOS_DIR).iterdir()):
             if not scenario.is_dir():
@@ -595,12 +617,29 @@ class TestExpectKeysAreValidated:
             expect = json.loads((scenario / "expect.json").read_text())
             run_evals.check_expect_keys(expect, scenario.name)
 
+    def test_every_key_finding_matches_reads_is_in_the_nested_allowlist(self):
+        # test_every_graded_key_is_in_the_allowlist's discipline one level down:
+        # the nested allowlist is only as good as its agreement with the reader,
+        # and a key finding_matches consults but the allowlist rejects would turn
+        # a valid scenario into a hard error.
+        source = Path(run_evals.__file__).read_text()
+        body = source.split("def finding_matches")[1].split("\ndef ")[0]
+        read_keys = set(re.findall(r'wanted(?:\.get\(|\[|\s+in\s+)"?\'?([a-z_]+)', body))
+        read_keys |= set(re.findall(r'"([a-z_]+)" in wanted', body))
+        assert read_keys <= run_evals.FINDING_MATCH_KEYS, (
+            f"finding_matches reads keys the allowlist rejects: "
+            f"{sorted(read_keys - run_evals.FINDING_MATCH_KEYS)}"
+        )
+
     def test_every_graded_key_is_in_the_allowlist(self):
         # The allowlist is only as good as its agreement with grade(): a key
         # grade() reads but the allowlist omits would make a valid scenario a
         # hard error, which is the failure mode of the fix itself.
         source = Path(run_evals.__file__).read_text()
-        read_keys = set(re.findall(r'expect(?:\.get\(|\[|\s+in\s+)"?\'?([a-z_]+)', source))
+        # Quoted subscripts only: an `expect.get(key)` whose subscript is a
+        # variable names no expectation, and reading it as one asserts that a
+        # local's identifier is a policy key.
+        read_keys = set(re.findall(r'expect(?:\.get\(|\[)["\']([a-z_]+)["\']', source))
         read_keys |= set(re.findall(r'"([a-z_]+)" in expect', source))
         assert read_keys <= run_evals.EXPECT_KEYS, (
             f"grade()/run_scenario read keys the allowlist rejects: {sorted(read_keys - run_evals.EXPECT_KEYS)}"

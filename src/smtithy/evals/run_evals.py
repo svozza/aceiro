@@ -88,6 +88,21 @@ TOOL_USE_KEYS = frozenset({
     "tools", "input_contains_any", "input_contains_all", "input_must_reference_base", "why",
 })
 
+# findings_any element vocabulary — exactly what finding_matches consults.
+# `path` and `severity_at_least` are indexed rather than `.get`, so an element
+# lacking either is a KeyError from inside the grader; the rest are optional
+# substance checks whose absence silently reduces the match to path+severity.
+FINDING_MATCH_KEYS = frozenset({"path", "severity_at_least", "line_in", "body_contains_any", "why"})
+FINDING_MATCH_REQUIRED = frozenset({"path", "severity_at_least"})
+
+# Every list-of-objects expectation, and the vocabulary its reader enumerates.
+# A schema rather than a per-level argument: the review and plan graders both
+# validate their nested elements through one function, so a third list cannot be
+# added on one side and forgotten on the other.
+LIST_ELEMENT_SCHEMA = {
+    "findings_any": (FINDING_MATCH_KEYS, FINDING_MATCH_REQUIRED),
+}
+
 
 
 
@@ -127,13 +142,23 @@ class EvalFailure(Exception):
     """A scenario's structural expectations were not met. Message states which."""
 
 
-def check_expect_keys(expect: dict, name: str, known: frozenset[str] = EXPECT_KEYS) -> None:
-    """Fail closed on an expectation nobody reads.
+def check_expect_keys(
+    expect: dict, name: str, known: frozenset[str] = EXPECT_KEYS,
+    elements: dict[str, tuple[frozenset[str], frozenset[str]]] = LIST_ELEMENT_SCHEMA,
+) -> None:
+    """Fail closed on an expectation nobody reads, at every level that holds one.
 
     The failure this prevents is silent: renaming clean_pr_no_findings'
     `max_findings` to `max_finding` removes the false-positive check the scenario
     exists for, and every test still passes. `known` is a parameter because the
     plan grader reads a different vocabulary and needs the same discipline.
+
+    The nested levels matter as much as the top one, and for the same reason. A
+    `findings_any` element's matchers are read with `.get`, so a typo there does
+    not fail — it drops the substance half of the match and leaves path+severity
+    accepting a finding about anything on the right file. `elements` maps each
+    list-valued key to (known, required) so both graders validate their own
+    element vocabulary through this one function.
     """
     if unknown := sorted(set(expect) - known):
         raise EvalFailure(
@@ -146,6 +171,21 @@ def check_expect_keys(expect: dict, name: str, known: frozenset[str] = EXPECT_KE
             f"{name}/expect.json's transcript_tool_use_matching declares unknown keys {unknown}; "
             f"nothing reads them. Known keys: {sorted(TOOL_USE_KEYS)}"
         )
+    for key, (element_keys, required) in elements.items():
+        for index, element in enumerate(expect.get(key) or []):
+            where = f"{name}/expect.json's {key}[{index}]"
+            if not isinstance(element, dict):
+                raise EvalFailure(f"{where} is not an object, so no matcher reads it")
+            if unknown := sorted(set(element) - element_keys):
+                raise EvalFailure(
+                    f"{where} declares unknown keys {unknown}; nothing reads them, so the "
+                    f"substance they assert is not graded. Known keys: {sorted(element_keys)}"
+                )
+            if missing := sorted(required - set(element)):
+                raise EvalFailure(
+                    f"{where} is missing {missing}, which the matcher indexes rather than "
+                    "defaults, so the scenario would fail from inside the grader"
+                )
 
 
 def check_run_count(runs: int) -> None:
