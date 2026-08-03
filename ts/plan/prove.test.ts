@@ -543,6 +543,35 @@ describe('proveCardinality', () => {
     );
     assert.equal(result.holds, false);
   });
+
+  it('CATCHES two suggestions on one file', () => {
+    // ADR-0009: a suggestion is independently applicable, so two on one file can
+    // be half-applied — the state its atomicity argument refuses. The
+    // counterexample names the path and both steps, since a count alone leaves a
+    // reader hunting for which two.
+    const result = proveCardinality(plan(suggest('src/a.py'), suggest('src/a.py')), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes("'src/a.py'")));
+    assert.ok(result.counterexample?.path.some((line) => line.includes('s0') && line.includes('s1')));
+  });
+
+  it('holds for one suggestion each on two files', () => {
+    // Cardinality bounds per PATH. decide_delivery is what refuses a multi-file
+    // suggestion plan, and pre-empting it here would move a rule with its own
+    // reason and its own message.
+    assert.equal(proveCardinality(plan(suggest('src/a.py'), suggest('src/b.py')), POLICY).holds, true);
+  });
+
+  it('holds for several patches on one file', () => {
+    // The asymmetry is the point: patch steps become ONE atomic commit on the
+    // stacked branch, so coordinated hunks in a file are what that delivery is
+    // for. Only suggestions are independently applicable.
+    const result = proveCardinality(
+      plan(patch('src/a.py'), patch('src/a.py'), pushBranch(), openPr()),
+      POLICY,
+    );
+    assert.equal(result.holds, true);
+  });
 });
 
 describe('proveTaint', () => {

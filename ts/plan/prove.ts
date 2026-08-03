@@ -438,11 +438,17 @@ export async function proveTaint(
 }
 
 /**
- * Cardinality: at most one of each write-class kind, no chain on a suggest plan.
+ * Cardinality: at most one of each write-class kind, at most one suggestion per
+ * file, no chain on a suggest plan.
  *
  * Ordering constrains the chain's ORDER, this its COUNT — one commanded finding
  * produces one effect. Twin of plan_verify.check_plan_cardinality. A ground check
  * for the same reason proveWriteTargets is one.
+ *
+ * One suggestion per file per finding (ADR-0009): a suggestion is independently
+ * applicable, so two on one file can be half-applied. Patch steps are not bounded
+ * this way — they become one atomic commit, which is the delivery coordinated
+ * edits belong to.
  */
 export function proveCardinality(plan: Plan, policy: PlanPolicy): ProofResult {
   const started = performance.now();
@@ -458,6 +464,23 @@ export function proveCardinality(plan: Plan, policy: PlanPolicy): ProofResult {
     const chain = [...writeKinds].sort().filter((kind) => kind !== 'label' && kinds.includes(kind));
     if (chain.length > 0) {
       violations.push(`a suggest plan carries ${chain.join(', ')}: a suggestion is applied in place`);
+    }
+  }
+  // Grouped by path so the counterexample names the file and both steps: a count
+  // alone leaves a reader hunting for which two.
+  const suggestIdsByPath = new Map<string, string[]>();
+  for (const step of plan.steps) {
+    if (step.kind !== 'suggest') continue;
+    const path = String(step.args['path']);
+    suggestIdsByPath.set(path, [...(suggestIdsByPath.get(path) ?? []), step.id]);
+  }
+  for (const [path, ids] of suggestIdsByPath) {
+    if (ids.length > 1) {
+      violations.push(
+        `${ids.length} suggest steps on '${path}' (${ids.join(', ')}): a suggestion is applied on ` +
+          'its own, so two on one file can be half-applied — coordinated edits go to the stacked ' +
+          'pull request as patch steps',
+      );
     }
   }
   if (kinds.includes('open_pr') && !kinds.includes('push_branch')) {

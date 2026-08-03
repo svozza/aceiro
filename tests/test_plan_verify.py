@@ -1025,6 +1025,44 @@ class TestWriteChainCardinality:
     def test_a_suggestion_only_plan_passes(self):
         check_plan_cardinality({"steps": [suggest_step("s0")]}, PLAN_POLICY)
 
+    # ADR-0009: one suggestion per file per finding, matching GitHub's
+    # one-hunk-per-suggestion mechanics. The rule is here rather than in
+    # decide_delivery because this is where the retry is — a Rejection is
+    # feedback the model can act on, while a Refusal at delivery time is a run
+    # that already spent its session.
+
+    def test_two_suggestions_on_one_file_reject(self):
+        with pytest.raises(Rejection, match="2 suggest steps on 'src/a.py'"):
+            check_plan_cardinality(
+                {"steps": [suggest_step("s0"), suggest_step("s1")]}, PLAN_POLICY
+            )
+
+    def test_the_rejection_names_both_step_ids(self):
+        # A counterexample naming a step is what makes it actionable; naming the
+        # count alone leaves the model guessing which two.
+        with pytest.raises(Rejection) as exc:
+            check_plan_cardinality(
+                {"steps": [suggest_step("s0"), suggest_step("s1")]}, PLAN_POLICY
+            )
+        assert "'s0'" in str(exc.value) and "'s1'" in str(exc.value)
+
+    def test_one_suggestion_each_on_two_files_passes_cardinality(self):
+        # Cardinality bounds per PATH, so this clears this phase — decide_delivery
+        # is what refuses a multi-file suggestion plan, and pre-empting it here
+        # would move a rule that has its own reason and its own message.
+        check_plan_cardinality(
+            {"steps": [suggest_step("s0"), suggest_step("s1", path="src/b.py")]}, PLAN_POLICY
+        )
+
+    def test_several_patches_on_one_file_still_pass(self):
+        # The asymmetry is the point: patch steps become ONE atomic commit on the
+        # stacked branch, so two coordinated hunks in a file are exactly what that
+        # delivery is for. Only suggestions are independently applicable.
+        check_plan_cardinality(
+            {"steps": [patch_step("s0"), patch_step("s1"), push_step("s2"), open_pr_step("s3")]},
+            PLAN_POLICY,
+        )
+
     def test_duplicate_labels_reject(self):
         # Two identical effects for one finding, in relative order, which
         # pairwise ordering alone accepts.

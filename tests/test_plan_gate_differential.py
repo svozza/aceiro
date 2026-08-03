@@ -150,6 +150,35 @@ CASES = [
         True,
     ),
     (
+        # ADR-0009's one-suggestion-per-file rule. Both suggestions are in-hunk,
+        # anchored and independently legal, so every other check admits them —
+        # only cardinality refuses, and it must refuse in both gates or the
+        # executor would deliver two independently applicable comments for a fix
+        # that may only be correct as a whole.
+        "two-suggestions-on-one-file",
+        {"steps": [
+            anchored_suggest("s0", line=2, old="def load(path):\n", new="def load(path=None):\n"),
+            anchored_suggest("s1", line=4, old="    return os.environ\n",
+                             new="    return dict(os.environ)\n"),
+        ]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # The admitting twin, so the case above turns on the count and not on
+        # anything about the second step: one suggestion each on two files clears
+        # cardinality in both gates (decide_delivery is what refuses a multi-file
+        # suggestion plan, and it is not part of either gate).
+        "one-suggestion-each-on-two-files",
+        {"steps": [
+            anchored_suggest("s0", line=2, old="def load(path):\n", new="def load(path=None):\n"),
+            anchored_suggest("s1", path="src/util.py", line=1, old="def check(path):\n",
+                             new="def check(path=None):\n"),
+        ]},
+        PLAN_CHANGED_FILES,
+        True,
+    ),
+    (
         # Rejected by BOTH gates on the shipped policy, whose label_allowlist
         # ships empty — a label is a control surface, so a consumer must name the
         # ones it accepts. The case stays here in its rejecting form because a

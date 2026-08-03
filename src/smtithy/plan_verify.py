@@ -621,12 +621,27 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
 
 
 def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
-    """At most one of each write-class kind; no chain at all on a suggest plan.
+    """At most one of each write-class kind; at most one suggestion per file; no
+    chain at all on a suggest plan.
 
     Ordering constrains the chain's ORDER, this its COUNT — one commanded finding
     produces one effect. write_kinds is read from the policy rather than listed
     here. A suggest plan is forbidden a chain because ADR-0009 makes a suggestion
     the delivery applied in place, with nothing to push.
+
+    One suggestion per file per finding (ADR-0009), matching GitHub's
+    one-hunk-per-suggestion mechanics. A suggestion is INDEPENDENTLY APPLICABLE —
+    its own one-click commit, appliable in any subset — so two on one file can be
+    half-applied, which is the state ADR-0009's atomicity argument refuses. Patch
+    steps are deliberately not bounded this way: they become one atomic commit on
+    the stacked branch, so several coordinated hunks in a file are exactly what
+    that delivery is for.
+
+    The gate cannot tell a coordinated pair from an independent one — that is a
+    judgement about the code, not a property of the plan — so it refuses the
+    shape. Here rather than in decide_delivery because this phase is where the
+    retry is: a Rejection is feedback the session can act on, while a Refusal at
+    delivery time is a run that already spent its budget.
     """
     kinds = [step["kind"] for step in plan["steps"]]
     step_kinds = policy_plan["step_kinds"]
@@ -638,6 +653,20 @@ def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
             raise Rejection(
                 f"plan.steps: {count} {kind} steps; a write-class kind may appear at most once, "
                 "so one commanded finding produces one effect"
+            )
+
+    # Grouped by path so the message names the file and both steps: a count alone
+    # leaves a reader (and the model) guessing which two.
+    by_path: dict[str, list[str]] = {}
+    for step in plan["steps"]:
+        if step["kind"] == "suggest":
+            by_path.setdefault(step["args"]["path"], []).append(step["id"])
+    for path, ids in by_path.items():
+        if len(ids) > 1:
+            raise Rejection(
+                f"plan.steps: {len(ids)} suggest steps on {path!r} ({', '.join(repr(i) for i in ids)}); "
+                "a suggestion is applied on its own, so two on one file can be half-applied — "
+                "coordinated edits go to the stacked pull request as patch steps (ADR-0009)"
             )
 
     # A suggestion is applied by the contributor, so it needs no branch to push.

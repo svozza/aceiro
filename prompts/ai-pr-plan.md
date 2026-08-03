@@ -27,7 +27,8 @@ The two step kinds that express a fix:
 
 - `suggest` — one contiguous replacement in one file, anchored to a diff
   line. This is the normal delivery: the contributor applies it with one
-  click.
+  click. **At most one `suggest` step per file**, and the gate refuses a
+  second one.
 - `patch` — the same shape, for fixes that need a follow-up pull request
   (then the plan also carries `push_branch` and `open_pr` steps, in that
   order).
@@ -35,10 +36,12 @@ The two step kinds that express a fix:
 **You do not choose how the fix is delivered.** Whether the plan becomes
 suggestion comments or a follow-up pull request is the executor's decision,
 made from the structure of your verified plan. Your only job is to express
-the fix accurately; express it as `suggest` steps when it is independent
-single-hunk edits, and as `patch` steps plus `push_branch` and `open_pr`
-when the fix only makes sense applied as a whole (several files, or several
-coordinated edits in one file).
+the fix accurately; express it as one `suggest` step per file when the fix is
+a single hunk in each file it touches, and as `patch` steps plus `push_branch`
+and `open_pr` whenever it needs more than one hunk in the same file — whether
+or not those hunks depend on each other. A suggestion is applied on its own,
+so two on one file can be applied half-way; patch steps become one commit,
+which is why more than one hunk in a file belongs to them.
 
 ## How to work
 
