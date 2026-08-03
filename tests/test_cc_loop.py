@@ -134,6 +134,59 @@ class TestSubmitTool:
         assert state["abort_reason"], "same-class rejections must trip the breaker"
         assert "aborted" in response["content"][0]["text"]
 
+    def test_a_failing_transcript_write_still_counts_the_submission(self):
+        # 0f12f81's invariant is "every failed submission is counted", and both
+        # log() calls run BEFORE their spend() with nothing guarding them. The
+        # comment on the bare except names a transcript write failing on a full
+        # disk as exactly the case it exists to count, and it could not: a raising
+        # log left the handler before the breaker advanced, so the model resubmits
+        # until the turn limit and the run blames the turn budget for a disk fault.
+        from verify import Rejection
+
+        class BoomTranscript:
+            def log(self, event, **data):
+                raise OSError(28, "No space left on device")
+
+        state = {
+            "round": 0, "repeated": 0, "last_fingerprint": None,
+            "accepted": None, "abort_reason": None, "tool_calls": 0,
+        }
+        submit = cc_loop.make_submit_tool(
+            build_artifact_schema(POLICY), state, BoomTranscript(),
+            lambda *a: (_ for _ in ()).throw(Rejection("summary: nope")),
+            "", [], POLICY, "guidance",
+        )
+        for _ in range(cc_loop.MAX_REPEATED_REJECTIONS):
+            self.call(submit, {"summary": "x", "findings": [], "residual_risk": ""})
+        assert state["abort_reason"], "an unloggable rejection must still spend the budget"
+
+    def test_a_recursion_error_while_logging_still_counts_the_submission(self):
+        # The variant reachable from a submission alone, with the REAL Transcript
+        # and the REAL verifier: verify() rejects, then the rejected artifact is
+        # echoed into the record and redact_secrets recurses over it. No
+        # filesystem manipulation needed, which is what makes this the live case.
+        import tempfile
+
+        from artifact import Transcript
+        from verify import verify as real_verify
+
+        deep = {"a": 1}
+        for _ in range(3000):
+            deep = {"a": deep}
+
+        transcript = Transcript(Path(tempfile.mkdtemp()) / "t.jsonl", POLICY)
+        state = {
+            "round": 0, "repeated": 0, "last_fingerprint": None,
+            "accepted": None, "abort_reason": None, "tool_calls": 0,
+        }
+        submit = cc_loop.make_submit_tool(
+            build_artifact_schema(POLICY), state, transcript, real_verify, "", [], POLICY, "guidance",
+        )
+        for _ in range(cc_loop.MAX_SUBMISSIONS):
+            self.call(submit, {"summary": "s" * 50, "findings": deep, "residual_risk": ""})
+        transcript.close()
+        assert state["abort_reason"], "a submission that breaks its own logging must still be counted"
+
     def test_varied_failures_do_not_trip_the_breaker_early(self):
         from verify import Rejection
 

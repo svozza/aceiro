@@ -208,6 +208,21 @@ def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_f
     def error(text: str) -> dict:
         return {"content": [{"type": "text", "text": text}], "is_error": True}
 
+    def log_safely(event: str, **fields) -> None:
+        """Record a failed submission without letting the record become the
+        failure.
+
+        Both failure paths log before they spend, and a raising log would leave
+        the handler with the breaker unadvanced -- so the model resubmits, the
+        budget never runs out, and the run dies at the turn limit naming the turn
+        budget as the fault. Counting the submission matters more than describing
+        it: a lost record costs an audit line, an uncounted failure costs the run.
+        """
+        try:
+            transcript.log(event, **fields)
+        except Exception as exc:  # noqa: BLE001 - the record is best-effort, the count is not
+            print(f"::warning::could not record {event}: {type(exc).__name__}", file=sys.stderr)
+
     def spend(reason: str) -> bool:
         """Count one failed submission against the breaker. True if it aborts.
 
@@ -238,7 +253,7 @@ def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_f
         try:
             verify_fn(args, diff_text, changed_files, policy)
         except Rejection as exc:
-            transcript.log("submit_rejected", round=state["round"], reason=str(exc), artifact=args)
+            log_safely("submit_rejected", round=state["round"], reason=str(exc), artifact=args)
             # Same breaker as before the port: a run repeating one failure
             # degrades into a placeholder that passes; fail loud instead.
             if spend(f"final submission rejected: {exc}"):
@@ -261,7 +276,7 @@ def make_submit_tool(schema: dict, state: dict, transcript: Transcript, verify_f
             # run_evals.INJECTED_REJECTION_REASON records, which induces the
             # degradation spiral rather than a retry.
             detail = f"{type(exc).__name__}: {exc}"
-            transcript.log("submit_failed", round=state["round"], error=detail, artifact=args)
+            log_safely("submit_failed", round=state["round"], error=detail, artifact=args)
             aborted = spend(f"submission handler failed: {detail}")
             tail = (
                 f"The submission budget is exhausted; the run is aborted and no {noun} will be posted."
