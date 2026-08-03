@@ -74,6 +74,80 @@ def prover_admits_text(plan_text: str, changed_files, tmp_path) -> bool:
     return result.returncode == 0
 
 
+def prover_rejection_reasons(plan, changed_files, tmp_path) -> set[str]:
+    """What prove-cli rejected a plan FOR: each VIOLATED policy name, plus every
+    policy key its counterexamples name. {"<schema>"} on exit 2.
+
+    The boolean oracle collapses every rejection to False, so a gate that loses a
+    check reads as agreement whenever another check rejects the same plan.
+    Verified: with the TS max_changed_lines disjunct deleted, a plan of 200
+    fifty-character lines still exits 1 on max_changed_bytes.
+
+    The policy NAME alone is not enough for that case -- `bounds` covers both caps
+    -- so the counterexample keys are read too. Both are already printed, one line
+    per policy and one per violation, so nothing here invents a stdout contract;
+    the keys are matched as substrings of the audit text rather than parsed out of
+    a format nothing pins.
+    """
+    plan_file = tmp_path / "plan.json"
+    changed_file = tmp_path / "changed_files.json"
+    plan_file.write_text(json.dumps(plan))
+    changed_file.write_text(json.dumps(changed_files))
+    result = subprocess.run(
+        ["node", str(PROVER_JS), "--plan", str(plan_file),
+         "--changed-files", str(changed_file), "--policy", str(POLICY_PATH)],
+        capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode == 2:
+        # Nothing was proved: the schema gate refused the plan before any policy
+        # ran, which is a rejection kind of its own rather than a policy verdict.
+        return {"<schema>"}
+    reasons = {
+        line.split(":", 1)[0]
+        for line in result.stdout.splitlines()
+        if line.split(":", 1)[0] and " VIOLATED" in line
+    }
+    for key in PLAN_POLICY_KEYS:
+        if key in result.stdout:
+            reasons.add(key)
+    return reasons
+
+
+# The plan-policy keys a counterexample may name. Read from the shipped policy so
+# a renamed key cannot leave the reason table matching a string nothing prints.
+PLAN_POLICY_KEYS = frozenset(
+    key for key in _full_policy()["plan"] if isinstance(key, str)
+) | {"path denylist"}
+
+
+# The policy each rejecting case must be rejected BY, on the prover side. Stated
+# per case so a case that starts failing for an unrelated reason -- the confounding
+# d9f7601 fixed by hand for anchoring -- goes red rather than staying green on
+# somebody else's check.
+REJECTION_POLICY = {
+    "open-pr-before-push-before-patch": "ordering",
+    "push-before-patch": "ordering",
+    "open-pr-before-push": "ordering",
+    "violation-across-an-unrelated-step": "ordering",
+    "two-suggestions-on-one-file": "cardinality",
+    "label-off-the-shipped-empty-allowlist": "write_targets",
+    "branch-outside-the-harness-namespace": "write_targets",
+    "open-pr-from-a-branch-the-plan-never-pushed": "write_targets",
+    "nine-write-chains-for-one-patch": "cardinality",
+    "suggest-plan-carrying-a-write-chain": "cardinality",
+    "out-of-frame-patch": "frame",
+    "denylisted-path-that-is-a-changed-file": "path denylist",
+    "denylisted-pem-that-is-a-changed-file": "path denylist",
+    "over-max-patched-files": "max_patched_files",
+    "over-max-changed-lines-in-one-step": "max_changed_lines",
+    "over-both-the-line-and-byte-caps": "max_changed_lines",
+    "long-single-line-rewrite-under-the-line-cap": "max_changed_bytes",
+    "astral-content-over-the-byte-budget": "max_changed_bytes",
+    "per-step-bounds-met-plan-total-exceeded": "max_plan_changed_bytes",
+    "astral-body-over-max-length-by-code-points": "<schema>",
+}
+
+
 def corpus_tree(plan):
     """PLAN_TREE plus each step's own `old` bytes, keyed by its path.
 
@@ -264,6 +338,15 @@ CASES = [
     (
         "over-max-changed-lines-in-one-step",
         {"steps": [anchored_patch("s0", new="x\n" * 200)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # Both caps fire on this one, which is the shape the boolean oracle cannot
+        # police: delete either check from either gate and the plan still rejects
+        # on the other, so only the REASON distinguishes them.
+        "over-both-the-line-and-byte-caps",
+        {"steps": [anchored_patch("s0", new=("x" * 50 + "\n") * 200)]},
         PLAN_CHANGED_FILES,
         False,
     ),
@@ -565,3 +648,34 @@ def test_the_coverage_list_names_every_shipped_key():
     # policy no longer has, which would leave a stale exemption in place.
     stale = set(SINGLE_GATE_KEYS) - set(_policy_plan_keys())
     assert not stale, f"SINGLE_GATE_KEYS names keys policy.json does not have: {sorted(stale)}"
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    sorted(REJECTION_POLICY),
+)
+def test_each_rejecting_case_is_rejected_by_the_policy_it_names(case_id, tmp_path):
+    """ADR-0003: the corpus pins verdicts AND reasons.
+
+    A boolean oracle collapses every rejection to False, so a check that
+    disappears from one gate reads as agreement whenever another check rejects the
+    same plan. Reproduced: with the TS max_changed_lines disjunct deleted, a plan
+    of 200 fifty-character lines still exits 1 on max_changed_bytes.
+    """
+    plan, changed_files = _cases_by_id()[case_id]
+    violated = prover_rejection_reasons(plan, changed_files, tmp_path)
+    expected = REJECTION_POLICY[case_id]
+    assert expected in violated, (
+        f"{case_id} was rejected by {sorted(violated) or 'nothing'}, not by {expected}; "
+        "the case is no longer testing the check it was written for"
+    )
+
+
+def test_every_rejecting_case_names_the_policy_that_must_reject_it():
+    # A case added to CASES with expected=False and no entry here would be pinned
+    # by the boolean oracle alone, which is the gap this table closes.
+    rejecting = {case_id for case_id, _plan, _files, expected in CASES if not expected}
+    assert rejecting == set(REJECTION_POLICY), (
+        f"rejecting cases with no named policy: {sorted(rejecting - set(REJECTION_POLICY))}; "
+        f"named policies for no such case: {sorted(set(REJECTION_POLICY) - rejecting)}"
+    )
