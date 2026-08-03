@@ -138,6 +138,7 @@ REJECTION_POLICY = {
     "out-of-frame-patch": "frame",
     "denylisted-path-that-is-a-changed-file": "path denylist",
     "denylisted-pem-that-is-a-changed-file": "path denylist",
+    "over-max-steps": "<schema>",
     "over-max-patched-files": "max_patched_files",
     "over-max-changed-lines-in-one-step": "max_changed_lines",
     "over-both-the-line-and-byte-caps": "max_changed_lines",
@@ -340,6 +341,32 @@ CASES = [
         {"steps": [anchored_patch("s0", new="x\n" * 200)]},
         PLAN_CHANGED_FILES,
         False,
+    ),
+    (
+        # max_steps had no case in either direction: raising it from 20 to 2000, or
+        # dropping it from either gate, left the corpus green. 21 label steps,
+        # because max_steps is enforced in the schema phase -- before containment
+        # and anchoring, so nothing else can be the reason.
+        "over-max-steps",
+        {"steps": [{"id": f"l{index}", "kind": "label", "args": {"name": "needs-tests"}}
+                   for index in range(21)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # The admitting side of the same bound. Four patches on real distinct
+        # anchors from src/app.py plus the write chain: six steps, legal, and the
+        # case that goes red if max_steps is ever lowered under a plausible plan.
+        "several-steps-well-under-max-steps",
+        {"steps": [
+            anchored_patch("p0", old="import os\n", new="import os  # t\n"),
+            anchored_patch("p1", old="def load(path):\n", new="def load(path=None):\n"),
+            anchored_patch("p2", old="    check(path)\n", new="    check(path or '.')\n"),
+            push_step("w1"),
+            open_pr_step("w2"),
+        ]},
+        PLAN_CHANGED_FILES,
+        True,
     ),
     (
         # Both caps fire on this one, which is the shape the boolean oracle cannot
