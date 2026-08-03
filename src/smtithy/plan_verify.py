@@ -612,6 +612,14 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # two steps on one path can each be unique pre-plan while the first makes the
     # second's anchor duplicated or absent.
     #
+    # This loop covers suggest as well as patch, so the sequential check is not a
+    # patch-only property. Two suggestions on one path are refused outright by
+    # check_plan_cardinality (ADR-0009: a suggestion is independently applicable,
+    # so a pair can be half-applied), which means the pending content only ever
+    # differs from the original across DIFFERENT paths for suggestions — but the
+    # threading is deliberate rather than incidental: it is what makes the
+    # guarantee hold for whatever kind a future policy admits here.
+    #
     # `original` is what placement and hunk spans are measured against — those are
     # provenance claims about the reviewed SHA, which is the diff the model read.
     applied: dict[str, bytes] = {}
@@ -855,6 +863,15 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
 
     Stripping is a scan representation only. ADR-0005's anchor comparison stays
     raw, or an `old` the model never saw verbatim would start matching.
+
+    What this cannot see, recorded so it is not rediscovered as a defect: a
+    credential that exists only in the file AFTER a patch applies. The scan reads
+    the plan, and the plan's `new` is a fragment — a value completed by the bytes
+    already around it in the head tree is not present in any representation here.
+    Scanning the applied result would mean scanning contributor content the PR
+    already contains, which is the reviewed input rather than something the plan
+    introduced. Inherent to anchoring a scan to the plan, not a gap in these four
+    representations.
     """
     texts = [json.dumps(plan, ensure_ascii=False)]
     for step in plan["steps"]:
