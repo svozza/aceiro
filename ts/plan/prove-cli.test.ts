@@ -132,4 +132,34 @@ describe('prove-cli', () => {
     const result = run(plan, ['src/a.py']);
     assert.equal(result.status, 0, String(result.stdout) + String(result.stderr));
   });
+
+  // Exit 1 is a claim about the PLAN. A fault in the invocation or the runtime
+  // says nothing about the plan, so every one of these is a 2.
+  it('exits 2 on an unknown option', () => {
+    const result = spawnSync(process.execPath, [CLI, '--bogus'], { encoding: 'utf8' });
+    assert.equal(result.status, 2);
+    assert.match(String(result.stderr), /prove-cli:/);
+  });
+
+  it('exits 2 on an unexpected positional argument', () => {
+    const result = spawnSync(process.execPath, [CLI, 'plan.json'], { encoding: 'utf8' });
+    assert.equal(result.status, 2);
+    assert.match(String(result.stderr), /prove-cli:/);
+  });
+
+  it('exits 2 when the solver cannot start', () => {
+    // --jitless leaves WebAssembly undefined, so z3 throws on init: the plan is
+    // well formed and every input readable, and nothing about it was decided.
+    const dir = mkdtempSync(join(tmpdir(), 'prove-cli-'));
+    writeFileSync(join(dir, 'plan.json'), JSON.stringify(WELL_FORMED));
+    writeFileSync(join(dir, 'changed.json'), JSON.stringify(['src/a.py']));
+    const result = spawnSync(
+      process.execPath,
+      ['--jitless', CLI, '--plan', join(dir, 'plan.json'),
+       '--changed-files', join(dir, 'changed.json'), '--policy', POLICY_PATH],
+      { encoding: 'utf8' },
+    );
+    assert.equal(result.status, 2, String(result.stdout) + String(result.stderr));
+    assert.match(String(result.stderr), /prove-cli:/);
+  });
 });

@@ -146,6 +146,11 @@ def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, polic
     it is echoed in full. Exit 2 (or any inability to run at all): nothing
     was proved — an operational failure of this run, not evidence about the
     plan, logged as such.
+
+    Reading exit 1 as a claim about the plan rests on prove-cli routing every
+    uncaught throw to 2, so a crashed prover cannot arrive here as a disproof.
+    This branch does not parse the verdict lines to second-guess it: their
+    format is human-readable output nothing pins on either side.
     """
     # Checked here, not left to node: node exits 1 for a missing module, and
     # exit 1 means DISPROVED — an unbuilt dist/ must not read as an audit

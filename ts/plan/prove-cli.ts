@@ -9,9 +9,10 @@
  *
  * Exit codes: 0 every policy holds, 1 some policy is DISPROVED (counterexample
  * on stdout), 2 nothing was proved — inputs unreadable or malformed (including a
- * plan the schema gate rejects), or a query the solver could not decide. The
- * caller treats 1 and 2 both as "not verified", but only a 1 is evidence about
- * the plan.
+ * plan the schema gate rejects), a query the solver could not decide, or any
+ * uncaught throw at all. The caller treats 1 and 2 both as "not verified", but
+ * only a 1 is evidence about the plan, so 1 is reachable ONLY from a policy that
+ * was actually run and disproved.
  */
 
 import { readFileSync } from 'node:fs';
@@ -93,5 +94,22 @@ async function main(): Promise<number> {
   return undecided ? 2 : 0;
 }
 
-process.exitCode = await main();
-await shutdown();
+// One guard around the whole run, because exit 1 is a claim about the plan and
+// Node's default code for an uncaught throw is 1. Three sites throw outside
+// main()'s inner try — parseArgs on a malformed command line, the solver's
+// initialisation, and the proof loop — and each would otherwise reach the
+// executor as "plan DISPROVED" with no counterexample.
+try {
+  process.exitCode = await main();
+} catch (error) {
+  console.error(`prove-cli: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 2;
+} finally {
+  // A verdict already printed is not withdrawn by a failure to reap the
+  // solver's threads, so shutdown cannot change the exit code either way.
+  try {
+    await shutdown();
+  } catch {
+    /* nothing to do: the process is exiting */
+  }
+}
