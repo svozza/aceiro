@@ -93,6 +93,16 @@ ever tainted. A branch no test reaches is a branch nobody knows the behaviour of
   catch `maximum`, which no gate mentioned and no gate needed to. Refusing unknown
   spec keys is the structural version of the same guard, and it is the one that
   fails closed on a key that was never added to either reader.
+- **On the TypeScript side that assertion was a tautology, and the mention proxy
+  is only as good as the file set it reads.** `ts/plan/policy.ts` was counted as a
+  gate file, and it is the *loader*: `PLAN_KEYS` and the `PlanPolicy` interface
+  enumerate every plan key by construction, and `requireKeys` refuses a policy
+  carrying any key outside `PLAN_KEYS`. So a key that loaded at all was a key the
+  set mentioned, and one with a Python reader and no enforcement anywhere in
+  `prove.ts` or `schema.ts` passed — the bound-nobody-enforces case this addendum
+  calls worse than an absent one, in the one place it claimed to be guarded. The
+  file set is now the enforcing files only, and the exclusion carries its own
+  assertion so re-adding the loader goes red.
 - This does not narrow the port's remaining work. It removes three of the
   divergences the port would otherwise have had to re-derive, and it leaves the
   ones ADR-0003 already flags as empirical — `markdown-it`'s rendering behaviour

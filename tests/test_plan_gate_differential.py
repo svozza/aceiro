@@ -424,12 +424,17 @@ def test_the_out_of_frame_case_fails_when_every_step_path_is_a_changed_file():
 # to be made and recorded here.
 #
 # This is the assertion that would have caught plan.ordering having no Python
-# reader at all, and max_patched_files/max_changed_lines having no TypeScript one.
+# reader at all.
+#
+# The TS side is the ENFORCING files only. policy.ts is excluded although it is
+# part of the gate: it is the loader, and PLAN_KEYS plus the PlanPolicy interface
+# name every plan key by construction, so a policy that loads at all is a policy
+# policy.ts mentions. Counting it made this assertion a tautology on the TS side.
 PYTHON_GATE = REPO_ROOT / "src" / "smtithy" / "plan_verify.py"
+POLICY_LOADER = REPO_ROOT / "ts" / "plan" / "policy.ts"
 TS_GATE_FILES = [
     REPO_ROOT / "ts" / "plan" / "prove.ts",
     REPO_ROOT / "ts" / "plan" / "schema.ts",
-    REPO_ROOT / "ts" / "plan" / "policy.ts",
 ]
 
 # Keys read by one gate BY DESIGN, with the reason. ADR-0003 divides the labour:
@@ -437,9 +442,11 @@ TS_GATE_FILES = [
 # and containment checks until the port. Each entry is that division stated, so a
 # key drifting out of a gate cannot be waved through as "probably intentional".
 SINGLE_GATE_KEYS = {
-    # Anchoring and containment read file content, which only the executor's
-    # Python side has (ADR-0003 keeps the content verifier Python until the port).
-    "path_denylist": "both",
+    # ADR-0004's reservation, refused rather than read. policy.ts throws
+    # PolicyError for a non-empty control_flow, which is a refusal in the loader
+    # and not enforcement in an enforcing file; plan_verify's
+    # check_reserved_closures is the enforcing reader, so Python is the gate.
+    "control_flow": "python",
 }
 
 
@@ -447,20 +454,57 @@ def _policy_plan_keys() -> list[str]:
     return sorted(json.loads(POLICY_PATH.read_text())["plan"])
 
 
-def test_every_policy_key_has_a_reader_in_both_gates():
+def _keys_with_no_reader(exemptions: dict[str, str]) -> list[str]:
     python_text = PYTHON_GATE.read_text()
     ts_text = "\n".join(path.read_text() for path in TS_GATE_FILES)
     missing = []
     for key in _policy_plan_keys():
-        expected_in = SINGLE_GATE_KEYS.get(key, "both")
+        expected_in = exemptions.get(key, "both")
         if expected_in in ("both", "python") and key not in python_text:
             missing.append(f"{key}: no reader in {PYTHON_GATE.name}")
         if expected_in in ("both", "ts") and key not in ts_text:
             missing.append(f"{key}: no reader in ts/plan/")
+    return missing
+
+
+def test_every_policy_key_has_a_reader_in_both_gates():
+    missing = _keys_with_no_reader(SINGLE_GATE_KEYS)
     assert not missing, (
         "a policy key no gate reads is a rule that reads as enforcement while "
         "enforcing nothing:\n  " + "\n  ".join(missing)
     )
+
+
+def test_the_loader_cannot_witness_a_key_it_only_declares():
+    """policy.ts must stay out of the enforcing file set, and here is why.
+
+    The loader names every plan key by construction — PLAN_KEYS and the
+    PlanPolicy interface both enumerate them, and requireKeys refuses a policy
+    carrying any key outside PLAN_KEYS. So counting it as a reader means a key
+    with a Python reader and no enforcement anywhere in prove.ts or schema.ts
+    passes: a bound a reviewer reads in policy.json that the prover does not
+    enforce, which the ADR-0003 addendum calls worse than an absent one.
+    """
+    assert POLICY_LOADER not in TS_GATE_FILES
+    loader_text = POLICY_LOADER.read_text()
+    unnamed = [key for key in _policy_plan_keys() if key not in loader_text]
+    assert not unnamed, (
+        "policy.ts no longer names every plan key, so the tautology this exclusion "
+        f"exists for may have gone: {unnamed}"
+    )
+
+
+def test_every_exemption_is_load_bearing():
+    # An exemption whose removal changes nothing is documentation wearing an
+    # assertion's clothes: SINGLE_GATE_KEYS held one entry whose value was the
+    # "both" default, so emptying the whole mapping left both coverage tests
+    # green. Each entry must be the thing keeping a real gap named.
+    for key in SINGLE_GATE_KEYS:
+        without = {k: v for k, v in SINGLE_GATE_KEYS.items() if k != key}
+        assert any(item.startswith(f"{key}:") for item in _keys_with_no_reader(without)), (
+            f"SINGLE_GATE_KEYS[{key!r}] exempts nothing: the key has a reader in both gates, "
+            "so the entry states a division of labour that is not happening"
+        )
 
 
 def test_the_coverage_list_names_every_shipped_key():
