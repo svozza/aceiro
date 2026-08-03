@@ -190,6 +190,33 @@ class TestEvalsApprovalGate:
             "the PR head is written into"
         )
 
+    def test_the_trusted_checkout_holds_trusted_code(self, evals_steps):
+        # Every assertion above locates the gate by the PATH it runs from, and
+        # none establishes what that path CONTAINS. Adding
+        # `repository: ...head.repo.full_name` + `ref: ...head.ref` to the
+        # trusted checkout leaves all of them passing while trusted-base/ holds
+        # the fork's own code — so the gate deciding whether the PR was approved
+        # is code the PR supplied.
+        #
+        # Asserted as the ABSENCE of head references, not as the presence of
+        # `repository:`/`ref:`: the correct workflow supplies neither, defaulting
+        # to the base branch, so requiring them would fail against green code and
+        # pressure someone into editing the workflow to satisfy a test.
+        gate = next(s for s in evals_steps if "environment_gate.py" in s.get("run", ""))
+        workdir = gate["working-directory"].split("/")[0]
+        checkouts = [
+            s for s in evals_steps
+            if "actions/checkout" in s.get("uses", "")
+            and s.get("with.path", "").split("/")[0] == workdir
+        ]
+        assert checkouts, f"no checkout writes into {workdir}, so this assertion has gone stale"
+        for step in checkouts:
+            named = {k: v for k, v in step.items() if "pull_request.head" in str(v)}
+            assert not named, (
+                f"the checkout supplying {workdir} names the PR head in {sorted(named)}; "
+                "the gate would be asserted by code the pull request controls"
+            )
+
     def test_the_gate_runs_before_any_credential(self, evals_steps):
         gate = next(i for i, s in enumerate(evals_steps) if "environment_gate.py" in s.get("run", ""))
         creds = [
@@ -486,3 +513,4 @@ class TestOtherWorkflowsStayCorrect:
                         "ai-pr-review.yml's cache key must come from the pinned harness "
                         f"checkout, not the consumer's tree; got {value!r}"
                     )
+
