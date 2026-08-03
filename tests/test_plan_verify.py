@@ -1032,10 +1032,11 @@ class TestCommandedFindingScope:
         contained({"steps": [anchored_patch("s0", path="src/util.py", old="def check(path):\n",
                                             new="def check(path=None):\n")]})
 
-    def test_a_plan_with_no_fix_step_is_not_scope_checked_here(self):
-        # A plan expressing no fix has no path set to compare, so scope has
-        # nothing to say about it; cardinality is what refuses one that does
-        # nothing useful (open_pr with no push_branch, and so on).
+    def test_a_plan_with_no_fix_step_has_no_paths_for_scope_to_compare(self):
+        # Scope itself is silent on such a plan, by construction: there is no path
+        # set. What refuses it is cardinality — see
+        # TestWriteChainCardinality.test_a_plan_with_no_fix_step_rejects, which is
+        # the check this docstring used to claim without it existing.
         contained({"steps": [push_step("s0")]}, commanded_finding=self.FINDING)
 
 
@@ -1074,6 +1075,24 @@ class TestWriteChainCardinality:
                            open_pr_step("s3", branch="smtithy/other")]},
                 PLAN_POLICY,
             )
+
+    def test_a_plan_with_no_fix_step_rejects(self):
+        # A fixless write chain: push + open_pr, ordered legally, every write-class
+        # kind within its count. It verified WHOLE -- scope has no path set to
+        # compare and containment has nothing to contain -- so decide_delivery's
+        # refusal was the only guard on the one shape that reaches
+        # `contents: write` while remediating nothing. Both engines found this.
+        with pytest.raises(Rejection, match="no fix step"):
+            check_plan_cardinality({"steps": [push_step("s0"), open_pr_step("s1")]}, PLAN_POLICY)
+
+    def test_a_label_only_plan_rejects(self):
+        with pytest.raises(Rejection, match="no fix step"):
+            check_plan_cardinality({"steps": [label_step("s0")]}, PLAN_POLICY)
+
+    def test_a_suggest_step_is_a_fix_step(self):
+        # The other bound: suggest and patch both count, or the refusal would
+        # reject ADR-0009's default delivery.
+        check_plan_cardinality({"steps": [suggest_step("s0")]}, PLAN_POLICY)
 
     def test_open_pr_without_a_push_rejects(self):
         # Nothing to open a PR from: the branch was never pushed.

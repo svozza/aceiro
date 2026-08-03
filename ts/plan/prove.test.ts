@@ -519,6 +519,23 @@ describe('proveCardinality', () => {
     assert.equal(result.holds, false);
   });
 
+  it('CATCHES a plan with no fix step', () => {
+    // A fixless write chain: legally ordered, every write-class kind within its
+    // count, and it proved clean on both gates. The frame quantifies over the
+    // paths a plan modifies and there are none, so every containment obligation
+    // holds vacuously -- leaving the executor's delivery refusal as the only
+    // guard on the one shape that reaches `contents: write` remediating nothing.
+    const result = proveCardinality(plan(pushBranch(), openPr()), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('no fix step')));
+  });
+
+  it('CATCHES a label-only plan', () => {
+    const result = proveCardinality(plan({ kind: 'label', args: { name: 'needs-tests' } }), POLICY);
+    assert.equal(result.holds, false);
+    assert.ok(result.counterexample?.path.some((line) => line.includes('no fix step')));
+  });
+
   it('CATCHES open_pr with no push_branch', () => {
     const result = proveCardinality(plan(patch('src/a.py'), openPr()), POLICY);
     assert.equal(result.holds, false);

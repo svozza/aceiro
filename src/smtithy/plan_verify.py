@@ -680,10 +680,24 @@ def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
     shape. Here rather than in decide_delivery because this phase is where the
     retry is: a Rejection is feedback the session can act on, while a Refusal at
     delivery time is a run that already spent its budget.
+
+    A plan with no fix step at all is refused for the same reason: it has no path
+    set, so check_commanded_scope has nothing to compare and every containment
+    check passes vacuously, leaving a fixless write chain (push + open_pr) verified
+    whole. decide_delivery refuses it, but a gate that admits a plan whose only
+    steps are write-class makes delivery the sole guard on the one shape that
+    reaches `contents: write` while remediating nothing.
     """
     kinds = [step["kind"] for step in plan["steps"]]
     step_kinds = policy_plan["step_kinds"]
     write_kinds = [kind for kind, spec in step_kinds.items() if spec["write_class"]]
+
+    if not any(kind in ANCHORED_KINDS for kind in kinds):
+        raise Rejection(
+            f"plan.steps: no fix step ({' or '.join(ANCHORED_KINDS)}); a plan whose steps are "
+            "all delivery scaffolding remediates nothing, and has no path for scope or "
+            "containment to check"
+        )
 
     for kind in sorted(write_kinds):
         count = kinds.count(kind)

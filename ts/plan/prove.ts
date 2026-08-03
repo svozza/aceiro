@@ -456,6 +456,16 @@ export function proveCardinality(plan: Plan, policy: PlanPolicy): ProofResult {
   const writeKinds = writeClassKinds(policy);
   const violations: string[] = [];
 
+  // A plan with no fix step modifies no path, so the frame condition and every
+  // other containment obligation holds vacuously over an empty set — a fixless
+  // write chain proved clean on both gates while reaching `contents: write` and
+  // remediating nothing.
+  if (!kinds.some((kind) => ANCHORED_KINDS.includes(kind))) {
+    violations.push(
+      `no fix step (${ANCHORED_KINDS.join(' or ')}): a plan whose steps are all delivery ` +
+        'scaffolding remediates nothing, and bounds no path for the frame to quantify over',
+    );
+  }
   for (const kind of [...writeKinds].sort()) {
     const count = kinds.filter((k) => k === kind).length;
     if (count > 1) violations.push(`${count} ${kind} steps: a write-class kind may appear at most once`);

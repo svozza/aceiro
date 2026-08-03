@@ -170,6 +170,7 @@ REJECTION_POLICY = {
     "out-of-frame-patch": "frame",
     "denylisted-path-that-is-a-changed-file": "path denylist",
     "denylisted-pem-that-is-a-changed-file": "path denylist",
+    "write-chain-with-no-fix-step": "cardinality",
     "over-max-steps": "<schema>",
     "over-max-patched-files": "max_patched_files",
     "over-max-changed-lines-in-one-step": "max_changed_lines",
@@ -371,6 +372,15 @@ CASES = [
     (
         "over-max-changed-lines-in-one-step",
         {"steps": [anchored_patch("s0", new="x\n" * 200)]},
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # A fixless write chain: ordered legally, each write-class kind once, and
+        # it verified AND proved clean on both gates -- containment quantifies over
+        # the paths a plan modifies, and there are none.
+        "write-chain-with-no-fix-step",
+        {"steps": [push_step("w1"), open_pr_step("w2")]},
         PLAN_CHANGED_FILES,
         False,
     ),

@@ -481,15 +481,25 @@ class TestMain:
         assert "DISPROVED" in capsys.readouterr().err
         assert calls == []
 
-    def test_refused_plan_never_reaches_the_network(self, main_env, monkeypatch, capsys):
-        # Verifies and proves (a lone label is in-grammar and vacuously
-        # ordered) but no delivery carries it: refuse before any fetch.
+    def test_a_plan_no_delivery_carries_never_reaches_the_network(self, main_env, monkeypatch, capsys):
+        # A lone label is in-grammar and vacuously ordered. It is now refused by
+        # cardinality in the gate rather than by decide_delivery, which is strictly
+        # earlier -- a Rejection is feedback a session can act on. The property
+        # this test exists for is unchanged: nothing is fetched.
         (main_env / "plan.json").write_text(json.dumps({"steps": [label()]}))
         calls = stub_pr(monkeypatch, pr_payload())
         with pytest.raises(SystemExit):
             execute_plan.main()
-        assert "refused: no fix step" in capsys.readouterr().err
+        assert "no fix step" in capsys.readouterr().err
         assert calls == []
+
+    def test_decide_delivery_still_refuses_a_fixless_plan_on_its_own(self):
+        # The gate now rejects this shape first, so the executor's own refusal is
+        # no longer reachable through main(). It stays as defence in depth -- the
+        # executor re-decides rather than trusting that a gate ran -- and is
+        # asserted directly so removing it cannot go unnoticed.
+        with pytest.raises(Refusal, match="no fix step"):
+            decide_delivery([push("s0"), open_pr("s1")])
 
     def test_moved_head_fails_after_the_decision(self, main_env, monkeypatch, capsys):
         stub_pr(monkeypatch, pr_payload(head="moved-sha"))

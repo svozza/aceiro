@@ -101,9 +101,10 @@ def decide_delivery(steps: list[dict]) -> Delivery:
     opens = kinds.count("open_pr")
 
     if not fix_kinds:
-        # The label-only hole: a plan with no fix step verifies today (the
-        # grader catches it, the verifier does not). A remediation that fixes
-        # nothing must fail where the commander sees it, not no-op.
+        # Both gates' cardinality now reject this shape, so it should not arrive
+        # here. Kept because the executor re-decides rather than trusting that a
+        # gate ran: a remediation that fixes nothing must fail where the commander
+        # sees it, not no-op.
         raise Refusal("no fix step (suggest or patch): the plan delivers nothing")
 
     if len(fix_kinds) > 1:

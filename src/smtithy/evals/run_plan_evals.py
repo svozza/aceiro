@@ -144,7 +144,9 @@ def check_shape(plan: dict, expect: dict) -> None:
         if not fixes:
             raise EvalFailure(
                 "the plan contains no fix step (patch/suggest) at all — a label-only or "
-                "scaffolding-only plan verifies but remediates nothing"
+                "scaffolding-only plan remediates nothing. Both gates' cardinality now "
+                "reject this shape, so reaching here means the model was not even asked "
+                "for a fix"
             )
         if kinds not in allowed:
             raise EvalFailure(
