@@ -6,7 +6,7 @@ record. **The report is evidence, not a status document — read this first.**
 
 Branch `feat/plan-executor`. Baseline `3bc6c69`.
 
-## Primary findings: 23 of 26 fixed
+## Primary findings: all 26 fixed
 
 | # | Finding (short) | Commit |
 |---|---|---|
@@ -33,7 +33,7 @@ Branch `feat/plan-executor`. Baseline `3bc6c69`.
 | 20 | A lone surrogate crashes the Python gate | `0cd6fdc` |
 | 21 | Multiple same-file suggestions admitted (resolved by user decision: refuse) | `4d80318` |
 | 22 | prove-cli exits 1 for a malformed command line or early crash | `4729106` |
-| 23 | parsePlanJson's missing-`source` path is dead code | `c3ba722`, then `HEAD` |
+| 23 | parsePlanJson's missing-`source` path is dead code | `c3ba722`, then `f9467dd` |
 | 24 | Loader validates patterns without the enforcer's `u` flag (+ minor `g2-5`) | `e2528ab` |
 
 That table lists 25 rows for 26 findings because 17 and 17b are counted as one in the
@@ -77,24 +77,80 @@ re-derive them:
   policy loader mirroring `ts/plan/policy.ts` was considered and deferred — it overlaps
   several open minors (`g1-6`, `c1-5`, `g4-7`, `c4-6`) and would want its own ADR.
 
-## Minor findings
+## Minor findings: all 30 resolved
 
-**Not started.** 30 in the report, less those merged into landed primaries:
+Every entry is fixed, closed with a reason, or subsumed. 12 landed as fixes, 7 as
+test-integrity commits, 4 recorded as verified-not-a-defect, 7 subsumed by primaries.
 
-- `c3-4` → primary 15; `g4-4`/`g4-5`/`c4-2` → primary 11; `c3-10` → primary 9;
-  `c6-5`/`g6-3` → primary 21; `g2-5` → primary 24 (landed with it in `e2528ab`);
-  `g1-6` → **subsumed by primary 24's eager sweep** in `e2528ab`.
-- `c6-1` was already recorded as largely superseded; its message-quality half is
-  primary 22, landed in `4729106`.
+### Fixed
 
-Carried guidance for whoever takes them:
+| id | what changed | commit |
+|---|---|---|
+| `c8-1` + `g8-4` | nested `findings_any`/`steps_any` keys validated (was **high as raised**) | `5a324dd` |
+| `g8-2` | BASE reached by path-bearing fields with real containment, not substring | `7997e14` |
+| `c4-6` | a top-level field reaches a reader or the policy-error path | `71f2db4` |
+| `g4-7` | `ARRAY_KEYS` for the findings array's own keys | `78f097d` |
+| `g4-6` | generator contract derived from the policy | `49e1300` |
+| `g5-6` | a marker that cannot match its own comment is refused | `17f2569` |
+| `c7-4` | a path with a space read from a header naming one path | `1b7c45b` |
+| `c1-6` + `g1-3` | a fixless write chain refused in both gates | `1f9934d` |
+| `c7-3` | the capture cannot mask the failure it is evidence of; 6 encodings | `9a03193` |
+| `c7-6` + `g7-4` | an unsized blob is refused (cheap hardening, no measured bypass) | `7386782` |
+| `g7-3` | a list at the page limit cannot be shown complete | `5979cd2` |
+| `c1-5` | plan-policy keys allowlisted, both directions | `f4af2a5` |
 
-- The four-item `post.py` concurrency cluster (`g5-1`, `g5-3`, `g5-4`, `g5-5`) is the
-  least-corroborated group in the report: one engine, every item PLAUSIBLE, and the
-  shipped per-PR concurrency group already covers the scenarios. Expect to close most.
-- `c7-6`/`g7-4` (missing blob `size`): cheap hardening at most; neither engine could
-  construct a real API response with a blob entry lacking `size`. Do **not** reach for
-  `git fetch --filter` — it would hand the generator a quarantine missing blobs.
+### Test integrity
+
+| id | what changed | commit |
+|---|---|---|
+| `g8-1` | the trusted checkout is asserted to hold trusted code | `c497d3e` |
+| `g8-7` | every action and install pinned, in every workflow | `db860f9` |
+| `g3-2` | a rejecting case pinned to its reason, not a boolean | `71e89b1` |
+| `c3-8` | `max_steps` bounded in both directions | `ddfa80e` |
+| `c3-11` + `g3-6` | a stale build fails; an absent one skips | `c2d924a` |
+| `c3-12` | a case rejects for its own reason and no other | `9206f23` |
+| `g3-1` + `g3-4` | the coverage census, enforced | `55cbbc6` |
+
+### Closed: verified, not fixing
+
+- **`g5-1`** — REFUTED as stated. A lost write response does not "skip" the post-write
+  drift gate: `api_request` raises, so the run dies at the write and never reaches the
+  recheck. Demonstrated by stubbing a `URLError` on the POST. `PATCH` is retried 4×.
+- **`g5-3`, `g5-4`, `g5-5`** — the shipped per-PR concurrency group
+  (`cancel-in-progress: true`) plus the SHA-stamped withdrawal cover the cross-revision
+  case, which `tests/test_post.py:664` already pins. `g5-5` reproduces mechanically but
+  its impact claim does not: the oldest comment keeps its previous review, so the PR is
+  never left holding only retirement notices. Same-SHA collision needs a consumer to drop
+  the concurrency group, and both runs then reviewed the same diff.
+- **`c6-4` + `g6-2`** — recorded rather than fixed, which the report asked for either way
+  (`48cb0e6`). Nothing in-process can establish membership: the accepted artifact is
+  another job's output, so re-reading it from the same bundle compares a forgeable input
+  against a forgeable copy. What bounds it today is that the remediation lane has no
+  workflow, so nothing contributor-reachable composes `context_dir`.
+- **`g1-2`** and **`c1-2`** — recorded in the docstrings (`467bba7`). `g1-2` is inherent
+  to anchoring the scan to the plan. `c1-2` does not hold as stated: the anchoring loop
+  threads `applied` through `suggest` and `patch` alike, so a suggestion is checked
+  against pending content; cardinality refuses two on one path besides.
+
+### Subsumed by primaries
+
+`c3-4` → 15 · `g4-4`/`g4-5`/`c4-2` → 11 · `c3-10` → 9 · `c6-5`/`g6-3` → 21 ·
+`g2-5` → 24 · `g1-6` → 24's eager sweep · `c6-1` → 22 · `g8-5` → 16 (verified by
+deleting the `assert_no_symlinks` call: both lane tests fail, so the order is pinned)
+
+## Premise corrections found in the minor batch
+
+- **`g5-1`** — refuted; see above.
+- **`g5-5`** — reproduces, but leaves the previous review visible rather than only
+  retirement notices.
+- **`c1-2`** — the stated location still admits the shape; what refuses it is cardinality,
+  a different phase. The exploit is dead, the finding's own claim was wrong.
+- **`c3-8`** — the candidate's stated precondition (needs finding 2 repaired first) is
+  wrong: `max_steps` is checked in `check_plan_schema`, before the anchoring phase that
+  confounded the other cases.
+- **`c3-12`** — the report's named mutation (doubling `max_changed_bytes`) was already
+  caught. The real gap was that no test asserted a case rejects *only* for its own
+  reason.
 
 ## Scope boundary carried forward (not a defect)
 
@@ -110,11 +166,21 @@ weakening the note. Do not soften it. Moving the guard needs its own decision.
 All four green, from a clean `dist/`:
 
 ```
-.venv/bin/python -m pytest tests/ -q                                # 1271 passed
-npm test && npm run typecheck                                       # 163 pass, typecheck clean
+.venv/bin/python -m pytest tests/ -q                                # 1373 passed
+npm test && npm run typecheck                                       # 165 pass, typecheck clean
 npm run build                                                       # required BEFORE the differential
-.venv/bin/python -m pytest tests/test_plan_gate_differential.py -q  # 37 passed
+.venv/bin/python -m pytest tests/test_plan_gate_differential.py -q  # 97 passed
 ```
 
-`docs/architecture.html` per-node counts move with these: 1271 pytest / 163 node,
+`docs/architecture.html` per-node counts move with these: 1373 pytest / 165 node,
 `execute_plan` node 42.
+
+The differential grew from 37 to 97: the reason table, the exclusivity check and the
+coverage census are parametrised per case, and four cases were added
+(`over-both-the-line-and-byte-caps`, `over-max-steps`,
+`several-steps-well-under-max-steps`, `denylist-near-miss-that-must-be-admitted`,
+`write-chain-with-no-fix-step`).
+
+**Run `npm run build` first.** The corpus now FAILS on a stale `dist/` rather than
+silently testing the previous prover (`c2d924a`), and skips entirely when `dist/` is
+absent so CI's Node-less `test_verifier` job stays correct.
