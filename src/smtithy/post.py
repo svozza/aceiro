@@ -43,6 +43,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import cast
 
@@ -165,6 +166,14 @@ def resolve_bot_login() -> str:
     return login
 
 
+# A model identifier's lexicon, and nothing else. render() splices this value
+# inside a code span inside a <sub>, so the requirement is lexical rather than
+# grammatical: no backtick, no `<`, no whitespace, no newline. `:` `/` `.` `-`
+# stay because Bedrock ARNs and inference-profile ids are built from them, and
+# the cap is generous for the same reason.
+MODEL_STAMP_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}")
+
+
 def read_model_stamp(artifact_dir: Path) -> str:
     """The model the generator actually invoked, for the attribution footer.
 
@@ -172,6 +181,11 @@ def read_model_stamp(artifact_dir: Path) -> str:
     rather than read from configuration here: both model arms are configured on
     every run — the Bedrock profile and the CLI model are separate inputs, each
     with a default — so configuration cannot say which one drove the session.
+
+    Constrained to MODEL_STAMP_RE, because the bundle is the generator job's
+    output and this executor trusts it for nothing else: an unconstrained string
+    interpolated into the footer composes Markdown structure of the model's
+    choosing under the harness's authenticated identity.
 
     Fail-closed. The stamp is the audit trail for "which model said this", and a
     placeholder would be a false one; there is no honest fallback.
@@ -182,6 +196,13 @@ def read_model_stamp(artifact_dir: Path) -> str:
     model = json.loads(read_harness_text(path)).get("model")
     if not isinstance(model, str) or not model:
         fail(f"run_metadata.json names no model, so the artifact cannot be attributed ({path})")
+    if not MODEL_STAMP_RE.fullmatch(model):
+        # The offending value is not echoed: it is the thing that composes
+        # structure, and the job log is the one emit path with no redaction.
+        fail(
+            "run_metadata.json names a model outside the identifier charset, so the artifact "
+            f"cannot be attributed ({path})"
+        )
     return model
 
 

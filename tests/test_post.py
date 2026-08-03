@@ -764,3 +764,52 @@ class TestModelStamp:
         with pytest.raises(SystemExit):
             post.main()
         assert posted == []
+
+    @pytest.mark.parametrize("model", [
+        # The stamp is spliced inside a code span inside a <sub>, so anything
+        # closing either one composes structure the template never emitted.
+        'claimed`</sub>\n\n## SYSTEM NOTICE\n\n@maintainer',
+        "claimed` · policy: `forged",
+        "<img src=x>",
+        "   ",
+        "",
+        "m" * 200,
+    ])
+    def test_a_model_stamp_outside_the_charset_posts_nothing(
+        self, main_env, monkeypatch, artifact_dir, model
+    ):
+        # The bundle is the generator job's output and the executor distrusts it
+        # for provenance, so this value is untrusted the same way. Lexical, not
+        # grammatical: a value spliced inside a code span needs a charset, and
+        # prose the markdown gate admits would still close the span.
+        (artifact_dir / "run_metadata.json").write_text(json.dumps({"model": model}))
+        stub_comment_store(monkeypatch, UNMOVED)
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
+
+        with pytest.raises(SystemExit):
+            post.main()
+        assert posted == []
+
+    @pytest.mark.parametrize("model", [
+        "global.anthropic.claude-opus-4-8",
+        "claude-sonnet-4-5",
+        "arn:aws:bedrock:eu-west-1:123456789012:inference-profile/eu.anthropic.claude-opus-4-8-v1:0",
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    ])
+    def test_the_real_model_identifiers_still_stamp(
+        self, main_env, monkeypatch, artifact_dir, model
+    ):
+        # The calibration: an inference-profile ARN carries `:`, `/`, `.` and
+        # `-` and is long, so the allowlist has to admit all four.
+        (artifact_dir / "run_metadata.json").write_text(json.dumps({"model": model}))
+        stub_comment_store(monkeypatch, UNMOVED)
+        posted = {}
+        monkeypatch.setattr(
+            post, "upsert_comment",
+            lambda repo, pr, body, marker=None, bot_login=None: posted.update(body=body),
+        )
+
+        post.main()
+
+        assert f"model: `{model}`" in posted["body"]
