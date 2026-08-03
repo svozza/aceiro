@@ -107,6 +107,33 @@ function codePointLength(text: string): number {
   return count;
 }
 
+/** The index of the first unpaired surrogate, or -1.
+ *
+ * JSON permits `\ud800` and both parsers accept it, so a plan can carry a string
+ * that is not encodable text — and the Python twin's later phases encode it, for
+ * the anchor and for the audit record, raising UnicodeEncodeError rather than a
+ * Rejection. The two gates have to agree on whether such a plan is well-formed.
+ *
+ * Pairing is checked rather than the range alone, because a JS string keeps UTF-16
+ * units: an ordinary emoji IS a high surrogate followed by a low one. The Python
+ * twin needs no pairing logic, since `json.loads` combines a valid pair into one
+ * code point. */
+function unpairedSurrogateAt(text: string): number {
+  for (let i = 0; i < text.length; i += 1) {
+    const unit = text.charCodeAt(i);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = i + 1 < text.length ? text.charCodeAt(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        i += 1; // a well-formed pair
+        continue;
+      }
+      return i;
+    }
+    if (unit >= 0xdc00 && unit <= 0xdfff) return i; // a low surrogate with no high
+  }
+  return -1;
+}
+
 function checkScalar(value: unknown, spec: ScalarSpec, where: string): string | number {
   switch (spec.type) {
     case 'string': {
@@ -120,6 +147,18 @@ function checkScalar(value: unknown, spec: ScalarSpec, where: string): string | 
         throw new Rejection(
           `${where}: expected a literal string, got ${shape}` +
             (shape === 'object' ? ' — argument_forms admits only ["literal"], so bindings are not accepted' : ''),
+        );
+      }
+      // Before the bounds, which are all total on a surrogate: the length is
+      // measurable and NFC is a no-op, so the value would satisfy every declared
+      // constraint and reach a gate that has to encode it.
+      const surrogate = unpairedSurrogateAt(value);
+      if (surrogate !== -1) {
+        const code = value.charCodeAt(surrogate).toString(16).toUpperCase().padStart(4, '0');
+        throw new Rejection(
+          `${where}: contains an unpaired surrogate (U+${code}) at position ${surrogate}, which is ` +
+            'not encodable text; a plan argument must be a string this gate can write to a file ' +
+            'and to the audit log',
         );
       }
       // NFC before measuring, so decomposed forms cannot smuggle extra budget.

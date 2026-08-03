@@ -270,6 +270,28 @@ describe('scalar bounds', () => {
     rejected({ steps: [{ id: 'b', kind: 'push_branch', args: { name: '🙂'.repeat(21) } }] }, /exceeds max_length/);
   });
 
+  it('rejects an unpaired surrogate, which no UTF-8 encoder will take', () => {
+    // JSON permits \ud800 and both parsers accept it, so a plan can carry a
+    // string that is not encodable text. The Python twin's containment phase
+    // encodes and raises UnicodeEncodeError rather than a Rejection, so the two
+    // gates disagreed on whether such a plan is even well-formed -- the prover
+    // held all six policies while the verifier crashed. Twin of
+    // test_plan_verify's test_an_unpaired_surrogate_is_a_shape_violation.
+    rejected({ steps: [{ id: 'b', kind: 'push_branch', args: { name: '\ud800' } }] }, /unpaired surrogate/);
+    rejected({ steps: [{ id: 'b', kind: 'push_branch', args: { name: 'a\udfffb' } }] }, /unpaired surrogate/);
+    rejected({ steps: [{ id: 'b', kind: 'push_branch', args: { name: 'x\ud83d' } }] }, /unpaired surrogate/);
+  });
+
+  it('accepts a PAIRED surrogate, which is an ordinary astral character', () => {
+    // The calibration: an emoji IS a surrogate pair in UTF-16, so a check
+    // reading code units would refuse it.
+    const plan = checkPlanSchema(
+      { steps: [{ id: 'b', kind: 'push_branch', args: { name: '🎉' } }] },
+      POLICY,
+    );
+    assert.equal(plan.steps[0]?.args['name'], '🎉');
+  });
+
   it('anchors patterns at both ends', () => {
     // An unanchored pattern accepts anything with a matching substring -- the
     // shape of the §17 dotfile defect.

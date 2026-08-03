@@ -321,6 +321,29 @@ TEXT_CASES = [
         True,
     ),
     (
+        # A lone surrogate is legal JSON and survives both parsers, so it is a
+        # spelling case: json.dumps would write it back as an escape either way,
+        # but the value it produces is a string no UTF-8 encoder takes. The Python
+        # gate's containment phase encoded it and raised UnicodeEncodeError -- not
+        # a Rejection -- while the prover held all six policies, so the two gates
+        # disagreed on whether the plan is even well-formed. No admit/reject case
+        # could see it: an uncaught exception is neither.
+        "patch-new-holding-a-lone-surrogate",
+        '{"steps": [{"id": "s0", "kind": "patch", "args": {"path": "src/app.py", '
+        '"old": "def load(path):\\n", "new": "\\ud800"}}]}',
+        PLAN_CHANGED_FILES,
+        False,
+    ),
+    (
+        # The paired control: an astral code point spelled as the surrogate pair
+        # JSON uses for it is ordinary text, and both gates must admit it.
+        "patch-new-holding-a-paired-surrogate",
+        '{"steps": [{"id": "s0", "kind": "patch", "args": {"path": "src/app.py", '
+        '"old": "def load(path):\\n", "new": "\\ud83c\\udf89 fixed\\n"}}]}',
+        PLAN_CHANGED_FILES,
+        True,
+    ),
+    (
         # Exponent notation is a float to Python too.
         "suggest-line-in-exponent-notation",
         '{"steps": [{"id": "s0", "kind": "suggest", "args": {"path": "src/app.py", '

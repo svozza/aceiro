@@ -59,6 +59,15 @@ ID_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 PLAN_KEYS = frozenset({"steps"})
 STEP_KEYS = frozenset({"id", "kind", "args"})
 
+# JSON permits \ud800 and both parsers accept it, so a plan can carry a string
+# that is not encodable text: every later phase encodes it (containment for the
+# anchor, the transcript for the audit record) and raises UnicodeEncodeError,
+# which is not a Rejection. Any surrogate reaching here is UNPAIRED by
+# construction — json.loads combines a valid pair into one astral code point — so
+# the range test needs no pairing logic. ts/plan/schema.ts's twin does, since a
+# JS string keeps UTF-16 units.
+SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
 
 def check_reserved_closures(policy_plan: dict) -> None:
     """Refuse a policy that widens ADR-0004's reservations past what this gate
@@ -180,6 +189,15 @@ def check_plan_schema(candidate, policy_plan: dict) -> None:
                 raise Rejection(
                     f"{arg_where}: expected a literal, got {type(value).__name__} — "
                     "argument_forms admits only [\"literal\"], so bindings are not accepted"
+                )
+            # Before check_scalar, which is total on a surrogate: len works and
+            # NFC is a no-op, so the value would pass every declared bound and
+            # reach a phase that encodes.
+            if isinstance(value, str) and (found := SURROGATE_RE.search(value)):
+                raise Rejection(
+                    f"{arg_where}: contains an unpaired surrogate (U+{ord(found.group()):04X}) at "
+                    f"position {found.start()}, which is not encodable text; a plan argument must "
+                    "be a string this gate can write to a file and to the audit log"
                 )
             check_scalar(value, arg_spec, arg_where)
 

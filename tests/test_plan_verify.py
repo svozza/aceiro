@@ -203,6 +203,27 @@ class TestArgs:
     def test_suggest_step_passes_whole(self):
         check_plan_schema({"steps": [suggest_step()]}, PLAN_POLICY)
 
+    # JSON permits \ud800 and both parsers accept it, so a plan can carry a
+    # string no UTF-8 encoder will take. The containment phase encodes, the
+    # transcript encodes, and neither raises Rejection: the shape gate is where
+    # a plan that cannot be encoded stops being well-formed. Mirrors
+    # ts/plan/schema.test.ts.
+
+    @pytest.mark.parametrize("bad", ["\ud800", "a\udfffb", "x\ud83d"])
+    def test_an_unpaired_surrogate_is_a_shape_violation(self, bad):
+        with pytest.raises(Rejection, match="unpaired surrogate"):
+            check_plan_schema({"steps": [patch_step(new=bad)]}, PLAN_POLICY)
+
+    def test_an_unpaired_surrogate_in_any_string_arg_rejects(self):
+        with pytest.raises(Rejection, match="unpaired surrogate"):
+            check_plan_schema({"steps": [open_pr_step(title="Fix \ud800 it")]}, PLAN_POLICY)
+
+    def test_an_astral_character_is_not_a_surrogate(self):
+        # Calibration: an emoji IS a surrogate pair in UTF-16 and a single code
+        # point in Python, and it encodes fine. A check reading UTF-16 units
+        # would refuse it.
+        check_plan_schema({"steps": [patch_step(new="🎉 fixed\n")]}, PLAN_POLICY)
+
 
 class TestShippedPolicyAgreement:
     """The Python gate must enforce the SHIPPED policy, not a test double.
