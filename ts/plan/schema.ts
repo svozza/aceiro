@@ -36,11 +36,9 @@ const STEP_KEYS = ['id', 'kind', 'args'] as const;
  * revived. Declared here rather than taken from the lib types, which do not
  * describe it yet.
  *
- * Optional at the parameter, not just in the property: Node 20 passes no third
- * argument at all, so a runtime below the `engines` floor gives `undefined`
- * rather than an object with no `source`. `engines` is advisory and the executor
- * spawns whatever `node` is on PATH, so both spellings of "no source text" are
- * reachable and neither may be dereferenced. */
+ * Optional throughout, so no site dereferences it unconditionally: `source` is
+ * absent for objects and arrays even on a runtime that supplies the argument, and
+ * every supported runtime supplies it for a number. */
 interface JsonParseContext {
   readonly source?: string;
 }
@@ -50,8 +48,7 @@ interface JsonParseContext {
 const INTEGER_LEXEME_RE = /^-?(?:0|[1-9][0-9]*)$/;
 
 /**
- * A JSON.parse reviver deciding a number's integer-ness from its SOURCE TEXT,
- * and rejecting the plan when it cannot.
+ * A JSON.parse reviver deciding a number's integer-ness from its SOURCE TEXT.
  *
  * This exists because `1.0` and `1` parse to the same double, so
  * `Number.isInteger` cannot distinguish them — while Python's json reads the
@@ -63,23 +60,16 @@ const INTEGER_LEXEME_RE = /^-?(?:0|[1-9][0-9]*)$/;
  * keeps 9007199254740993 exactly, a double does not, and two gates checking
  * different numbers is the same defect in a quieter form.
  *
- * Exported so the no-source-text refusal is testable at all: no supported
- * runtime can reach it through JSON.parse, so the only way to exercise it is to
- * call this directly.
+ * A number with no source text is refused by the same predicate rather than by a
+ * branch of its own: `String(undefined)` is not an integer lexeme, so a runtime
+ * that stopped reporting source text would reject every plan carrying a number
+ * instead of admitting `1.0`. That is the fail-closed direction, and it needs no
+ * reachable-only-in-theory guard to hold.
  */
 export function reviveJsonNumber(_key: string, value: unknown, context?: JsonParseContext): unknown {
   if (typeof value !== 'number') return value;
   const source = context?.source;
-  if (source === undefined) {
-    // No source text means the runtime does not carry it, and integer-ness
-    // cannot be decided. Fail closed rather than silently falling back to the
-    // check that admits 1.0.
-    throw new Rejection(
-      'plan: this runtime does not report JSON source text, so an integer cannot be ' +
-        'told from a whole-numbered float; Node 22 or newer is required',
-    );
-  }
-  if (!INTEGER_LEXEME_RE.test(source)) {
+  if (!INTEGER_LEXEME_RE.test(String(source))) {
     throw new Rejection(
       `plan: ${source} is not an integer — a decimal point or exponent makes it a float, ` +
         'which the Python gate rejects, so it is not accepted here either',

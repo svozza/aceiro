@@ -357,20 +357,19 @@ describe('an integer is an integer LEXEME, as it is in Python', () => {
     );
   });
 
-  it('refuses to decide integer-ness on a runtime that reports no source text', () => {
-    // Node 20 passes the reviver no context argument at all (measured: V8 11.3
-    // gives `undefined`), and `engines` is advisory — nothing stops the executor's
-    // bare `node` from being one. Reading `.source` off it raised a TypeError
-    // whose message names neither the plan nor the runtime, so the guard below it
-    // could never be the thing that fired. Called directly because no supported
-    // runtime can reach it through JSON.parse.
-    assert.throws(() => reviveJsonNumber('line', 1, undefined),
-      { name: 'Rejection', message: /does not report JSON source text/ });
+  it('rejects rather than admits when no source text is reported', () => {
+    // Unreachable through JSON.parse on any supported runtime — every one of them
+    // reports source text for a number — so this is a direct call, pinning the
+    // DIRECTION the predicate fails in rather than a scenario. If a runtime ever
+    // stopped reporting it, the whole-numbered float this boundary exists to catch
+    // must not become admissible.
+    assert.throws(() => reviveJsonNumber('line', 1, undefined), Rejection);
+    assert.throws(() => reviveJsonNumber('line', 1, {}), Rejection);
   });
 
   it('decides integer-ness from the source text when the runtime reports it', () => {
-    // The other bound: the same entry point on the supported shape must not
-    // reject, or the guard above would be a gate on every plan carrying a number.
+    // The other bound: the supported shape must not reject, or the line above
+    // would be a gate on every plan carrying a number.
     assert.equal(reviveJsonNumber('line', 7, { source: '7' }), 7);
   });
 

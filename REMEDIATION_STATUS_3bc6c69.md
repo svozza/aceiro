@@ -33,7 +33,7 @@ Branch `feat/plan-executor`. Baseline `3bc6c69`.
 | 20 | A lone surrogate crashes the Python gate | `0cd6fdc` |
 | 21 | Multiple same-file suggestions admitted (resolved by user decision: refuse) | `4d80318` |
 | 22 | prove-cli exits 1 for a malformed command line or early crash | `4729106` |
-| 23 | parsePlanJson's missing-`source` path is dead code | `c3ba722` |
+| 23 | parsePlanJson's missing-`source` path is dead code | `c3ba722`, then `HEAD` |
 | 24 | Loader validates patterns without the enforcer's `u` flag (+ minor `g2-5`) | `e2528ab` |
 
 That table lists 25 rows for 26 findings because 17 and 17b are counted as one in the
@@ -60,6 +60,13 @@ re-derive them:
 
 ## Findings resolved by user decision
 
+- **Finding 23** — repair the guard, or delete it as dead code (the adjudicator offered
+  both). First fixed as a repair, on the reasoning that `engines` is advisory and Node 20
+  could therefore still run the prover. Decision: **Node 20 is deprecated and out of
+  scope**, so the branch is dead on every supported runtime and deletion is the honest
+  change. The no-source-text case is now refused by the integer-lexeme predicate itself
+  (`String(undefined)` is not a lexeme) rather than by a guard nothing can reach, so the
+  fail-closed direction survives the deletion without inert scaffolding.
 - **Finding 21** — ADR-0009 vs `prompts/ai-pr-plan.md` contradiction. Decision:
   **refuse — one `suggest` step per file**, enforced in cardinality in both gates, prompt
   corrected in the same commit. ADR-0009's "one suggestion per file per finding"
