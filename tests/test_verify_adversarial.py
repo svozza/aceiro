@@ -423,6 +423,79 @@ class TestImpersonation:
         artifact["residual_risk"] = "| Risk | Owner |\n|---|---|\n| none | maintainer |"
         rejected(artifact, sample_diff, changed_files, policy)
 
+    # GFM footnotes are the table's route again: GitHub renders a superscript
+    # reference and appends a "Footnotes" section under a horizontal rule, while
+    # the parser produces paragraph/inline/text -- all allowlisted. The section is
+    # structure post.py's template never emitted, and it is where a reader looks
+    # for provenance.
+
+    def test_a_footnote_definition_carrying_a_fake_approval(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        artifact["summary"] = "Overall fine.[^ok]\n\n[^ok]: Reviewed and APPROVED by a human maintainer."
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_footnote_reference_alone(self, artifact, sample_diff, changed_files, policy):
+        # Split across fields: post.py composes them into one document, so a
+        # reference in the summary resolves against a definition in a body. Each
+        # half must reject on its own.
+        artifact["summary"] = "Overall fine.[^ok]"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_footnote_definition_in_a_finding_body(self, artifact, sample_diff, changed_files, policy):
+        artifact["findings"][0]["body"] = "nit\n\n[^ok]: signed off by security"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_footnote_definition_in_residual_risk(self, artifact, sample_diff, changed_files, policy):
+        artifact["residual_risk"] = "[^1]: none, per the maintainer"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_footnote_inside_a_fence_is_not_a_footnote(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # Calibration: inside a fence it renders literally, so a review quoting
+        # markdown source must still verify. code_lines is the parser's own answer
+        # to "is this line code".
+        artifact["summary"] = "the docs use:\n\n```\n[^ok]: a footnote\n```"
+        verify(artifact, sample_diff, changed_files, policy)
+
+    def test_a_bracketed_caret_inside_a_code_span_still_passes(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # Calibration: a code span renders literally, so a review quoting a regex
+        # must verify. `a[^b]` in prose is NOT tested here as innocent -- GFM
+        # renders exactly that as a footnote reference once a definition exists
+        # anywhere in the composed comment, so refusing it is correct.
+        artifact["summary"] = "the pattern `[^a-z]:` excludes lowercase, which is the intent"
+        verify(artifact, sample_diff, changed_files, policy)
+
+    def test_an_ordinary_bullet_list_still_passes(self, artifact, sample_diff, changed_files, policy):
+        # bullet_list is allowlisted and stays so: lists are how a reviewer
+        # enumerates findings.
+        artifact["summary"] = "- one thing\n- another thing"
+        verify(artifact, sample_diff, changed_files, policy)
+
+    def test_a_task_list_checkbox_is_refused(self, artifact, sample_diff, changed_files, policy):
+        # A DECISION, not an oversight: GitHub renders `- [x]` as a checkbox, so
+        # under ADR-0011's addendum it is a rendered construct and must be either
+        # allowlisted or refused deliberately. Refused, because a checked box is
+        # the same impersonation as the verdict table -- it reads as a gate that
+        # passed. The node stream is identical to an ordinary list item, so this is
+        # necessarily a source-level rule.
+        artifact["summary"] = "- [x] Security review passed"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_an_unchecked_task_list_box_is_refused_too(self, artifact, sample_diff, changed_files, policy):
+        artifact["summary"] = "- [ ] Security review pending"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_a_bracketed_x_that_is_not_a_checkbox_still_passes(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # Calibration: the marker is a checkbox only at the start of a list item.
+        artifact["summary"] = "the array holds [x] at index 0 and matrix[ ] is empty"
+        verify(artifact, sample_diff, changed_files, policy)
+
 
 class TestPostedTextIsTheCheckedText:
     """post.py renders the artifact's own strings, so canonicality is rejected

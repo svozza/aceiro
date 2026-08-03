@@ -53,6 +53,21 @@ BAD_LINK_SCHEME_RE = re.compile(r"(?:\]\(|\]:)\s*(?:javascript|vbscript|data|fil
 # allowlist as explicit links; emails become mailto: (never https) and are
 # rejected outright. Same lookbehind philosophy as MENTION_RE: no trailing
 # boundary check, over-matching rejects safely.
+# Two more GFM constructs GitHub renders STRUCTURALLY and this parser produces no
+# node for, so the allowlist cannot see them (ADR-0011's addendum: a rule the
+# parser does not implement is not a construct that cannot appear, it is a
+# construct that appears unchecked). Matched on the source because there is
+# nothing else to match on — enabling a plugin would make the verifier RENDER
+# them, and the goal is refusal.
+#
+# A footnote reference becomes a superscript link and appends a "Footnotes"
+# section under a horizontal rule; a task-list marker becomes a checkbox. Both are
+# structure post.py's template never emitted, and a checked box reads as a gate
+# that passed — TestImpersonation's threat, same as the verdict table.
+FOOTNOTE_DEF_RE = re.compile(r"^ {0,3}\[\^[^\]\s]+\]:")
+FOOTNOTE_REF_RE = re.compile(r"\[\^[^\]\s]+\]")
+TASK_LIST_ITEM_RE = re.compile(r"^ {0,3}(?:[-+*]|\d{1,9}[.)])\s+\[[ xX]\]")
+
 ISSUE_REF_RE = re.compile(r"(?<![\w/])([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)#(\d+)")
 COMMIT_REF_RE = re.compile(r"(?<![\w/])([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)@([0-9a-fA-F]{7,40})\b")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
@@ -480,6 +495,33 @@ def check_markdown_field(text: str, policy_markdown: dict, where: str) -> None:
     # fields, so reject any field that carries a reference definition at all.
     if env.get("references"):
         raise Rejection(f"{where}: link reference definitions are not allowed")
+
+    # Refused on the rendered PROSE, per line: the parser emits no node for either
+    # construct, so there is nothing for walk_tokens to allowlist. extract_prose is
+    # the corpus because it drops code spans AND fenced blocks — a review quoting
+    # `[^a-z]:` as a regex, or a fence containing markdown source, renders those
+    # literally and must still verify, and a per-source-line scan cannot see an
+    # inline code span at all. A footnote REFERENCE is refused as well as a
+    # definition, because post.py composes every field into one document: a
+    # reference in the summary resolves against a definition in a finding body.
+    for line in extract_prose(tokens).split("\n"):
+        if FOOTNOTE_DEF_RE.match(line) or FOOTNOTE_REF_RE.search(line):
+            raise Rejection(
+                f"{where}: footnotes are not allowed; GitHub renders one as a superscript link "
+                'and appends a "Footnotes" section, which is structure this comment\'s template '
+                "does not emit"
+            )
+
+    # The checkbox marker is consumed by the list parser, so it is absent from the
+    # prose above and has to be matched on the source line. Fenced and indented
+    # code is skipped for the same reason as ever; an inline code span cannot
+    # contain one, because the marker only counts at a list item's start.
+    for line, is_code in code_lines(text):
+        if not is_code and TASK_LIST_ITEM_RE.match(line):
+            raise Rejection(
+                f"{where}: task-list checkboxes are not allowed; GitHub renders one as a checkbox, "
+                "and a checked box reads as a gate that passed"
+            )
 
     if BAD_LINK_SCHEME_RE.search(text):
         raise Rejection(f"{where}: link with a non-https scheme is not allowed")

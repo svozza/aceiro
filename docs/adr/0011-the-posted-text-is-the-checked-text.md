@@ -117,3 +117,50 @@ Rejecting rather than escaping, for this ADR's own reason: escaping the pipes
 would post something the verifier never saw. The calibration cost is bounded and
 tested — a table needs its delimiter row, so a shell pipeline, a `int | None`
 union and a regex alternation in prose are all still accepted.
+
+### The constructs with no node at all
+
+The addendum's rule was applied to the table and stopped there, and two GFM
+constructs answer its first half — *does GitHub render it structurally?* — with
+yes while the parser produces nothing to allowlist:
+
+- **Footnotes.** `[^ok]` becomes a superscript link, and GitHub appends a
+  `Footnotes` section under a horizontal rule. Under `commonmark` the reference
+  and its definition are both ordinary `paragraph`/`inline`/`text`, so
+  `Overall fine.[^ok]` plus a definition in a finding body verified clean and
+  rendered a section the template never emitted, carrying whatever the definition
+  said. That is the table's route exactly, and the section is where a reader looks
+  for provenance.
+- **Task lists.** `- [x]` becomes a checkbox. Its node stream is identical to an
+  ordinary list item — the marker is consumed by the list parser and does not
+  survive into the tree — so no allowlist decision can distinguish the two.
+
+**Both are refused.** For footnotes, the reference as well as the definition:
+`post.py` composes every field into one document, so a reference in the summary
+resolves against a definition in a finding body, and neither field's in-isolation
+check sees the pair. That is the same argument link reference definitions are
+refused under, reached independently.
+
+A checked box is refused for the verdict table's reason rather than the
+footnote's: it reads as a gate that passed, which is `TestImpersonation`'s threat
+whatever the surrounding text says. `bullet_list` and `ordered_list` stay
+allowed — enumerating findings is what a reviewer does.
+
+**Where the rule cannot be a parser question, it is a source question.** Neither
+construct can be refused by `allowed_nodes`, because neither produces a node, and
+adding a plugin would make the verifier *render* them when the goal is refusal.
+So these two are matched on text — the only such rules here, and the reason is
+that the parser has nothing to say about them.
+
+The corpus each is matched against is not the same, and the difference is not
+incidental. Footnotes are matched on `extract_prose`, which drops code spans and
+fenced blocks, so a review quoting `` `[^a-z]:` `` as a regex still verifies.
+The checkbox marker is absent from that prose, so it is matched on the source
+line with `code_lines` skipping code. A per-source-line scan cannot see an inline
+code span, which is what the first rule needs and the second does not.
+
+Calibration is tested in both directions: a caret inside a code span, a plain
+bullet list, an ordered list, `matrix[i][j]`, and a bare `[x]` in prose all still
+verify. `a[^b]` in prose does **not**, and that is correct rather than a
+false positive — GFM renders it as a reference as soon as any definition exists in
+the composed comment.
