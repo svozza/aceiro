@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { checkPlanPolicy, PolicyError, Rejection, type PlanPolicy } from './policy.js';
-import { checkPlanSchema, parsePlanJson } from './schema.js';
+import { checkPlanSchema, parsePlanJson, reviveJsonNumber } from './schema.js';
 
 const POLICY: PlanPolicy = checkPlanPolicy({
   max_steps: 3,
@@ -355,6 +355,23 @@ describe('an integer is an integer LEXEME, as it is in Python', () => {
       () => parsed('{"steps":[{"id":"s","kind":"suggest","args":{"path":"a.py","line":9007199254740993}}]}'),
       { name: 'Rejection', message: /exactly/ },
     );
+  });
+
+  it('refuses to decide integer-ness on a runtime that reports no source text', () => {
+    // Node 20 passes the reviver no context argument at all (measured: V8 11.3
+    // gives `undefined`), and `engines` is advisory — nothing stops the executor's
+    // bare `node` from being one. Reading `.source` off it raised a TypeError
+    // whose message names neither the plan nor the runtime, so the guard below it
+    // could never be the thing that fired. Called directly because no supported
+    // runtime can reach it through JSON.parse.
+    assert.throws(() => reviveJsonNumber('line', 1, undefined),
+      { name: 'Rejection', message: /does not report JSON source text/ });
+  });
+
+  it('decides integer-ness from the source text when the runtime reports it', () => {
+    // The other bound: the same entry point on the supported shape must not
+    // reject, or the guard above would be a gate on every plan carrying a number.
+    assert.equal(reviveJsonNumber('line', 7, { source: '7' }), 7);
   });
 
   it('leaves strings holding a decimal spelling alone', () => {
