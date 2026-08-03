@@ -1082,3 +1082,37 @@ class TestOptions:
 
     def test_submit_review_is_allowed_by_its_full_mcp_name(self):
         assert cc_loop.SUBMIT_TOOL in self.options().allowed_tools
+
+
+class TestTheStreamCaptureCannotMaskTheSessionsFailure:
+    """The `finally` exists so the capture is written even when the session dies,
+    and a partial stream IS the evidence a hang or crash leaves. An unguarded
+    write there can raise on its own and replace the exception that was
+    propagating -- losing the reason the session died in order to report that the
+    evidence about it could not be stored."""
+
+    def test_a_failing_capture_write_does_not_replace_the_session_error(
+        self, tmp_path, monkeypatch
+    ):
+        import cc_loop
+
+        def exploding_write_text(self, *args, **kwargs):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(Path, "write_text", exploding_write_text)
+
+        async def dying_query(**kwargs):
+            raise TimeoutError("the wall clock fired")
+            yield  # pragma: no cover - makes this an async generator
+
+        monkeypatch.setattr(cc_loop, "query", dying_query)
+        transcript = cc_loop.Transcript(tmp_path / "t.jsonl", POLICY)
+        try:
+            with pytest.raises(TimeoutError, match="wall clock"):
+                anyio.run(
+                    cc_loop._run_session, "prompt", object(), transcript,
+                    {"model": None, "tool_calls": 0}, tmp_path, 1, POLICY,
+                )
+        finally:
+            monkeypatch.undo()
+            transcript.close()

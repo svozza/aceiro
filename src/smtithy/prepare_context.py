@@ -249,7 +249,7 @@ def main() -> None:
         )
     )
     (args.output_dir / "diff.patch").write_bytes(diff)
-    (args.output_dir / "changed_files.json").write_text(json.dumps(changed_files))
+    (args.output_dir / "changed_files.json").write_text(json.dumps(changed_files), encoding="utf-8")
     print(f"context ready: {len(changed_files)} files, {len(diff)} diff bytes, head {expected_head}")
 
 

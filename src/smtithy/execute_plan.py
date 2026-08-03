@@ -275,7 +275,7 @@ def main() -> None:
     # at the bundle's copy would prove the frame condition against the very list
     # this executor declined to trust. One list, both gates.
     changed_files_path = args.artifact_dir / "changed_files.fetched.json"
-    changed_files_path.write_text(json.dumps(changed_files))
+    changed_files_path.write_text(json.dumps(changed_files), encoding="utf-8")
 
     # Re-verification happens HERE, where the write token lives. The plan
     # job's claim to have verified anything is not trusted — the posture

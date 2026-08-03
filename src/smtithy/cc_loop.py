@@ -381,8 +381,20 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
         # Redacted before being written, not after: the whole output_dir is
         # uploaded as a CI artifact, so writing the raw capture would route a
         # credential the agent surfaced around the transcript's secret scan.
-        text = "\n".join(lines) + ("\n" if lines else "")
-        (output_dir / f"cc_stream_{attempt}.jsonl").write_text(redact_text(text, policy))
+        #
+        # Guarded, because this block's purpose is that the capture survives a
+        # session that died: an exception raised HERE would replace the one
+        # propagating, so a full disk would be reported instead of the wall clock
+        # that fired. The capture is evidence about the failure, never a reason to
+        # lose it. encoding is explicit for the reason read_harness_text's is —
+        # the locale's would decide how the artifact is encoded.
+        try:
+            text = "\n".join(lines) + ("\n" if lines else "")
+            (output_dir / f"cc_stream_{attempt}.jsonl").write_text(
+                redact_text(text, policy), encoding="utf-8"
+            )
+        except OSError as exc:
+            print(f"could not write the captured stream: {exc}", file=sys.stderr)
     return result
 
 
@@ -460,11 +472,15 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         ending inherits the metadata write and the completion records instead of
         reproducing them.
         """
-        (output_dir / artifact_filename).write_text(json.dumps(artifact, indent=2, ensure_ascii=False))
+        (output_dir / artifact_filename).write_text(
+            json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         # Written by the arm that ran, for the executor to stamp into what it
         # posts. Configuration cannot supply this: both arms are configured on
         # every run and only one of them invoked a model.
-        (output_dir / "run_metadata.json").write_text(json.dumps({"model": state["model"]}))
+        (output_dir / "run_metadata.json").write_text(
+            json.dumps({"model": state["model"]}), encoding="utf-8"
+        )
         transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
         # The model that answered joins the completion record, so the transcript
         # carries both halves of the attribution: what was configured (run_start)
