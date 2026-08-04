@@ -6,7 +6,7 @@ list rather than reading the bundle's copies, re-runs verify_plan() in this
 process against the quarantine-fetched PR head (the same tree that anchored the
 plan), re-proves the ordering/frame/taint policies by running prove-cli as a
 subprocess (ADR-0003 put the prover in TypeScript; this process is Python), and
-only then decides how the fix is delivered.
+only then decides how the fix is delivered — and delivers it.
 
 The plan is the one thing that must come from the bundle, being the plan job's
 output. Everything the plan is CHECKED against is first-party.
@@ -33,10 +33,15 @@ a plan a policy disproves), exit 2 means nothing was proved at all (an
 operational failure of the run, not evidence about the plan) — whether because an
 input was unreadable or because the solver could not decide a query.
 
+Suggestion delivery is built (suggest.py, the reconciler this ports from the
+extraction source); the stacked follow-up pull request is not, and a plan that
+decides it fails closed rather than being delivered as the other mode — the
+atomicity a pull request's merge has is the whole reason that mode was chosen.
+
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA
 (the diff anchor), BASE_REF (the reviewed base BRANCH, which is what a retarget
 changes — ADR-0012), HEAD_REF (the reviewed head BRANCH, the one push target both
-gates refuse — ADR-0009 addendum).
+gates refuse — ADR-0009 addendum), RUN_URL (the delivered comment's footer).
 Arguments: --artifact-dir (plan.json; the bundle's diff.patch and
 changed_files.json travel as evidence only, since both gates' provenance inputs
 are re-fetched here), --pr-root (the quarantine-fetched reviewed head, the anchor
@@ -46,6 +51,7 @@ tree), --policy, and --prover (the built prove-cli.js).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -53,11 +59,14 @@ from pathlib import Path
 from typing import NamedTuple, cast
 
 from artifact import redact_line
+from diff_map import anchor_signatures
 from github_api import api_json, fail, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from plan_loop import check_commanded_finding
 from plan_verify import tree_content_source, verify_plan
+from post import read_model_stamp, resolve_bot_login
 from prepare_context import fetch_anchored_pair
+from suggest import reconcile_suggestions
 from verify import Rejection
 
 _HARNESS_ROOT = Path(__file__).resolve().parent
@@ -315,15 +324,40 @@ def main() -> None:
             "does not exist in the base repository to base a PR on (ADR-0009 addendum)"
         )
 
-    if delivery.mode == "suggestions":
-        print(f"delivery decision: suggestion comments on {delivery.path!r}")
-    else:
+    if delivery.mode != "suggestions":
+        # The stacked follow-up pull request is not built. Failing closed is
+        # deliberate: a commander must see "decided but not delivered", never a
+        # green run that posted nothing — and never this plan delivered as the
+        # other mode, whose atomicity is the whole reason it was chosen.
         print(f"delivery decision: stacked PR based on {pr['head']['ref']!r}")
+        fail(f"delivery ({delivery.mode}) is not implemented yet; nothing executed")
 
-    # The decision is as far as this executor goes today. Failing closed here
-    # is deliberate: a commander must see "decided but not delivered", never a
-    # green run that posted nothing.
-    fail(f"delivery ({delivery.mode}) is not implemented yet; nothing executed")
+    print(f"delivery decision: suggestion comments on {delivery.path!r}")
+
+    # Resolved before the first write: ownership decides which comments this
+    # token may edit or delete, so it must come from the credential in hand and
+    # fail closed rather than be guessed (post.resolve_bot_login).
+    bot_login = resolve_bot_login()
+
+    metadata = {
+        "model": read_model_stamp(args.artifact_dir),
+        "policy": hashlib.sha256(read_harness_text(args.policy).encode()).hexdigest()[:12],
+        "sha": reviewed_sha,
+        "run_url": os.environ["RUN_URL"],
+    }
+
+    # Identity keyed on the FETCHED diff, never the bundle's copy: a tampered
+    # bundle diff would let the plan job choose which existing comment its
+    # suggestion collides with. The window comes from the quarantine tree — the
+    # reviewed head, the same bytes that anchored the plan — which is what makes
+    # the key independent of where the hunk boundaries happen to fall
+    # (ADR-0009 addendum).
+    signatures = anchor_signatures(diff_text, content_source=tree_content_source(args.pr_root))
+
+    steps = [step for step in plan["steps"] if step["kind"] == "suggest"]
+    reconcile_suggestions(repo, pr_number, steps, signatures, metadata,
+                          bot_login=bot_login, head_sha=reviewed_sha)
+    print(f"delivered {len(steps)} suggestion(s) on {delivery.path!r}")
 
 
 if __name__ == "__main__":

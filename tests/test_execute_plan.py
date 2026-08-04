@@ -1,16 +1,19 @@
-"""Tests for execute_plan.py — the executor's re-verify + delivery decision.
+"""Tests for execute_plan.py — the executor's re-verify, decide and deliver.
 
-Chunk A of the plan executor: everything up to (and refusing at) the actual
-delivery. Network is never touched (api_json is stubbed); the prover runs as
-a stub subprocess script so the exit-code contract is exercised for real.
+Network is never touched (api_json is stubbed, and conftest's no_network fixture
+holds that claim to account); the prover runs as a stub subprocess script so the
+exit-code contract is exercised for real.
 
 Covers decide_delivery's whole case analysis (ADR-0009: the decision is the
 executor's, from checkable plan structure), run_prover's three-way exit
 contract (0 proved / 1 disproved-with-counterexample / 2 nothing-proved),
-the TOCTOU + fork gates on the PR snapshot, and main()'s fail-closed
-ordering: verify before prove, prove before decide, decide before any fetch.
+the TOCTOU + fork gates on the PR snapshot, main()'s fail-closed ordering
+(verify before prove, prove before decide, decide before any fetch), and the
+suggestion delivery's wiring — what reaches the reconciler, and what refuses
+before anything is posted. The reconciler's own behaviour is test_suggest.py.
 """
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -327,6 +330,21 @@ def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
     return artifact_dir
 
 
+def stub_delivery(monkeypatch):
+    """Neutralise the delivery for a test whose property is a GATE.
+
+    These reach delivery now that it is built, and it needs a bundle model stamp
+    and a resolved login that a gate test has no reason to supply. Stubbing the
+    reconciler and those two reads keeps each case about the gate it was written
+    for, rather than about what delivery happens to require.
+    """
+    monkeypatch.setattr(execute_plan, "reconcile_suggestions",
+                        lambda *args, **kwargs: None)
+    monkeypatch.setattr(execute_plan, "resolve_bot_login", lambda: "smtithy[bot]")
+    monkeypatch.setattr(execute_plan, "read_model_stamp", lambda artifact_dir: "test-model")
+    monkeypatch.setenv("RUN_URL", "https://github.com/o/r/actions/runs/1")
+
+
 def stub_pr(monkeypatch, response):
     calls = []
 
@@ -340,14 +358,17 @@ def stub_pr(monkeypatch, response):
 
 class TestMain:
     def test_verified_suggestion_plan_reaches_the_decision(self, main_env, monkeypatch, capsys):
-        # Chunk A ends AT the decision: the run must still exit non-zero
-        # ("decided but not delivered"), never green with nothing posted.
+        # The decision itself, without the delivery: resolve_bot_login is left
+        # unstubbed here, so the run fails closed at ownership resolution AFTER
+        # announcing the decision. TestSuggestionDelivery covers the delivery.
         stub_pr(monkeypatch, pr_payload())
+        monkeypatch.setattr(execute_plan, "resolve_bot_login",
+                            lambda: execute_plan.fail("could not resolve the token's own login"))
         with pytest.raises(SystemExit):
             execute_plan.main()
         captured = capsys.readouterr()
         assert "delivery decision: suggestion comments on 'src/app.py'" in captured.out
-        assert "not implemented yet" in captured.err
+        assert "could not resolve" in captured.err
 
     def test_verified_patch_plan_decides_stacked_pr_on_the_head_branch(
             self, main_env, monkeypatch, capsys):
@@ -385,9 +406,9 @@ class TestMain:
         seen = []
         monkeypatch.setattr(execute_plan, "run_prover",
                             lambda *args, **kwargs: seen.append(kwargs.get("head_branch")))
+        stub_delivery(monkeypatch)
         stub_pr(monkeypatch, pr_payload())
-        with pytest.raises(SystemExit):
-            execute_plan.main()
+        execute_plan.main()
         assert seen == ["smtithy/theirs"]
 
     def test_a_missing_head_ref_fails_closed(self, main_env, monkeypatch, capsys):
@@ -520,9 +541,9 @@ class TestMain:
     def test_suggestions_on_a_fork_are_fine(self, main_env, monkeypatch, capsys):
         # The fork gate applies to the stacked PR only: suggestions are the
         # one delivery that works across both repository topologies.
+        stub_delivery(monkeypatch)
         stub_pr(monkeypatch, pr_payload(head_repo="fork-owner/r"))
-        with pytest.raises(SystemExit):
-            execute_plan.main()
+        execute_plan.main()
         captured = capsys.readouterr()
         assert "delivery decision: suggestion comments" in captured.out
         assert "stacked PR refused" not in captured.err
@@ -600,10 +621,10 @@ class TestProvenanceInputsAreFirstParty:
         monkeypatch.setattr(execute_plan, "run_prover", spy_prover)
         # A plan the fetched list DOES support, so the run reaches the prover.
         (main_env / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
+        stub_delivery(monkeypatch)
         stub_pr(monkeypatch, pr_payload())
 
-        with pytest.raises(SystemExit):
-            execute_plan.main()
+        execute_plan.main()
 
         assert seen["listed"] == list(PLAN_CHANGED_FILES)
         assert self.FORGED not in seen["listed"], "the prover read the bundle's changed-file list"
@@ -616,8 +637,200 @@ class TestProvenanceInputsAreFirstParty:
             return PLAN_DIFF.encode(), list(PLAN_CHANGED_FILES)
 
         monkeypatch.setattr(execute_plan, "fetch_anchored_pair", fake_fetch)
+        stub_delivery(monkeypatch)
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+
+        assert asked == {"repo": "o/r", "base": "event-base-sha", "head": "reviewed-sha"}
+
+
+# -------------------------------------------------------------- delivery ---
+
+
+@pytest.fixture
+def delivery_env(main_env, monkeypatch):
+    """main_env plus the bundle's run_metadata.json and a resolved bot login.
+
+    Both are things delivery needs and the decision did not: the model stamp is
+    the attribution the posted comment carries, and the login is the security half
+    of comment ownership.
+    """
+    (main_env / "run_metadata.json").write_text(json.dumps({"model": "global.anthropic.claude-opus-4-8"}))
+    monkeypatch.setattr(execute_plan, "resolve_bot_login", lambda: "smtithy[bot]")
+    monkeypatch.setenv("RUN_URL", "https://github.com/o/r/actions/runs/1")
+    return main_env
+
+
+@pytest.fixture
+def posted(monkeypatch):
+    """Capture reconcile_suggestions' arguments without reaching the reconciler."""
+    calls = []
+    monkeypatch.setattr(
+        execute_plan, "reconcile_suggestions",
+        lambda repo, pr, steps, signatures, metadata, **kwargs: calls.append(
+            {"repo": repo, "pr": pr, "steps": steps, "signatures": signatures,
+             "metadata": metadata, **kwargs}),
+    )
+    return calls
+
+
+class TestSuggestionDelivery:
+    def test_a_verified_suggestion_plan_is_delivered(self, delivery_env, posted, monkeypatch, capsys):
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert len(posted) == 1
+        assert [s["id"] for s in posted[0]["steps"]] == ["s0"]
+        assert "delivered 1 suggestion" in capsys.readouterr().out
+
+    def test_the_run_exits_zero_once_delivered(self, delivery_env, posted, monkeypatch):
+        # The refusal chunk A ended on is gone: a delivered remediation must not
+        # look like a failed run.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()  # no SystemExit
+
+    def test_only_the_suggest_steps_are_delivered(self, delivery_env, posted, monkeypatch):
+        # A label step is a side effect, not a suggestion; handing it to the
+        # reconciler would index args it does not have.
+        (delivery_env / "plan.json").write_text(json.dumps({"steps": [suggest(), label()]}))
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert [s["kind"] for s in posted[0]["steps"]] == ["suggest"]
+
+    def test_the_review_is_bound_to_the_reviewed_head_sha(self, delivery_env, posted, monkeypatch):
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert posted[0]["head_sha"] == "reviewed-sha"
+
+    def test_ownership_uses_the_resolved_bot_login(self, delivery_env, posted, monkeypatch):
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert posted[0]["bot_login"] == "smtithy[bot]"
+
+    def test_an_unresolvable_login_posts_nothing(self, delivery_env, posted, monkeypatch, capsys):
+        # Ownership decides which comments the write token may edit or delete, so
+        # a guess is not available: post.resolve_bot_login fails closed, and this
+        # must happen BEFORE anything is posted.
+        def unresolvable():
+            execute_plan.fail("could not resolve the token's own login, nothing posted")
+
+        monkeypatch.setattr(execute_plan, "resolve_bot_login", unresolvable)
         stub_pr(monkeypatch, pr_payload())
         with pytest.raises(SystemExit):
             execute_plan.main()
+        assert posted == []
+        assert "could not resolve" in capsys.readouterr().err
 
-        assert asked == {"repo": "o/r", "base": "event-base-sha", "head": "reviewed-sha"}
+    def test_the_signatures_come_from_the_quarantine_tree_at_the_reviewed_sha(
+            self, delivery_env, posted, monkeypatch):
+        # The window's source is part of the identity contract (ADR-0009
+        # addendum). The executor already reads this tree for anchoring, and
+        # passing it here is what makes the key independent of where the hunk
+        # boundaries fall.
+        #
+        # A NARROW hunk is what distinguishes the two sources: PLAN_DIFF's hunks
+        # span their whole files, so both windows agree there and this case would
+        # pass against a diff-derived window. Here line 3's neighbours exist only
+        # in the tree, so an `absent` in the signature means the window came from
+        # the diff.
+        narrow = (
+            "diff --git a/src/app.py b/src/app.py\n"
+            "--- a/src/app.py\n+++ b/src/app.py\n"
+            "@@ -3,1 +3,1 @@\n+    check(path)\n"
+        )
+        monkeypatch.setattr(
+            execute_plan, "fetch_anchored_pair",
+            lambda repo, base, head: (narrow.encode(), list(PLAN_CHANGED_FILES)),
+        )
+        (delivery_env / "plan.json").write_text(json.dumps({"steps": [{
+            "id": "s0", "kind": "suggest",
+            "args": {"path": "src/app.py", "line": 3, "old": "    check(path)\n",
+                     "new": "    check(path or '')\n", "note": "guard the empty case"},
+        }]}))
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+
+        signature = posted[0]["signatures"][("src/app.py", 3)]
+        assert "def load(path):" in signature, "the preceding line came from the diff, not the tree"
+        assert "return os.environ" in signature, "the following line came from the diff, not the tree"
+        assert "absent" not in signature
+
+    def test_the_signatures_are_computed_from_the_fetched_diff(
+            self, delivery_env, posted, monkeypatch):
+        # Identity must be keyed on the diff both gates checked, never the
+        # bundle's copy: a tampered bundle diff would let a plan job choose which
+        # existing comment its suggestion collides with.
+        (delivery_env / "diff.patch").write_text(
+            "diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n+++ b/src/app.py\n"
+            "@@ -1,9 +1,9 @@\n+forged\n")
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert ("src/app.py", 2) in posted[0]["signatures"]
+        assert "forged" not in json.dumps(sorted(posted[0]["signatures"].values()))
+
+    def test_the_comment_is_attributed_to_the_model_that_ran(self, delivery_env, posted, monkeypatch):
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert posted[0]["metadata"]["model"] == "global.anthropic.claude-opus-4-8"
+        assert posted[0]["metadata"]["sha"] == "reviewed-sha"
+
+    def test_a_bundle_naming_no_model_posts_nothing(self, delivery_env, posted, monkeypatch, capsys):
+        # read_model_stamp's rule: the stamp is the audit trail for "which model
+        # said this", and a placeholder would be a false one.
+        (delivery_env / "run_metadata.json").unlink()
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert posted == []
+        assert "run_metadata.json" in capsys.readouterr().err
+
+    def test_the_policy_hash_is_of_the_policy_that_gated_this_plan(
+            self, delivery_env, posted, monkeypatch):
+        # ADR-0005's visibility requirement: the hash a reader sees must be the
+        # policy this executor actually enforced, so it is computed from the file
+        # passed to --policy rather than from the harness's own copy.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        policy_path = Path(sys.argv[sys.argv.index("--policy") + 1])
+        expected = hashlib.sha256(policy_path.read_bytes()).hexdigest()[:12]
+        assert posted[0]["metadata"]["policy"] == expected
+
+    def test_a_stacked_pr_plan_still_refuses(self, delivery_env, posted, monkeypatch, capsys):
+        # The other delivery is not built. It must fail visibly rather than
+        # silently deliver nothing, and it must not be delivered AS suggestions.
+        (delivery_env / "plan.json").write_text(json.dumps({"steps": [patch(), push(), open_pr()]}))
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert posted == []
+        assert "not implemented yet" in capsys.readouterr().err
+
+    def test_suggestions_are_delivered_on_a_fork_pr(self, delivery_env, posted, monkeypatch):
+        # The whole reason this is the delivery built first: a stacked PR needs the
+        # head branch to exist in the base repository, and a fork's does not.
+        stub_pr(monkeypatch, pr_payload(head_repo="fork-owner/r"))
+        execute_plan.main()
+        assert len(posted) == 1
+
+    def test_nothing_is_delivered_when_the_head_moved(self, delivery_env, posted, monkeypatch, capsys):
+        stub_pr(monkeypatch, pr_payload(head="moved-sha"))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert posted == []
+
+    def test_nothing_is_delivered_for_a_rejected_plan(self, delivery_env, posted, monkeypatch, capsys):
+        (delivery_env / "plan.json").write_text(json.dumps({"steps": [suggest(path="src/evil.py")]}))
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert posted == []
+
+    def test_nothing_is_delivered_for_a_disproved_plan(
+            self, delivery_env, posted, monkeypatch, stub_prover):
+        disprover = stub_prover(1, stdout="frame: VIOLATED\n")
+        argv = sys.argv[:]
+        argv[argv.index("--prover") + 1] = str(disprover)
+        monkeypatch.setattr(sys, "argv", argv)
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert posted == []
