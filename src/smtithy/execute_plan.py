@@ -355,8 +355,15 @@ def main() -> None:
     signatures = anchor_signatures(diff_text, content_source=tree_content_source(args.pr_root))
 
     steps = [step for step in plan["steps"] if step["kind"] == "suggest"]
+    # The retraction scope. One command names one finding (ADR-0007), so this run
+    # speaks only for that finding's file: without it the reconciler would read
+    # every OTHER finding's live suggestion as withdrawn and take it down. Read
+    # from the commanded finding rather than from the plan's steps, because scope
+    # is a fact about the COMMAND — check_plan_scope has already refused a plan
+    # that does not touch this path.
     reconcile_suggestions(repo, pr_number, steps, signatures, metadata,
-                          bot_login=bot_login, head_sha=reviewed_sha)
+                          bot_login=bot_login, head_sha=reviewed_sha,
+                          commanded_path=commanded_finding["path"])
     print(f"delivered {len(steps)} suggestion(s) on {delivery.path!r}")
 
 

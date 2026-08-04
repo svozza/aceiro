@@ -450,7 +450,7 @@ def comment_content(body: str) -> str:
 
 def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
                           signatures: dict[tuple[str, int], str], metadata: dict,
-                          *, bot_login: str, head_sha: str) -> None:
+                          *, bot_login: str, head_sha: str, commanded_path: str | None) -> None:
     """Make the pull request's suggestion comments match the verified plan's.
 
     Re-posting is not idempotent — an identical comment on an unchanged line
@@ -463,10 +463,22 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
     that point must leave the existing comments standing rather than having
     already deleted them.
 
-    `bot_login` and `head_sha` are keyword-only with no defaults. The first is the
-    security half of ownership; the second binds the review to the SHA the plan was
-    verified against, so a push landing mid-run leaves the suggestion marked
-    outdated rather than misplaced on content it never described.
+    All three keyword arguments have no defaults. `bot_login` is the security half
+    of ownership. `head_sha` binds the review to the SHA the plan was verified
+    against, so a push landing mid-run leaves the suggestion marked outdated rather
+    than misplaced on content it never described.
+
+    `commanded_path` is the SCOPE. One run delivers one commanded finding
+    (ADR-0007), while the comment listing is the whole pull request, so retraction
+    has to be told what this command could have produced or it withdraws every
+    OTHER finding's live suggestion — with a note claiming it left the latest
+    remediation, which is untrue, and deleting the human thread under it if there
+    is no reply to force a strike. Two commands on one pull request is the designed
+    flow. The commanded finding's path is the scope because the scope gate already
+    requires the plan to touch it (check_plan_scope), so "a comment on that file"
+    is exactly the set this command speaks for. None retracts NOTHING: a run whose
+    scope is unknown may still post — its own suggestions are verified — but must
+    not take anything down.
     """
     all_comments = list(review_comments(repo, pr_number))
     ours = [(fingerprint, c) for c in all_comments if (fingerprint := owned_fingerprint(c, bot_login))]
@@ -517,6 +529,15 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             patch_review_comment(repo, comment["id"], body)
             print(f"updated suggestion comment {comment['id']} (its suggestion changed)")
 
+    # Scoped to what THIS command speaks for: a comment on another finding's file
+    # is not withdrawn by a command that was never about it. `path` comes from the
+    # listing, so a comment GitHub reports without one is out of scope and left
+    # standing — the fail-closed reading, since the alternative is deleting a
+    # comment whose subject could not be established.
     for fingerprint, comment in ours:
-        if fingerprint not in wanted:
-            retract(repo, comment, replied_ids, WITHDRAWN_NOTE)
+        if fingerprint in wanted:
+            continue
+        if commanded_path is None or comment.get("path") != commanded_path:
+            print(f"suggestion comment {comment['id']} is outside this command's scope, left as is")
+            continue
+        retract(repo, comment, replied_ids, WITHDRAWN_NOTE)

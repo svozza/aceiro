@@ -326,7 +326,11 @@ def comment(cid, fingerprint=None, login=BOT, in_reply_to=None, body=None, args=
     if body is None:
         body = suggest.render_suggestion(
             canned, fingerprint or suggest.suggestion_fingerprint(canned["args"], SIGNATURES), METADATA)
-    return {"id": cid, "body": body, "user": {"login": login}, "in_reply_to_id": in_reply_to}
+    # `path` as GitHub lists it, because retraction is scoped by it: a comment
+    # without one would be silently out of every command's scope, so the canned
+    # shape has to carry what the real listing carries.
+    return {"id": cid, "body": body, "user": {"login": login},
+            "in_reply_to_id": in_reply_to, "path": canned["args"]["path"]}
 
 
 class TestOwnership:
@@ -450,12 +454,113 @@ def struck_body(body=None, note=None):
     return captured["body"]
 
 
+class TestRetractionScope:
+    """A run delivers ONE commanded finding (ADR-0007), so it may only withdraw
+    what that command could have produced.
+
+    `wanted` is one finding's plan while the comment listing is the whole pull
+    request, so an unscoped retraction treated every other finding's live
+    suggestion as withdrawn — with a note saying it was no longer in the latest
+    remediation, which is untrue: it was never this command's subject. Two
+    commands on one pull request is the designed flow, not an edge case.
+    """
+
+    def other_finding_comment(self, cid=11):
+        """A live suggestion for a DIFFERENT finding, on a different file."""
+        return comment(cid, args={"path": "src/util.py", "line": 1,
+                                  "old": "def check(path):\n",
+                                  "new": "def check(path=None):\n"})
+
+    def test_another_findings_suggestion_is_left_alone(self, api):
+        calls, set_comments, _ = api
+        set_comments([self.other_finding_comment()])
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["deleted"] == []
+        assert calls["patched"] == []
+
+    def test_another_findings_thread_is_not_falsely_withdrawn(self, api):
+        # The reply path is the expensive one: a struck body asserts the
+        # suggestion left the latest remediation, and a human is reading it.
+        calls, set_comments, _ = api
+        set_comments([self.other_finding_comment(),
+                      {"id": 12, "body": "good catch", "user": {"login": "a-human"},
+                       "in_reply_to_id": 11}])
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["patched"] == []
+        assert calls["deleted"] == []
+
+    def test_this_findings_withdrawn_suggestion_is_still_retracted(self, api):
+        # The scoping must not disable retraction: a suggestion the CURRENT
+        # command no longer makes still comes down.
+        calls, set_comments, _ = api
+        set_comments([comment(10)])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["deleted"] == [10]
+
+    def test_a_superseded_suggestion_on_the_commanded_file_is_retracted(self, api):
+        # Same file, different anchor: this command DID produce that comment on an
+        # earlier run and no longer does, so it is genuinely withdrawn.
+        calls, set_comments, _ = api
+        set_comments([comment(10, args={"line": 3, "old": "    check(path)\n",
+                                        "new": "    check(path or '')\n"})])
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["deleted"] == [10]
+
+    def test_a_comment_whose_path_github_omits_is_left_standing(self, api):
+        # Fail closed on the COMMENT side too: a comment whose subject cannot be
+        # established is not a comment this command can prove it owns the
+        # withdrawal of. Deleting it would be guessing.
+        calls, set_comments, _ = api
+        pathless = comment(10)
+        del pathless["path"]
+        set_comments([pathless])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["deleted"] == []
+        assert calls["patched"] == []
+
+    def test_an_unknown_scope_and_an_unknown_subject_do_not_MATCH(self, api):
+        # The trap in comparing two values that can each be absent: unknown ==
+        # unknown reads as "in scope" and deletes. Neither absence is an identity,
+        # so an unknown scope withdraws nothing even from an unknown subject.
+        calls, set_comments, _ = api
+        pathless = comment(10)
+        del pathless["path"]
+        set_comments([pathless])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path=None)
+        assert calls["deleted"] == []
+        assert calls["patched"] == []
+
+    def test_an_unknown_commanded_path_withdraws_nothing(self, api):
+        # Fail closed: if the scope cannot be established, the run may still POST
+        # (its own suggestions are verified) but must not take anything down.
+        calls, set_comments, _ = api
+        set_comments([comment(10)])
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path=None)
+        assert calls["deleted"] == []
+        assert calls["patched"] == []
+
+
 class TestRetraction:
     def test_a_suggestion_with_no_reply_is_deleted(self, api):
         calls, set_comments, _ = api
         set_comments([comment(10)])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["deleted"] == [10]
         assert calls["patched"] == []
 
@@ -467,7 +572,8 @@ class TestRetraction:
                       {"id": 11, "body": "I disagree", "user": {"login": "a-human"},
                        "in_reply_to_id": 10}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["deleted"] == []
         assert len(calls["patched"]) == 1
         assert calls["patched"][0]["id"] == 10
@@ -478,7 +584,8 @@ class TestRetraction:
         set_comments([comment(10),
                       {"id": 11, "body": "ours", "user": {"login": BOT}, "in_reply_to_id": 10}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["deleted"] == [10]
 
     def test_a_reply_to_a_different_comment_does_not_block_deletion(self, api):
@@ -487,7 +594,8 @@ class TestRetraction:
                       {"id": 11, "body": "about something else", "user": {"login": "a-human"},
                        "in_reply_to_id": 99}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["deleted"] == [10]
 
     def test_a_reaction_does_not_pin_a_stale_suggestion(self, api):
@@ -498,7 +606,8 @@ class TestRetraction:
         pinned["reactions"] = {"total_count": 3, "+1": 3}
         set_comments([pinned])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["deleted"] == [10]
 
     def test_the_note_does_not_claim_the_defect_was_fixed(self):
@@ -553,7 +662,8 @@ class TestRetraction:
         set_comments([already,
                       {"id": 11, "body": "hm", "user": {"login": "a-human"}, "in_reply_to_id": 10}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["patched"] == []
         assert calls["deleted"] == []
 
@@ -570,7 +680,8 @@ class TestRetraction:
         calls, set_comments, _ = api
         set_comments([comment(10, login="a-human")])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["deleted"] == []
         assert calls["patched"] == []
 
@@ -588,7 +699,8 @@ class TestRetraction:
             {"id": 14, "body": "bot comment with no marker", "user": {"login": BOT}},
         ])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         touched = set(calls["deleted"]) | {p["id"] for p in calls["patched"]}
         assert touched == {10}
 
@@ -619,7 +731,8 @@ class TestPostBeforeRetract:
 
         with pytest.raises(urllib.error.HTTPError):
             suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                          bot_login=BOT, head_sha="reviewed-sha")
+                                          bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
 
         assert ("post", 1) in order
         assert not [entry for entry in order if entry[0] in ("delete", "patch")], (
@@ -647,7 +760,8 @@ class TestPostBeforeRetract:
             suggest.reconcile_suggestions(
                 "o/r", 1,
                 [step(), step(line=3, old="    check(path)\n", new="    check(path or '')\n")],
-                SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+                SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
 
         assert ("post", 1) in order
         assert not [entry for entry in order if entry[0] == "patch"], (
@@ -716,7 +830,8 @@ class FakeGitHub:
 
 def run(github, steps, metadata=None):
     suggest.reconcile_suggestions("o/r", 1, steps, SIGNATURES, metadata or METADATA,
-                                  bot_login=BOT, head_sha="reviewed-sha")
+                                  bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
 
 
 class TestAcrossRuns:
@@ -817,12 +932,14 @@ class TestAcrossRuns:
         github = FakeGitHub().install(monkeypatch)
         suggest.reconcile_suggestions(
             "o/r", 1, [moved], anchor_signatures(narrow, content_source=head), METADATA,
-            bot_login=BOT, head_sha="reviewed-sha")
+            bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         original_id = github.ours()[0]["id"]
 
         suggest.reconcile_suggestions(
             "o/r", 1, [moved], anchor_signatures(wide, content_source=head), METADATA,
-            bot_login=BOT, head_sha="reviewed-sha")
+            bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
 
         assert [c["id"] for c in github.ours()] == [original_id], (
             "a grown hunk deleted the live comment and reposted the same suggestion"
@@ -841,7 +958,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "minimize_review", lambda node: minimized.append(node))
 
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
 
         assert [u["id"] for u in updated] == [7]
         assert updated[0]["body"] == suggest.SUPERSEDED_REVIEW_BODY
@@ -855,7 +973,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert updated == []
 
     def test_a_human_review_carrying_our_marker_is_never_touched(self, api, monkeypatch):
@@ -868,7 +987,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert updated == []
 
     def test_an_already_superseded_wrapper_is_left_alone(self, api, monkeypatch):
@@ -879,7 +999,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert updated == []
 
     def test_a_minimize_the_bot_cannot_perform_does_not_fail_the_run(self, api, monkeypatch):
@@ -891,7 +1012,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "minimize_review",
                             lambda node: (_ for _ in ()).throw(RuntimeError("Resource not accessible")))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert len(calls["reviews"]) == 1, "a failed minimize cost the delivery"
 
     def test_a_failing_body_rewrite_does_not_fail_the_run(self, api, monkeypatch):
@@ -901,7 +1023,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: (_ for _ in ()).throw(RuntimeError("403")))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert len(calls["reviews"]) == 1
 
     def test_a_failing_review_list_does_not_fail_the_run(self, api, monkeypatch):
@@ -909,7 +1032,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "pull_reviews",
                             lambda repo, pr: (_ for _ in ()).throw(RuntimeError("500")))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert len(calls["reviews"]) == 1
 
     def test_superseding_happens_before_the_new_review_is_posted(self, api, monkeypatch):
@@ -924,7 +1048,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "submit_review",
                             lambda repo, pr, body, comments, head_sha: order.append("post"))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert order == ["supersede", "post"]
 
     def test_nothing_is_superseded_when_there_is_nothing_to_post(self, api, monkeypatch):
@@ -936,7 +1061,8 @@ class TestReviewWrappers:
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert updated == []
 
 
@@ -944,13 +1070,15 @@ class TestPostedPayload:
     def test_the_review_is_bound_to_the_verified_head_sha(self, api):
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["reviews"][0]["head_sha"] == "reviewed-sha"
 
     def test_a_comment_anchors_to_the_steps_path_and_line(self, api):
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [step(line=3, old="    check(path)\n")],
-                                      SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+                                      SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         posted = calls["reviews"][0]["comments"][0]
         assert posted["path"] == "src/app.py"
         assert posted["line"] == 3
@@ -961,7 +1089,8 @@ class TestPostedPayload:
         # start_line == line is a 422 ("must be less than line").
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         posted = calls["reviews"][0]["comments"][0]
         assert posted["line"] == 2
         assert "start_line" not in posted
@@ -976,7 +1105,8 @@ class TestPostedPayload:
         old = "def load(path):\n    check(path)\n    return os.environ\n"
         suggest.reconcile_suggestions(
             "o/r", 1, [step(old=old, new="def load(path=None):\n")],
-            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         posted = calls["reviews"][0]["comments"][0]
         assert posted["start_line"] == 2, "the range must begin where `old` is anchored"
         assert posted["line"] == 4, "and end on the last line `old` replaces"
@@ -993,7 +1123,8 @@ class TestPostedPayload:
             calls["reviews"].clear()
             suggest.reconcile_suggestions("o/r", 1, [step(old=old, new="x = 1\n")],
                                           SIGNATURES, METADATA, bot_login=BOT,
-                                          head_sha="reviewed-sha")
+                                          head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
             posted = calls["reviews"][0]["comments"][0]
             assert posted["line"] == 2 + span
             assert posted.get("start_line", 2) == 2
@@ -1006,7 +1137,8 @@ class TestPostedPayload:
         suggest.reconcile_suggestions(
             "o/r", 1, [step(line=3, old="    check(path)\n    return os.environ",
                             new="    return {}\n")],
-            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         posted = calls["reviews"][0]["comments"][0]
         assert posted["start_line"] == 3
         assert posted["line"] == 4
@@ -1016,14 +1148,16 @@ class TestPostedPayload:
         suggest.reconcile_suggestions(
             "o/r", 1,
             [step(), step(line=3, old="    check(path)\n", new="    check(path or '')\n")],
-            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert len(calls["reviews"]) == 1
         assert len(calls["reviews"][0]["comments"]) == 2
 
     def test_an_empty_plan_posts_no_review(self, api):
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["reviews"] == []
 
     def test_an_existing_suggestion_is_not_reposted(self, api):
@@ -1032,7 +1166,8 @@ class TestPostedPayload:
         calls, set_comments, _ = api
         set_comments([comment(10)])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
-                                      bot_login=BOT, head_sha="reviewed-sha")
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
         assert calls["reviews"] == []
         assert calls["deleted"] == []
         assert calls["patched"] == []
