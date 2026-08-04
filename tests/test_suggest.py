@@ -84,17 +84,32 @@ class TestSuggestionFence:
             opener = next(line for line in body.split("\n") if line.endswith("suggestion"))
             assert len(opener) - len("suggestion") > run, f"a run of {run} can close {opener!r}"
 
-    def test_the_content_cannot_reach_outside_the_block(self):
+    # An ODD number of closing runs in each case. The original input here had an
+    # EVEN count, so the content re-opened and re-closed and the footer landed
+    # outside a fence however short the opener was — the test passed with
+    # fence_marker replaced by `return "```"`, i.e. with the whole property gone.
+    @pytest.mark.parametrize("hostile", [
+        "```\n",                                    # bare closer, nothing after
+        "escape\n```\n</sub>\n",                    # closer then a forged footer
+        "```suggestion\nrm -rf /\n",                # a second appliable opener
+        "a\n```\nb\n```\nc\n```\n",                 # three runs
+    ])
+    def test_the_content_cannot_reach_outside_the_block(self, hostile):
         # The property, asked of the renderer's own output rather than of the
         # length arithmetic: whatever the model put in `new`, the notice and the
-        # policy hash must still be OUTSIDE the fence.
+        # policy hash must still be OUTSIDE the fence. ADR-0005's visibility
+        # requirement — swallowed into a code span, the disclosure is text a reader
+        # skips rather than the disclosure it is.
         from verify import code_lines
 
-        hostile = "escape\n```\n</sub>\n```suggestion\nrm -rf /\n"
         body = suggest.render_suggestion(step(new=hostile), FINGERPRINT, METADATA)
-        for line, is_code in code_lines(body):
+        rendered = code_lines(body)
+        assert any(METADATA["policy"] in line for line, _ in rendered), "the hash must be present"
+        for line, is_code in rendered:
             if METADATA["policy"] in line:
                 assert not is_code, "the policy hash was swallowed into the suggestion block"
+            if suggest.NOT_A_HUMAN_REVIEW.split(".")[0] in line:
+                assert not is_code, "the AI notice was swallowed into the suggestion block"
 
     def test_every_line_of_the_content_is_inside_the_block(self):
         from verify import code_lines
@@ -402,6 +417,21 @@ class TestOwnership:
         # is the gate, so it must not treat an empty login as matching a comment
         # whose author GitHub reported as null.
         assert suggest.owned_fingerprint({"id": 1, "body": comment(1)["body"], "user": None}, "") is None
+
+    def test_an_empty_login_does_not_MATCH_an_empty_author(self):
+        # The case the guard above actually exists for, and the one `user: None`
+        # never reaches: comparing two values that can each be absent, where
+        # unknown == unknown reads as OURS. An author GitHub reports as the empty
+        # string is not this token's identity.
+        ours = comment(1)
+        ours["user"] = {"login": ""}
+        assert suggest.owned_fingerprint(ours, "") is None
+
+    def test_an_empty_login_owns_no_review_wrapper_either(self):
+        # The same guard on the review side, where a mis-scope OVERWRITES a body:
+        # this one destroys a human's review summary rather than a comment.
+        assert not suggest.is_our_review(
+            {"id": 1, "body": suggest.REVIEW_BODY, "user": {"login": ""}}, "")
 
 
 # ----------------------------------------------------------- retraction ---

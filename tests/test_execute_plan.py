@@ -21,10 +21,11 @@ from pathlib import Path
 import pytest
 
 import execute_plan
+from diff_map import anchor_signatures
 from execute_plan import Refusal, decide_delivery
 from verify import Rejection
 
-from test_plan_verify import PLAN_DIFF, PLAN_CHANGED_FILES, PLAN_TREE
+from test_plan_verify import PLAN_DIFF, PLAN_CHANGED_FILES, PLAN_TREE, tree_source
 
 POLICY = json.loads(
     (execute_plan._HARNESS_ROOT / "policy.json").read_text()
@@ -770,13 +771,25 @@ class TestSuggestionDelivery:
         # Identity must be keyed on the diff both gates checked, never the
         # bundle's copy: a tampered bundle diff would let a plan job choose which
         # existing comment its suggestion collides with.
-        (delivery_env / "diff.patch").write_text(
-            "diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n+++ b/src/app.py\n"
-            "@@ -1,9 +1,9 @@\n+forged\n")
+        #
+        # The two diffs must DIFFER OBSERVABLY or this asserts nothing. main()
+        # never reads the bundle's diff.patch at all, so writing a forged file
+        # there and checking the result looks unforged passes under any wiring —
+        # including a deliberately forged one. The signature map's KEY SET is what
+        # distinguishes them: the fetched diff is what decides which lines are
+        # anchorable, so a bundle diff naming a different hunk would key the map on
+        # lines the fetched diff makes no anchor for.
+        bundle_diff = ("diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n+++ b/src/app.py\n"
+                       "@@ -40,2 +40,2 @@\n+forged\n+forged2\n")
+        (delivery_env / "diff.patch").write_text(bundle_diff)
+        fetched_keys = set(anchor_signatures(PLAN_DIFF, content_source=tree_source()))
+        bundle_keys = set(anchor_signatures(bundle_diff, content_source=tree_source()))
+        assert fetched_keys != bundle_keys, "the fixture must make the two diffs distinguishable"
+
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
-        assert ("src/app.py", 2) in posted[0]["signatures"]
-        assert "forged" not in json.dumps(sorted(posted[0]["signatures"].values()))
+        assert set(posted[0]["signatures"]) == fetched_keys
+        assert ("src/app.py", 40) not in posted[0]["signatures"], "keyed on the bundle's hunk"
 
     def test_the_comment_is_attributed_to_the_model_that_ran(self, delivery_env, posted, monkeypatch):
         stub_pr(monkeypatch, pr_payload())
