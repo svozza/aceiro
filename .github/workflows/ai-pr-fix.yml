@@ -1,0 +1,467 @@
+# AI PR fix — the remediation lane (command → plan → verify → execute)
+#
+# Consumed with:
+#
+#   on:
+#     issue_comment:
+#       types: [created]
+#   jobs:
+#     fix:
+#       uses: svozza/smtithy/.github/workflows/ai-pr-fix.yml@<full SHA>
+#       with: { ... }
+#       secrets: { ... }
+#
+# THE issue_comment TRAP, and why every guard here exists. This event runs the
+# DEFAULT BRANCH's workflow and always carries a write token, whoever commented —
+# the same trap as pull_request_target, reached from a channel anyone can write to.
+# So nothing about the comment is trusted: prepare_fix_context refuses unless the
+# body IS a command, the COMMENT author holds write-or-above (ADR-0007), the issue
+# is a pull request, and a review this harness posted exists for the head being
+# commanded. All of that happens in the `command` job, which holds no credential.
+#
+# PROCESS:
+#   command  -> parse /fix N, resolve the COMMANDER's trust, refuse on drift, and
+#               compose the plan context from the review run's own artifact.
+#               No model credential, no write scope.
+#   approve  -> human gate via the CALLER's `ai-pr-review` environment, for the
+#               same reason the review lane has one: the PLAN session reads the
+#               contributor-authored head with a model credential in scope.
+#   plan     -> asserts the gate was real (ADR-0006), then read-only generation.
+#   execute  -> re-verifies, re-proves, delivers. The only pull-requests:write.
+#
+# TWO TRUST QUESTIONS, deliberately answered from two people. The COMMANDER's
+# permission authorises the fix (ADR-0007: the author's tells you nothing about
+# whether a patch should be attempted). The PR AUTHOR's decides whether a human
+# must approve before their content meets a credential, which is ADR-0006's
+# question and not ADR-0007's. A maintainer commanding a fix on a first-time
+# contributor's pull request therefore still waits at the gate — exactly as that
+# same contributor's pull request does in the review lane, and for the same reason.
+#
+# CONSUMER SETUP — enforced, not advisory (ADR-0006). Identical to the review
+# lane's, and the same two environments:
+#   ai-pr-review          required reviewers: at least one maintainer
+#   ai-pr-review-runtime  branch policy only; scopes the OIDC subject claim
+
+name: AI PR fix (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      project-description:
+        description: >-
+          The consumer's own one-clause description of their repository,
+          substituted into the planner prompt. Unset, the prompt plans under its
+          measured default wording.
+        type: string
+        required: false
+        default: ""
+      use-bedrock:
+        description: Bedrock via OIDC role (true) or direct Anthropic API key (false).
+        type: boolean
+        required: false
+        default: true
+      aws-region:
+        type: string
+        required: false
+        default: eu-west-1
+      bedrock-inference-profile:
+        description: Invoked profile; also the session policy's resource and the attribution stamp.
+        type: string
+        required: false
+        default: global.anthropic.claude-opus-4-8
+      bedrock-foundation-model:
+        description: Foundation-model id the session policy allows (region-wildcarded).
+        type: string
+        required: false
+        default: anthropic.claude-opus-4-8
+      cli-model:
+        description: >-
+          What the CLI is told to use. On Bedrock this is the inference profile
+          plus "[1m]"; kept separate from bedrock-inference-profile because a
+          suffixed ARN names no real resource.
+        type: string
+        required: false
+        default: global.anthropic.claude-opus-4-8[1m]
+    secrets:
+      BEDROCK_ROLE_ARN:
+        description: Role assumed via OIDC for the Bedrock arm.
+        required: false
+      ANTHROPIC_API_KEY:
+        description: Direct API key for the non-Bedrock arm.
+        required: false
+
+permissions: {}
+
+# One run per pull request, and cancel-in-progress is deliberately FALSE here
+# where the review lane sets it true. A command is a discrete human instruction:
+# two maintainers commanding different findings must not have the first silently
+# cancelled by the second, which is what a review lane's newer-push-wins rule
+# would do. Serialized, not superseded.
+concurrency:
+  group: ai-pr-fix-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  # Holds NO credential and no write scope. Everything that decides whether this
+  # command is honoured at all happens here, before any model or write token
+  # exists in any job.
+  command:
+    # Cheap pre-filter only. The real parse is prepare_fix_context's, which is
+    # exact where this is not: `contains` would match a body merely MENTIONING
+    # the command, and that body must not be a command. This exists to stop every
+    # comment on every issue starting a runner, and nothing security-relevant
+    # rests on it.
+    if: >-
+      github.event.issue.pull_request
+      && contains(github.event.comment.body, '/fix ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read # the SHA-anchored diff
+      pull-requests: read # PR metadata, and the posted-review witness
+      actions: read # the review run's artifact, which carries review.json
+    outputs:
+      commanded: ${{ steps.compose.outputs.commanded }}
+      head_sha: ${{ steps.compose.outputs.head_sha }}
+      base_sha: ${{ steps.compose.outputs.base_sha }}
+      base_ref: ${{ steps.compose.outputs.base_ref }}
+      head_ref: ${{ steps.compose.outputs.head_ref }}
+      author_trusted: ${{ steps.author.outputs.trusted }}
+    steps:
+      - name: Refuse to run unpinned
+        # job.workflow_sha is the SHA the caller's `uses:` pin resolved to.
+        # Empty (old runner, GHES) would make the checkout below silently fall
+        # back to the harness's default branch -- the exact drift the pin exists
+        # to prevent -- so absence refuses, fail-closed.
+        env:
+          PINNED_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$PINNED_SHA" ]; then
+            echo "::error::job.workflow_sha is empty; cannot pin the harness checkout" >&2
+            exit 1
+          fi
+      - name: Checkout harness (pinned to this workflow's own SHA)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install harness dependencies (hash-pinned)
+        run: pip install --require-hashes -r requirements.txt
+
+      - name: Resolve the command and compose the plan context
+        id: compose
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          # Via env, never inline interpolation: a comment body is attacker-authored
+          # free text, and inside a `run:` block it would be shell-expanded.
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+        run: python src/smtithy/prepare_fix_context.py --output-dir "$RUNNER_TEMP/context"
+
+      - name: Resolve the PR author's permission (ADR-0006's question, not ADR-0007's)
+        id: author
+        if: steps.compose.outputs.commanded == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_AUTHOR: ${{ github.event.issue.user.login }}
+        run: python src/smtithy/author_trust.py
+
+      - name: Upload plan context
+        if: steps.compose.outputs.commanded == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-fix-context-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/context/
+          retention-days: 90
+          if-no-files-found: error
+
+  approve:
+    # The PLAN session reads the contributor-authored head with a model credential
+    # in scope, which is the review lane's threat exactly — so the gate is the PR
+    # AUTHOR's, not the commander's. NOTE this job alone proves nothing: a missing
+    # environment passes instantly, which is why the plan job re-asserts in code.
+    needs: command
+    if: >-
+      always()
+      && needs.command.outputs.commanded == 'true'
+      && needs.command.outputs.author_trusted != 'true'
+    runs-on: ubuntu-latest
+    environment: ai-pr-review
+    steps:
+      - name: Record approved head SHA
+        run: echo "Approved AI fix for head ${{ needs.command.outputs.head_sha }}"
+
+  plan:
+    needs: [command, approve]
+    # The skipped branch re-derives trust rather than assuming `skipped` meant
+    # "trusted": skipped alone cannot tell "author holds write" from "the gate job
+    # failed to run".
+    if: >-
+      always()
+      && needs.command.outputs.commanded == 'true'
+      && (
+        needs.approve.result == 'success'
+        || (
+          needs.approve.result == 'skipped'
+          && needs.command.outputs.author_trusted == 'true'
+        )
+      )
+    runs-on: ubuntu-latest
+    environment: ai-pr-review-runtime
+    # Must exceed cc_loop's own budget (WALL_CLOCK_SECONDS x MAX_ATTEMPTS plus
+    # backoff) with room for setup, or GitHub kills the step first and the
+    # generator's diagnosis is never written.
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    env:
+      HEAD_SHA: ${{ needs.command.outputs.head_sha }}
+      BASE_SHA: ${{ needs.command.outputs.base_sha }}
+      HEAD_REF: ${{ needs.command.outputs.head_ref }}
+    steps:
+      - name: Checkout consumer trusted base SHA
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: base
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Refuse to run unpinned
+        env:
+          PINNED_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$PINNED_SHA" ]; then
+            echo "::error::job.workflow_sha is empty; cannot pin the harness checkout" >&2
+            exit 1
+          fi
+      - name: Checkout harness (pinned to this workflow's own SHA)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: harness
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: harness/requirements*.txt
+
+      - name: Install harness dependencies (hash-pinned)
+        run: pip install --require-hashes -r harness/requirements.txt
+
+      # ADR-0006: asserted INSIDE the gated job, before any credential exists in
+      # it. PR_DRAFT is not available on an issue_comment payload, so it is not
+      # guessed: absent reads as draft, which is environment_gate's fail-closed
+      # direction, and the assertion then turns on the author's trust alone.
+      - name: Assert the approval gate was real
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GATE_ENVIRONMENT: ai-pr-review
+          AUTHOR_TRUSTED: ${{ needs.command.outputs.author_trusted }}
+        run: python harness/src/smtithy/environment_gate.py
+
+      - name: Download plan context
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ai-fix-context-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/context
+
+      - name: Quarantine-fetch PR head (bytes only, never executed)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          QUARANTINE="$RUNNER_TEMP/pr-head-quarantine"
+          git init --quiet "$QUARANTINE"
+          # Fork PR heads are mirrored into the base repo via refs/pull/*/head,
+          # so the exact reviewed SHA is fetchable from the base repo only.
+          AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -C "$QUARANTINE" -c http.extraheader="$AUTH_HEADER" fetch --quiet --depth 1 \
+            "https://github.com/${GITHUB_REPOSITORY}" "$HEAD_SHA"
+          git -C "$QUARANTINE" checkout --quiet FETCH_HEAD
+          rm -rf "$QUARANTINE/.git"
+
+          # Strip symlinks: git materialises mode-120000 entries verbatim, and a
+          # permission check on the path the generator REQUESTS cannot see where
+          # a link points. Deleted rather than resolved — a link's target is not
+          # part of the reviewed change.
+          SYMLINKS=$(find "$QUARANTINE" -type l | wc -l | tr -d ' ')
+          if [ "$SYMLINKS" != "0" ]; then
+            echo "::warning::stripped $SYMLINKS symlink(s) from the quarantine; they are not reviewable content"
+            find "$QUARANTINE" -type l -print -delete
+          fi
+          if [ "$(find "$QUARANTINE" -type l | wc -l | tr -d ' ')" != "0" ]; then
+            echo "::error::symlinks remain in the quarantine after stripping"
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (Bedrock-invoke only)
+        if: ${{ inputs.use-bedrock }}
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
+        with:
+          role-to-assume: ${{ secrets.BEDROCK_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+          mask-aws-account-id: true
+          inline-session-policy: >-
+            {
+              "Version": "2012-10-17",
+              "Statement": [{
+                "Effect": "Allow",
+                "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
+                "Resource": [
+                  "arn:aws:bedrock:${{ inputs.aws-region }}:*:inference-profile/${{ inputs.bedrock-inference-profile }}",
+                  "arn:aws:bedrock:*::foundation-model/${{ inputs.bedrock-foundation-model }}"
+                ]
+              }]
+            }
+
+      - name: Run plan agent
+        env:
+          CLAUDE_CODE_USE_BEDROCK: ${{ inputs.use-bedrock && '1' || '' }}
+          ANTHROPIC_API_KEY: ${{ !inputs.use-bedrock && secrets.ANTHROPIC_API_KEY || '' }}
+          ANTHROPIC_MODEL: ${{ inputs.cli-model }}
+          SMTITHY_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
+          DISABLE_TELEMETRY: "1"
+          DISABLE_ERROR_REPORTING: "1"
+          DISABLE_AUTOUPDATER: "1"
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
+        run: |
+          python harness/src/smtithy/plan_loop.py \
+            --base-root "$GITHUB_WORKSPACE/base" \
+            --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
+            --context-dir "$RUNNER_TEMP/context" \
+            --output-dir "$RUNNER_TEMP/plan-output"
+
+      - name: Assemble plan bundle
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/bundle"
+          cp "$RUNNER_TEMP/plan-output/"* "$RUNNER_TEMP/bundle/" 2>/dev/null || true
+          # review.json and commanded_index.json are INPUTS to the executor's scope
+          # gate, not evidence: the commanded finding is derived from them, so both
+          # travel and both are fail-closed there. The diff and file list travel as
+          # evidence only — execute_plan re-fetches both.
+          cp "$RUNNER_TEMP/context/review.json" \
+             "$RUNNER_TEMP/context/commanded_index.json" \
+             "$RUNNER_TEMP/context/diff.patch" \
+             "$RUNNER_TEMP/context/changed_files.json" \
+             "$RUNNER_TEMP/context/pr.json" \
+             "$RUNNER_TEMP/bundle/" 2>/dev/null || true
+
+      - name: Upload plan artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ai-fix-plan-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bundle/
+          retention-days: 90
+          if-no-files-found: error
+
+  execute:
+    # plan already needs approve; its success implies the gate passed.
+    needs: [command, plan]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      HEAD_SHA: ${{ needs.command.outputs.head_sha }}
+      BASE_SHA: ${{ needs.command.outputs.base_sha }}
+      BASE_REF: ${{ needs.command.outputs.base_ref }}
+      HEAD_REF: ${{ needs.command.outputs.head_ref }}
+    steps:
+      # The verifier MUST come from the pinned harness, never the artifact and
+      # never the consumer's tree.
+      - name: Refuse to run unpinned
+        env:
+          PINNED_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$PINNED_SHA" ]; then
+            echo "::error::job.workflow_sha is empty; cannot pin the harness checkout" >&2
+            exit 1
+          fi
+      - name: Checkout harness (pinned to this workflow's own SHA)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install verifier dependencies (hash-pinned)
+        run: pip install --require-hashes -r requirements.txt
+
+      - name: Set up Node (the prover is TypeScript — ADR-0003)
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install and build the prover (hash-pinned lockfile)
+        run: |
+          npm ci
+          npm run build
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ai-fix-plan-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bundle
+
+      - name: Quarantine-fetch PR head (the anchor tree, bytes only)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # The executor anchors `old` against the same tree the plan session read.
+          # Re-fetched here rather than carried in the bundle: the anchor source is
+          # this process's trust decision, not the plan job's.
+          QUARANTINE="$RUNNER_TEMP/pr-head-quarantine"
+          git init --quiet "$QUARANTINE"
+          AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -C "$QUARANTINE" -c http.extraheader="$AUTH_HEADER" fetch --quiet --depth 1 \
+            "https://github.com/${GITHUB_REPOSITORY}" "$HEAD_SHA"
+          git -C "$QUARANTINE" checkout --quiet FETCH_HEAD
+          rm -rf "$QUARANTINE/.git"
+          find "$QUARANTINE" -type l -print -delete
+          if [ "$(find "$QUARANTINE" -type l | wc -l | tr -d ' ')" != "0" ]; then
+            echo "::error::symlinks remain in the quarantine after stripping"
+            exit 1
+          fi
+
+      - name: Verify, re-prove and deliver (fail-closed)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python src/smtithy/execute_plan.py \
+            --artifact-dir "$RUNNER_TEMP/bundle" \
+            --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
+            --policy src/smtithy/policy.json \
+            --prover dist/plan/prove-cli.js

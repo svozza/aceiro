@@ -116,6 +116,30 @@ def job_condition(text: str, job: str) -> str:
     return " ".join(" ".join(parts).split())
 
 
+def job_block(text: str, job: str) -> str:
+    """One job's whole body, comments stripped.
+
+    For properties about what a job does NOT contain — a permission scope, a
+    credential step. Comments are dropped because this file's workflows document
+    the very things these assertions forbid, and a prose mention must not read as
+    the thing itself.
+    """
+    indent = None
+    lines: list[str] = []
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        current = len(raw) - len(raw.lstrip())
+        if indent is None:
+            if raw.strip() == f"{job}:":
+                indent = current
+            continue
+        if current <= indent:
+            break
+        lines.append(raw)
+    return "\n".join(lines)
+
+
 def job_environment(text: str, job: str) -> str | None:
     """One job's `environment:` value, or None.
 
@@ -251,7 +275,27 @@ class TestTheGateJobWaitsAtTheEnvironmentTheWorkerVerifies:
     LANES = [
         ("evals.yml", "eval_approve", "evals"),
         ("ai-pr-review.yml", "approve", "review"),
+        ("ai-pr-fix.yml", "approve", "plan"),
     ]
+
+    def test_every_gated_lane_is_listed(self):
+        # This list is hand-maintained, and a lane missing from it is a lane whose
+        # gate nothing checks — silently, since every assertion below is
+        # parametrised over the list itself. So the list is checked against the
+        # workflows: any job asserting a GATE_ENVIRONMENT must appear here as a
+        # worker. That is how a new credential-bearing lane gets this coverage by
+        # existing rather than by being remembered.
+        found = set()
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text()
+            for job in job_names(text):
+                if any(key.endswith("GATE_ENVIRONMENT") for step in parse_steps(text, job) for key in step):
+                    found.add((path.name, job))
+        listed = {(workflow, worker) for workflow, _gate, worker in self.LANES}
+        assert found == listed, (
+            f"lanes asserting a gate but not listed here: {sorted(found - listed)}; "
+            f"listed but no longer asserting one: {sorted(listed - found)}"
+        )
 
     @pytest.mark.parametrize("workflow,gate_job,worker_job", LANES)
     def test_the_gate_job_environment_is_the_asserted_one(self, workflow, gate_job, worker_job):
@@ -471,6 +515,86 @@ class TestDraftSemanticsAgree:
         assert "pull_request.draft" in job_condition(text, gate), (
             f"{workflow}: {gate!r} no longer requests approval for drafts, so a draft would run "
             "PR-head code with no human gate"
+        )
+
+
+class TestTheCommandLaneHoldsNoCredential:
+    """`issue_comment` runs the DEFAULT BRANCH's workflow and always carries a
+    write token, whoever commented — the same trap as pull_request_target, reached
+    from a channel anyone can write to.
+
+    So the job that decides whether a command is honoured must hold neither a
+    model credential nor write scope: every refusal (not a command, commander
+    untrusted, no posted review, drift) has to land before either exists.
+    """
+
+    FIX = "ai-pr-fix.yml"
+
+    def test_the_command_job_has_no_write_scope(self):
+        text = (WORKFLOWS / self.FIX).read_text()
+        block = job_block(text, "command")
+        for scope in ("pull-requests: write", "contents: write", "id-token: write"):
+            assert scope not in block, (
+                f"the command job holds {scope!r}; it runs on an event anyone can trigger and "
+                "decides whether the command is honoured at all"
+            )
+
+    def test_the_command_job_mints_no_model_credential(self):
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "command")
+        assert "configure-aws-credentials" not in block
+        assert "ANTHROPIC_API_KEY" not in block
+
+    def test_the_comment_body_is_never_interpolated_into_a_shell(self):
+        # A comment body is attacker-authored free text. Inside a `run:` block,
+        # `${{ github.event.comment.body }}` is substituted before the shell sees
+        # it, so a body containing $(...) executes in the runner. It reaches the
+        # parser through env instead — and the same holds for the author login.
+        text = (WORKFLOWS / self.FIX).read_text()
+        in_run = False
+        for raw in text.splitlines():
+            stripped = raw.strip()
+            if stripped.startswith("#"):
+                continue
+            if stripped.startswith("run:"):
+                in_run = True
+            elif stripped.startswith("- name:") or stripped.startswith("env:"):
+                in_run = False
+            if in_run:
+                assert "github.event.comment" not in raw, (
+                    f"the comment body is interpolated into a run: block ({stripped!r}); "
+                    "it is attacker-authored text and would be shell-expanded"
+                )
+
+    def test_the_execute_job_is_the_only_writer(self):
+        text = (WORKFLOWS / self.FIX).read_text()
+        writers = [job for job in job_names(text) if "pull-requests: write" in job_block(text, job)]
+        assert writers == ["execute"], (
+            f"exactly one job may hold the write token, got {writers}"
+        )
+
+    def test_the_plan_job_holds_no_write_scope(self):
+        # The generator reads contributor-authored content with a model credential
+        # in scope. It must not also be able to write: that is the split the review
+        # lane makes between `review` and `post`.
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "plan")
+        assert "pull-requests: write" not in block
+        assert "contents: write" not in block
+
+    def test_the_command_job_can_read_the_review_artifact(self):
+        # review.json comes from the review run's Actions artifact, which needs
+        # `actions: read`. Without it the lane cannot derive the commanded finding
+        # at all, and the failure would look like an expired artifact.
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "command")
+        assert "actions: read" in block
+
+    def test_the_lane_is_serialized_but_not_superseded(self):
+        # cancel-in-progress must be FALSE here where the review lane sets it true:
+        # a command is a discrete human instruction, so two maintainers commanding
+        # different findings must not have the first cancelled by the second.
+        text = (WORKFLOWS / self.FIX).read_text()
+        assert "cancel-in-progress: false" in text, (
+            "the fix lane must not cancel a running command; newer-push-wins is the review "
+            "lane's rule and would silently discard a maintainer's instruction"
         )
 
 
