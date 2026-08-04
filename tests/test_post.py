@@ -582,6 +582,63 @@ def stub_comment_store(monkeypatch, *responses, after_write=None):
     return store
 
 
+class TestPostedReviewWitness:
+    """A command acts on a comment the commander READ, so a review must have been
+    posted for the SHA being commanded.
+
+    Deriving the finding from review.json proves it belonged to an accepted
+    artifact; it cannot prove that artifact was ever posted. This is the half the
+    artifact cannot supply, and it is GitHub's own authorship record: ownership is
+    the marker on line 1 AND resolve_bot_login, which only the harness's credential
+    could have produced. Existence and SHA only — the comment's markdown is never
+    parsed back (ADR-0007's second addendum).
+    """
+
+    def stamped(self, cid, sha, login=BOT_LOGIN):
+        return own_comment(cid, f"a review\n\n{post.sha_stamp(sha)}", login=login)
+
+    def test_a_posted_review_for_the_sha_is_a_witness(self, capture_api):
+        _, set_pages = capture_api
+        set_pages([[self.stamped(7, "reviewed-sha")]])
+        assert post.posted_review_witness("o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) == 7
+
+    def test_no_comment_at_all_is_no_witness(self, capture_api):
+        _, set_pages = capture_api
+        set_pages([[]])
+        assert post.posted_review_witness("o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) is None
+
+    def test_a_review_for_another_sha_is_no_witness(self, capture_api):
+        # The commander is commanding a fix against a head the posted review does
+        # not describe. Drift is refused elsewhere too, but this is the case where
+        # the review they read was for an earlier push.
+        _, set_pages = capture_api
+        set_pages([[self.stamped(7, "an-older-sha")]])
+        assert post.posted_review_witness("o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) is None
+
+    def test_someone_elses_comment_carrying_the_stamp_is_no_witness(self, capture_api):
+        # The forgery this exists to refuse: anyone may paste the marker AND the
+        # stamp into their own comment. The author half is what makes the record
+        # GitHub's rather than the commenter's.
+        _, set_pages = capture_api
+        set_pages([[self.stamped(7, "reviewed-sha", login="attacker")]])
+        assert post.posted_review_witness("o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) is None
+
+    def test_a_quoted_marker_is_no_witness(self, capture_api):
+        # find_own_comments' first-line rule, inherited rather than restated: a
+        # comment DISCUSSING the marker is not the comment render() wrote.
+        _, set_pages = capture_api
+        set_pages([[comment(7, f"see {post.MARKER}\n{post.sha_stamp('reviewed-sha')}")]])
+        assert post.posted_review_witness("o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) is None
+
+    def test_the_stamp_is_the_one_render_writes(self, valid_artifact, capture_api):
+        # The search string and the posted string must come from one function or
+        # the witness silently stops matching the comment it is looking for.
+        body = post.render(valid_artifact, {**METADATA, "sha": "reviewed-sha"}, SEVERITY_ORDER)
+        _, set_pages = capture_api
+        set_pages([[comment(7, body)]])
+        assert post.posted_review_witness("o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) == 7
+
+
 class TestMain:
     def test_happy_path_posts_rendered_body(self, main_env, monkeypatch, valid_artifact):
         stub_pr_shas(monkeypatch, UNMOVED)

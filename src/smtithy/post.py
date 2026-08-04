@@ -167,6 +167,35 @@ def resolve_bot_login() -> str:
     return login
 
 
+def posted_review_witness(repo: str, pr_number: int, reviewed_sha: str, *,
+                          marker: str = MARKER, bot_login: str) -> int | None:
+    """The id of our posted review for `reviewed_sha`, or None if there is none.
+
+    The remediation channel's precondition (ADR-0007's second addendum). Deriving
+    the commanded finding from review.json proves it belonged to an artifact the
+    verifier accepts; it cannot prove that artifact was ever POSTED — and a
+    commander is acting on a comment they read. This is that half, and it is
+    GitHub's own authorship record rather than anything the harness signs: only
+    the harness's credential can produce a comment whose first line is the marker
+    and whose author is the login the write token resolves to.
+
+    Existence and SHA only. The comment's markdown is deliberately never parsed
+    back into a finding: bodies quote contributor code, so a fenced block can
+    carry a literal `####` heading, and recovering structure from it would put a
+    contributor-influenced parse in the trust path. The artifact answers "which
+    finding"; this answers "was a review posted for this head", which is the only
+    question the artifact cannot.
+
+    Ownership and the stamp are both reused rather than restated — find_own_comment
+    for the marker-and-author rule, sha_stamp for the search string — so a witness
+    cannot come to disagree with the comment render() writes.
+    """
+    existing = find_own_comment(repo, pr_number, marker, bot_login)
+    if existing is None or sha_stamp(reviewed_sha) not in (existing.get("body") or ""):
+        return None
+    return cast("int", existing["id"])
+
+
 # A model identifier's lexicon, and nothing else. render() splices this value
 # inside a code span inside a <sub>, so the requirement is lexical rather than
 # grammatical: no backtick, no `<`, no whitespace, no newline. `:` `/` `.` `-`
