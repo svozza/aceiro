@@ -5,6 +5,7 @@ stop condition), and the retry policy (retryable status vs not, GET/PATCH
 retried but POST never).
 """
 
+import base64
 import io
 import urllib.error
 
@@ -312,6 +313,179 @@ class TestReviewMutations:
             lambda path, method="GET", payload=None: b'{"data": {"ok": true}}',
         )
         assert github_api.graphql("query {}", {}) == {"ok": True}
+
+
+@pytest.fixture
+def replies(monkeypatch):
+    """Record api_json calls and answer each from a queue.
+
+    The reviews helpers ignore their responses, so `capture` can return `{}`. The
+    tree-write sequence threads each call's returned SHA into the next, so the
+    stub has to answer with real-shaped payloads or the chain cannot be asserted.
+    """
+    calls = []
+    queue = []
+
+    def fake_api_json(path, method="GET", payload=None):
+        calls.append({"path": path, "method": method, "payload": payload})
+        return queue.pop(0) if queue else {}
+
+    monkeypatch.setattr(github_api, "api_json", fake_api_json)
+    return calls, queue
+
+
+class TestTheTreeWriteSequence:
+    """blobs -> tree -> commit -> ref, the sequence the stacked follow-up PR
+    commits through (ADR-0009 addendum).
+
+    Chosen over PUT /repos/{repo}/contents/{path} for a containment reason rather
+    than a stylistic one. The contents API is one COMMIT per file — up to
+    max_patched_files of them — each immediately visible on a branch that must
+    already exist, and POST is never retried, so a failure midway leaves a real
+    branch holding half a fix and no pull request. Blobs, trees and commits are
+    unreferenced objects: nothing is visible until the final POST /git/refs, and
+    every partial failure before it leaves only garbage GitHub collects.
+    """
+
+    def test_a_blob_is_created_base64_encoded(self, replies):
+        # base64, never "utf-8": the content is contributor file bytes with a
+        # replacement spliced in, and a contributor file is not guaranteed to be
+        # valid UTF-8. Declaring utf-8 would fail or silently corrupt such a file.
+        calls, queue = replies
+        queue.append({"sha": "blob-sha"})
+        sha = github_api.create_blob("o/r", b"\xff\xfe not utf-8 at all\n")
+
+        assert sha == "blob-sha"
+        assert calls[0]["path"] == "/repos/o/r/git/blobs"
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["payload"]["encoding"] == "base64"
+        assert base64.b64decode(calls[0]["payload"]["content"]) == b"\xff\xfe not utf-8 at all\n"
+
+    def test_a_tree_is_based_on_the_reviewed_tree_and_carries_file_modes(self, replies):
+        calls, queue = replies
+        queue.append({"sha": "tree-sha"})
+        sha = github_api.create_tree("o/r", "base-tree-sha", {"src/a.py": "blob-a"})
+
+        assert sha == "tree-sha"
+        assert calls[0]["path"] == "/repos/o/r/git/trees"
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["payload"]["base_tree"] == "base-tree-sha"
+        assert calls[0]["payload"]["tree"] == [
+            {"path": "src/a.py", "mode": "100644", "type": "blob", "sha": "blob-a"}
+        ]
+
+    def test_the_tree_is_based_so_unpatched_files_survive(self, replies):
+        # base_tree is what makes this a PATCH of the reviewed tree rather than a
+        # replacement of it. Without it the commit's tree holds ONLY the patched
+        # files and every other file in the repository reads as deleted -- a
+        # verified two-line fix delivered as "delete the repository".
+        calls, queue = replies
+        queue.append({"sha": "tree-sha"})
+        github_api.create_tree("o/r", "base-tree-sha", {"src/a.py": "blob-a"})
+        assert calls[0]["payload"]["base_tree"] == "base-tree-sha"
+
+    def test_a_commit_names_the_reviewed_head_as_its_only_parent(self, replies):
+        # The branch is cut from the reviewed head (ADR-0005: `old` byte-matches
+        # the file THERE, so the patch applies cleanly on that tree and nowhere
+        # else). A different parent would be a tree the anchor never described.
+        calls, queue = replies
+        queue.append({"sha": "commit-sha"})
+        sha = github_api.create_commit("o/r", "the message", tree="tree-sha",
+                                      parent="reviewed-head-sha")
+
+        assert sha == "commit-sha"
+        assert calls[0]["path"] == "/repos/o/r/git/commits"
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["payload"]["tree"] == "tree-sha"
+        assert calls[0]["payload"]["parents"] == ["reviewed-head-sha"]
+        assert calls[0]["payload"]["message"] == "the message"
+
+    def test_a_ref_is_created_fully_qualified(self, replies):
+        # The API wants refs/heads/NAME; sending the bare branch name creates a
+        # ref literally called "smtithy/fix-x" outside refs/heads, which no pull
+        # request can open from.
+        calls, queue = replies
+        queue.append({"ref": "refs/heads/smtithy/fix-x"})
+        github_api.create_ref("o/r", "smtithy/fix-x", "commit-sha")
+
+        assert calls[0]["path"] == "/repos/o/r/git/refs"
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["payload"] == {"ref": "refs/heads/smtithy/fix-x", "sha": "commit-sha"}
+
+    def test_none_of_the_writes_are_retried(self, monkeypatch, no_sleep):
+        # Every call in this sequence is a POST, and a retried one has an
+        # uncertain outcome: a create that actually succeeded behind a 500 would
+        # be repeated, and for the ref that means a second branch. RETRYABLE_METHODS
+        # excludes POST; this pins it for each helper here rather than trusting the
+        # constant to stay put.
+        for call in (
+            lambda: github_api.create_blob("o/r", b"x"),
+            lambda: github_api.create_tree("o/r", "t", {"a": "b"}),
+            lambda: github_api.create_commit("o/r", "m", tree="t", parent="p"),
+            lambda: github_api.create_ref("o/r", "smtithy/x", "c"),
+        ):
+            attempts = []
+
+            def fake_urlopen(request, timeout=None):
+                attempts.append(1)
+                raise FakeHTTPError(500)
+
+            monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+            with pytest.raises(FakeHTTPError):
+                call()
+            assert len(attempts) == 1
+
+    def test_open_pull_request_sends_the_base_it_is_given(self, replies):
+        # `base` is a PARAMETER with no default. ADR-0009's addendum: the base is
+        # never model-suppliable, and an executor "defaulting to main" would have
+        # implemented the absurd reading -- merge the bug, then merge the fix, with
+        # the default branch knowingly broken in between.
+        calls, queue = replies
+        queue.append({"number": 99, "html_url": "https://github.com/o/r/pull/99"})
+        pr = github_api.open_pull_request("o/r", head="smtithy/fix-x", base="feature/x",
+                                          title="Fix the thing", body="the body")
+
+        assert pr["number"] == 99
+        assert calls[0]["path"] == "/repos/o/r/pulls"
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["payload"] == {
+            "head": "smtithy/fix-x", "base": "feature/x",
+            "title": "Fix the thing", "body": "the body",
+        }
+
+    def test_open_pull_request_has_no_default_base(self):
+        # Keyword-only and required, so no caller can omit it and get a guess.
+        with pytest.raises(TypeError):
+            github_api.open_pull_request("o/r", head="smtithy/fix-x",
+                                         title="t", body="b")
+
+    def test_pull_requests_for_base_lists_all_states(self, monkeypatch):
+        # state=all so a maintainer who CLOSED a follow-up PR is not overruled by
+        # a repeat command: the dedup key must still find it, and reopening stays
+        # the human's move. Asserted as its own membership rather than by comparing
+        # the whole path -- a full-string compare also passes when `state` changes
+        # to something else and the rest of the URL happens to match, which is a
+        # test that reads as enforcement while enforcing the base alone.
+        seen = []
+        monkeypatch.setattr(github_api, "paginate", lambda path: seen.append(path) or iter([[]]))
+        list(github_api.pull_requests_for_base("o/r", "feature/x"))
+        assert "state=all" in seen[0], f"the dedup search must span closed PRs; got {seen[0]!r}"
+        assert seen[0].startswith("/repos/o/r/pulls?")
+
+    def test_pull_requests_for_base_flattens_pages(self, monkeypatch):
+        pages = [[{"number": 1}, {"number": 2}], [{"number": 3}]]
+        monkeypatch.setattr(github_api, "paginate", lambda path: iter(pages))
+        assert [p["number"] for p in github_api.pull_requests_for_base("o/r", "f")] == [1, 2, 3]
+
+    def test_a_base_branch_name_is_url_encoded(self, monkeypatch):
+        # Branch names may legally contain characters that are not query-safe
+        # (`feature/a+b`, say). Unencoded, `+` reads as a space and the listing
+        # comes back for a DIFFERENT base -- so the dedup search would find
+        # nothing and open a duplicate PR.
+        seen = []
+        monkeypatch.setattr(github_api, "paginate", lambda path: seen.append(path) or iter([[]]))
+        list(github_api.pull_requests_for_base("o/r", "feature/a+b"))
+        assert "feature%2Fa%2Bb" in seen[0]
 
 
 class TestPrMoved:

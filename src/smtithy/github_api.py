@@ -10,12 +10,15 @@ Environment: GITHUB_TOKEN.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from typing import cast
 
 API_ROOT = "https://api.github.com"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -215,6 +218,148 @@ def minimize_review(node_id: str) -> None:
 def review_comments(repo: str, pr_number: int):
     """Yield every inline review comment on the PR (all pages, flattened)."""
     for page in paginate(f"/repos/{repo}/pulls/{pr_number}/comments?"):
+        yield from page
+
+
+# ------------------------------------------------- the stacked-PR write path --
+
+# blobs -> tree -> commit -> ref, then POST /pulls. The sequence the stacked
+# follow-up pull request is delivered through (ADR-0009 addendum).
+#
+# Chosen over PUT /repos/{repo}/contents/{path} for containment, not style. That
+# endpoint is one COMMIT per file — up to policy.plan.max_patched_files of them —
+# each immediately visible on a branch that must already exist, and POST is never
+# retried here, so a failure partway through leaves a real branch carrying half a
+# fix and no pull request to explain it. Blobs, trees and commits are UNREFERENCED
+# objects: nothing is visible to anyone until the final create_ref, and every
+# partial failure before that point leaves only garbage GitHub eventually
+# collects. The single visible mutation is also what gives the dedup key its
+# atomicity — create_ref 422s on a ref that already exists, so GitHub itself is
+# the compare-and-swap.
+#
+# Every call below is a POST and therefore never retried. That is deliberate and
+# it is why the ordering matters: an uncertain outcome on an unreferenced object
+# costs nothing, while an uncertain outcome on the ref would risk a second branch.
+
+# Regular non-executable file. The harness never delivers a mode change: a patch
+# step carries `path`, `old` and `new` and says nothing about permissions, so
+# preserving a mode it never described would mean reading one from the tree and
+# claiming the plan asked for it. 100644 for every blob, and a file that was
+# executable at the reviewed SHA comes back non-executable in the fix commit —
+# visible in the follow-up PR's diff, which is the fail-visible direction.
+BLOB_MODE = "100644"
+
+
+def create_blob(repo: str, content: bytes) -> str:
+    """Upload one file's bytes as a blob; return its SHA.
+
+    base64 rather than "utf-8" encoding, because the content is a contributor's
+    file with a verified replacement spliced into it and a contributor's file is
+    not guaranteed to be valid UTF-8. Declaring utf-8 for bytes that are not would
+    either fail the call or corrupt the file — and the corrupted version would be
+    bytes no gate ever saw, which is exactly the divergence the shared applier
+    exists to prevent.
+    """
+    blob = cast("dict", api_json(
+        f"/repos/{repo}/git/blobs",
+        method="POST",
+        payload={"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
+    ))
+    return blob["sha"]
+
+
+def create_tree(repo: str, base_tree: str, blobs: dict[str, str]) -> str:
+    """Build a tree that is `base_tree` with `blobs` (path -> blob SHA) replaced.
+
+    `base_tree` is load-bearing: it makes this a PATCH of the reviewed tree rather
+    than a replacement of it. Omitted, the new tree holds ONLY the patched paths
+    and every other file in the repository reads as DELETED — a verified two-line
+    fix delivered as "delete everything else", which no bound in the policy would
+    have caught because the policy bounds what the plan CHANGES, not what a tree
+    omits.
+    """
+    return cast("dict", api_json(
+        f"/repos/{repo}/git/trees",
+        method="POST",
+        payload={
+            "base_tree": base_tree,
+            "tree": [
+                {"path": path, "mode": BLOB_MODE, "type": "blob", "sha": sha}
+                for path, sha in blobs.items()
+            ],
+        },
+    ))["sha"]
+
+
+def create_commit(repo: str, message: str, *, tree: str, parent: str) -> str:
+    """Create a commit object with exactly one parent; return its SHA.
+
+    The parent is the REVIEWED HEAD, always. ADR-0005 anchors every `old` to the
+    file's bytes at that SHA, so the patch applies cleanly on that tree and on no
+    other; committing onto a different parent would produce content the anchor
+    never described. Singular rather than a list for that reason — this path has no
+    use for a merge commit, and accepting several parents would let a caller build
+    one by accident.
+    """
+    return cast("dict", api_json(
+        f"/repos/{repo}/git/commits",
+        method="POST",
+        payload={"message": message, "tree": tree, "parents": [parent]},
+    ))["sha"]
+
+
+def create_ref(repo: str, branch: str, sha: str) -> dict | list:
+    """Point a NEW branch at `sha`. The one visible mutation of the sequence.
+
+    Fully qualified to refs/heads/, because the API takes a ref and not a branch
+    name: sending the bare name creates a ref literally called `smtithy/fix-x`
+    outside refs/heads, which no pull request can open from and nothing in the UI
+    shows.
+
+    422s if the ref already exists, which is the compare-and-swap this delivery's
+    deduplication relies on rather than a failure to paper over: GitHub decides who
+    wins, atomically, with no read-then-write window for a second command to slip
+    into.
+    """
+    return api_json(
+        f"/repos/{repo}/git/refs",
+        method="POST",
+        payload={"ref": f"refs/heads/{branch}", "sha": sha},
+    )
+
+
+def open_pull_request(repo: str, *, head: str, base: str, title: str, body: str) -> dict:
+    """Open the follow-up pull request from `head` into `base`.
+
+    `base` is a required keyword parameter with NO default, and that is a pinned
+    decision rather than an implementation detail (ADR-0009 addendum: "the base is
+    never model-suppliable"). The plan's `open_pr` step deliberately carries no
+    base argument, so the value can only come from the live pull-request context
+    the executor holds. A default of "main" here would have implemented the absurd
+    reading the addendum was written to forbid — merge the bug, then merge the fix,
+    with the default branch knowingly broken in between.
+    """
+    return cast("dict", api_json(
+        f"/repos/{repo}/pulls",
+        method="POST",
+        payload={"head": head, "base": base, "title": title, "body": body},
+    ))
+
+
+def pull_requests_for_base(repo: str, base: str):
+    """Yield every pull request opened against `base`, in ANY state.
+
+    `state=all` because a maintainer who CLOSED a follow-up pull request has made a
+    decision, and a repeat command must not overrule it by opening a second one:
+    the deduplication key has to be able to find the closed PR. Reopening is the
+    human's move, and it stays theirs.
+
+    The base is URL-encoded: branch names may legally hold characters that are not
+    query-safe, and an unencoded `+` reads as a space, which would return the
+    listing for a DIFFERENT base — the dedup search would then find nothing and
+    open a duplicate.
+    """
+    for page in paginate(f"/repos/{repo}/pulls?state=all&base={urllib.parse.quote(base, safe='')}"):
         yield from page
 
 
