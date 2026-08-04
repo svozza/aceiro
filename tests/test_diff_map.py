@@ -372,6 +372,101 @@ class TestAnchorSignatures:
         assert "dangerous()" in signatures[("x.py", 2)]
 
 
+class TestTheWindowComesFromTheHeadContent:
+    """ADR-0009's addendum: the window's source is part of the identity contract.
+
+    A window taken from the diff reads a neighbour outside every hunk as `absent`
+    rather than as its real text, so an unrelated push that GROWS a hunk around an
+    unchanged line changes that line's signature. The executor then sees an
+    unknown fingerprint plus an orphaned old one, and deletes a live comment
+    thread to repost the same comment. No function of the diff alone can close it
+    — in the narrow-hunk run the neighbour's text is not in the input at all.
+
+    So the window comes from file content at the head SHA, which the executor
+    already reads for anchoring, and the diff keeps deciding WHICH lines are
+    anchorable.
+    """
+
+    # One file, one head SHA, two diffs of it. `target()` is unchanged in both,
+    # and its neighbours are unchanged too: only the hunk BOUNDARY moves.
+    HEAD = b"alpha\ntarget()\nomega\ntail()\n"
+
+    NARROW = (
+        "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+        "@@ -2,1 +2,1 @@\n+target()\n"
+    )
+    WIDE = (
+        "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+        "@@ -1,4 +1,4 @@\n alpha\n+target()\n omega\n tail()\n"
+    )
+
+    @staticmethod
+    def source(tree=None):
+        tree = {"x.py": TestTheWindowComesFromTheHeadContent.HEAD} if tree is None else tree
+
+        def read(path: str) -> bytes:
+            if path not in tree:
+                raise FileNotFoundError(path)
+            return tree[path]
+
+        return read
+
+    def test_a_grown_hunk_does_not_move_the_signature(self):
+        narrow = anchor_signatures(self.NARROW, content_source=self.source())
+        wide = anchor_signatures(self.WIDE, content_source=self.source())
+        assert narrow[("x.py", 2)] == wide[("x.py", 2)]
+
+    def test_the_diff_derived_window_is_what_moves_it(self):
+        # The defect this contract closes, pinned in its failing direction so the
+        # fix cannot be read as "the two were always equal".
+        narrow = anchor_signatures(self.NARROW)
+        wide = anchor_signatures(self.WIDE)
+        assert narrow[("x.py", 2)] != wide[("x.py", 2)]
+
+    def test_a_neighbour_outside_every_hunk_is_its_real_text(self):
+        signatures = anchor_signatures(self.NARROW, content_source=self.source())
+        assert "alpha" in signatures[("x.py", 2)]
+        assert "omega" in signatures[("x.py", 2)]
+        assert "absent" not in signatures[("x.py", 2)]
+
+    def test_the_diff_still_decides_which_lines_are_anchorable(self):
+        # The head content carries four lines; only the one the narrow hunk makes
+        # visible may be anchored to, because provenance is the diff's answer and
+        # this map is what the executor keys comments on.
+        assert set(anchor_signatures(self.NARROW, content_source=self.source())) == {("x.py", 2)}
+
+    def test_a_file_edge_is_absent_rather_than_wrapped(self):
+        # Line 1 has no predecessor in the FILE either, so `absent` is the honest
+        # answer there — it must not borrow the last line and collide.
+        signatures = anchor_signatures(self.WIDE, content_source=self.source())
+        assert "absent" in signatures[("x.py", 1)]
+        assert signatures[("x.py", 1)] != signatures[("x.py", 4)]
+
+    def test_an_unreadable_path_falls_back_to_the_diff_window(self):
+        # Anchoring read the file moments earlier, so this is the tree changing
+        # underneath the executor. Degrading to the diff-derived window costs the
+        # boundary-independence for that path; raising would cost the whole
+        # delivery, and identity is not a containment property.
+        empty = anchor_signatures(self.NARROW, content_source=self.source(tree={}))
+        assert empty == anchor_signatures(self.NARROW)
+
+    def test_the_head_content_is_decoded_as_contributor_bytes(self):
+        # File content at the head SHA is contributor-controlled, so an invalid
+        # byte must yield a usable signature rather than raise out of the
+        # reconciler — decode_contributor_bytes' discipline, same as the diff's.
+        tree = {"x.py": b"alpha\ntarget()\n\xff\xfe\ntail()\n"}
+        signatures = anchor_signatures(self.NARROW, content_source=self.source(tree))
+        assert "target()" in signatures[("x.py", 2)]
+
+    def test_a_unicode_separator_in_the_head_content_is_not_a_line_break(self):
+        # split_diff_lines' rule, applied to file content: U+2028 does not end a
+        # line, so it must not shift every later line's number and hand one
+        # anchor another line's window.
+        tree = {"x.py": "alpha\ntar get()\nomega\ntail()\n".encode()}
+        signatures = anchor_signatures(self.NARROW, content_source=self.source(tree))
+        assert "omega" in signatures[("x.py", 2)]
+
+
 def _hunk_lines(diff_text):
     from verify import parse_diff_hunks
 

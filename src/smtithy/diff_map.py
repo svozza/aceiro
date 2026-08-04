@@ -24,6 +24,8 @@ import re
 import unicodedata
 from typing import NamedTuple
 
+from canonicalize import decode_contributor_bytes
+
 HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 # git's C-quoting escapes. Octal (\NNN) is handled separately: it encodes raw
@@ -126,12 +128,29 @@ def normalize_signature_line(text: str) -> str:
     return _INDENT_RE.sub(" ", unicodedata.normalize("NFC", text)).strip()
 
 
-def anchor_signatures(diff_text: str, window: int = 1) -> dict[tuple[str, int], str]:
+def head_content_lines(content_source, path: str) -> dict[int, str] | None:
+    """`path`'s lines at the head SHA, numbered from 1, or None if unreadable.
+
+    Split by split_diff_lines' rule rather than str.splitlines(), so a U+2028 in
+    contributor content does not end a line here while ending none in the diff —
+    the two numberings must agree or a window is taken around the wrong line.
+
+    Decoded as contributor bytes: this is head content, so an invalid byte is a
+    reviewable fact about the file rather than something to raise over.
+    """
+    try:
+        raw = content_source(path)
+    except OSError:
+        return None
+    return dict(enumerate(split_diff_lines(decode_contributor_bytes(raw)), start=1))
+
+
+def anchor_signatures(diff_text: str, window: int = 1, content_source=None) -> dict[tuple[str, int], str]:
     """Map (path, new-side line) -> a signature of the CODE at that anchor.
 
-    The signature is the anchored line's text plus `window` new-side lines either
-    side of it, each canonicalized by normalize_signature_line. It exists to give
-    the executor an identity key for a finding that does not depend on the model's
+    The signature is the anchored line's text plus `window` lines either side of
+    it, each canonicalized by normalize_signature_line. It exists to give the
+    executor an identity key for a finding that does not depend on the model's
     prose:
 
     - stable when the model rewords the same finding (observed: it rewords on
@@ -146,12 +165,24 @@ def anchor_signatures(diff_text: str, window: int = 1) -> dict[tuple[str, int], 
     identical `return True` lines, one correct and one the defect), so the
     neighbours are what keep two findings on similar lines distinct.
 
-    The window is over lines the DIFF makes visible, so a neighbour outside every
-    hunk reads as absent rather than as its real text. A signature is therefore
-    comparable across runs only for diffs whose hunk boundaries fall in the same
-    place; growing a hunk around an unchanged line changes that line's signature.
-    A consumer needing boundary-independent identity must take the window from
-    file content at the head SHA instead.
+    `content_source` is a path -> bytes reader for file content at the head SHA,
+    and where the window comes from when one is given (ADR-0009 addendum: the
+    window's source is part of the identity contract). Without it the window is
+    over lines the DIFF makes visible, so a neighbour outside every hunk reads as
+    `absent` rather than as its real text — and an unrelated push that grows a
+    hunk around an unchanged line moves that line's signature, which costs a live
+    comment thread. No function of the diff alone can close that: in the
+    narrow-hunk run the neighbour's text is not in the input.
+
+    The diff decides WHICH lines are anchorable either way. That is provenance's
+    answer, and the head content is a superset of it — keying comments on a line
+    no hunk makes visible would anchor them where a finding may not point.
+
+    A path the source cannot read falls back to the diff-derived window for that
+    path alone. Anchoring read the file moments earlier, so an unreadable one
+    means the tree moved underneath the executor; identity is not a containment
+    property, and failing the whole delivery over it would trade a churn cost for
+    a total one.
     """
     # new-side content per path, in order, so a window can be taken around a line
     by_path: dict[str, dict[int, str]] = {}
@@ -163,9 +194,14 @@ def anchor_signatures(diff_text: str, window: int = 1) -> dict[tuple[str, int], 
 
     signatures: dict[tuple[str, int], str] = {}
     for path, numbered in by_path.items():
+        window_lines = numbered
+        if content_source is not None:
+            if (from_head := head_content_lines(content_source, path)) is not None:
+                window_lines = from_head
         for number in numbered:
             parts = [
-                normalize_signature_line(numbered[key]) if (key := number + offset) in numbered else "\x00absent"
+                normalize_signature_line(window_lines[key]) if (key := number + offset) in window_lines
+                else "\x00absent"
                 for offset in range(-window, window + 1)
             ]
             signatures[(path, number)] = "\x00".join(parts)
