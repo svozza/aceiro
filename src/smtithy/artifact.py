@@ -448,6 +448,36 @@ def render_constraints(policy: dict) -> str:
     )
 
 
+def severity_ranks(policy: dict) -> dict[str, int]:
+    """Severity name -> rank, most severe first, from the policy's own enum.
+
+    The single home of the severity vocabulary is policy.json, and three call
+    sites now need this ranking rather than one, so it is derived here instead of
+    rebuilt per caller — a caller that enumerated the names itself would keep
+    working while the policy's enum changed underneath it.
+    """
+    values = policy["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]
+    return {name: rank for rank, name in enumerate(values)}
+
+
+def rendered_findings(artifact: dict, order: dict[str, int]) -> list[dict]:
+    """The artifact's findings in the order a reader sees them.
+
+    Here rather than in post.py because a remediation command names an ORDINAL —
+    `/fix 3` is the third finding of the posted comment (ADR-0007) — so the plan
+    session resolves it too, and the generator side must not import the executor
+    to do it. Resolving that ordinal against the artifact's own order names a
+    different finding than the commander pointed at whenever the model's order is
+    not already sorted, and nothing about that failure is visible: both findings
+    are real, and the fix lands on the wrong one.
+
+    Stable, so findings of equal severity keep the order the generator emitted.
+    An unstable sort would make the same artifact and the same comment resolve
+    `/fix 2` differently between runs.
+    """
+    return sorted(artifact["findings"], key=lambda f: order[f["severity"]])
+
+
 def annotate_diff(diff_text: str) -> str:
     """Prefix every hunk line with the new-file line number it will have.
 

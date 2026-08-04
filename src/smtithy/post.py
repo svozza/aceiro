@@ -47,7 +47,7 @@ import re
 from pathlib import Path
 from typing import cast
 
-from artifact import redact_line
+from artifact import redact_line, rendered_findings, severity_ranks
 from github_api import api_json, fail, graphql, paginate, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from prepare_context import fetch_anchored_pair
@@ -102,7 +102,7 @@ def render(
         "",
     ]
 
-    findings = sorted(artifact["findings"], key=lambda f: severity_order[f["severity"]])
+    findings = rendered_findings(artifact, severity_order)
     if findings:
         lines += ["### Findings", ""]
         for finding in findings:
@@ -419,8 +419,7 @@ def main() -> None:
         "sha": reviewed_sha,
         "run_url": os.environ["RUN_URL"],
     }
-    severities = policy["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]
-    severity_order = {name: rank for rank, name in enumerate(severities)}
+    severity_order = severity_ranks(policy)
     body = render(artifact, metadata, severity_order, args.marker, args.title)
     upsert_comment(repo, pr_number, body, args.marker, bot_login=bot_login)
 

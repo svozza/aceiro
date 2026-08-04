@@ -6,11 +6,13 @@ path), and main()'s re-verify / TOCTOU-SHA gates. Network is never touched:
 api_json/paginate are stubbed.
 """
 
+import copy
 import json
 import sys
 
 import pytest
 
+import artifact as artifact_mod
 import github_api
 import post
 from conftest import CHANGED_FILES, POLICY, SAMPLE_DIFF
@@ -116,6 +118,79 @@ class TestRender:
         body = post.render(valid_artifact, METADATA, SEVERITY_ORDER)
         assert "<script" not in body
         assert "@" not in valid_artifact["summary"]  # sanity: golden is clean
+
+
+# ------------------------------------------------------- rendered ordinal ---
+
+
+class TestRenderedFindings:
+    """The ordinal a commander types is the RENDERED position, not the
+    artifact's.
+
+    `/fix 3` means the third finding in the comment the commander read. render()
+    sorts by severity and review.json holds model order, so anything indexing
+    the artifact directly resolves a different finding than the human pointed
+    at — silently, and only when the model's order is not already sorted. One
+    function owns the sort so the two cannot disagree.
+    """
+
+    def test_the_ranks_come_from_the_policys_own_enum(self):
+        # policy.json's enum is the single home of the severity vocabulary, most
+        # severe first. Hardcoding the quartet here would keep ranking after an
+        # operator edited that enum — and the failure is an inverted ordinal, so
+        # `/fix 1` would name the LEAST severe finding with everything green.
+        severities = POLICY["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]
+        assert artifact_mod.severity_ranks(POLICY) == {n: i for i, n in enumerate(severities)}
+        # Not merely equal to today's policy: derived from whatever it says.
+        reordered = copy.deepcopy(POLICY)
+        reordered["artifact_schema"]["findings"]["item_fields"]["severity"]["values"] = ["low", "critical"]
+        assert artifact_mod.severity_ranks(reordered) == {"low": 0, "critical": 1}
+
+    def test_the_order_is_the_rendered_order(self, valid_artifact):
+        valid_artifact["findings"] = [
+            finding(severity="low", title="LOW-ONE"),
+            finding(severity="critical", title="CRIT-ONE"),
+            finding(severity="medium", title="MED-ONE"),
+        ]
+        body = post.render(valid_artifact, METADATA, SEVERITY_ORDER)
+        titles = [f["title"] for f in artifact_mod.rendered_findings(valid_artifact, SEVERITY_ORDER)]
+        assert titles == ["CRIT-ONE", "MED-ONE", "LOW-ONE"]
+        # The property, stated against render() itself rather than restated: the
+        # sequence this returns is the sequence the reader sees.
+        assert [body.index(t) for t in titles] == sorted(body.index(t) for t in titles)
+
+    def test_equal_severities_keep_the_artifacts_own_order(self, valid_artifact):
+        # A stable sort, so two findings of one severity are numbered as the
+        # model emitted them. Unstable, `/fix 2` would name a different finding
+        # per Python build for the same artifact and comment.
+        valid_artifact["findings"] = [
+            finding(severity="high", title="FIRST"),
+            finding(severity="high", title="SECOND"),
+            finding(severity="high", title="THIRD"),
+        ]
+        titles = [f["title"] for f in artifact_mod.rendered_findings(valid_artifact, SEVERITY_ORDER)]
+        assert titles == ["FIRST", "SECOND", "THIRD"]
+
+    def test_it_is_the_sort_render_uses(self, valid_artifact):
+        # Not a second sort that agrees today: render() must CALL this, or the
+        # ordinal drifts from the comment the next time either is edited.
+        valid_artifact["findings"] = [
+            finding(severity="low", title="LOW-ONE"),
+            finding(severity="critical", title="CRIT-ONE"),
+        ]
+        calls = []
+        original = artifact_mod.rendered_findings
+
+        def spy(artifact, order):
+            calls.append(artifact)
+            return original(artifact, order)
+
+        try:
+            post.rendered_findings = spy
+            post.render(valid_artifact, METADATA, SEVERITY_ORDER)
+        finally:
+            post.rendered_findings = original
+        assert calls == [valid_artifact]
 
 
 # ------------------------------------------------------ resolve_bot_login ---
