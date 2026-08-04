@@ -123,3 +123,28 @@ def valid_artifact():
         ],
         "residual_risk": "",
     }
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch, request):
+    """Every test in this suite is deterministic and offline. Enforced, not stated.
+
+    Several modules' docstrings promise the network is never touched, and nothing
+    held them to it: a stub that misses one call site produced a real HTTP request
+    from the test suite (observed as a live 401 while wiring the plan executor's
+    delivery), which reads as an assertion about a stub that was never installed.
+
+    A test that genuinely exercises the transport (test_github_api's retry and
+    backoff cases) installs its own urlopen fake, which happens after this
+    fixture and so replaces the refusal — no opt-out is needed, and none exists:
+    every escape is a visible monkeypatch in the test that needs it.
+    """
+    import urllib.request
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "the test suite attempted a real network call; stub the API helper the "
+            "code under test actually uses"
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
