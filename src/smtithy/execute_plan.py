@@ -244,6 +244,28 @@ def main() -> None:
     parser.add_argument("--policy", required=True, type=Path)
     parser.add_argument("--prover", default=DEFAULT_PROVER, type=Path,
                         help="Built prove-cli.js (default: the repo's dist/plan/prove-cli.js).")
+    # Which delivery THIS JOB may perform, declared by the job rather than derived
+    # from the plan. The lane routes on plan structure to choose between a job
+    # holding pull-requests: write and one also holding contents: write, and the
+    # routing job holds no credential and reads a plan nothing has verified yet —
+    # so unverified structure decides which job STARTS. This flag is what bounds
+    # the concession to exactly that: a plan misrepresenting its mode reaches a job
+    # whose --allow refuses it after verification, so the credential is minted and
+    # then not used. A self-inflicted denial of service with no benefit, rather
+    # than a delivery performed under a scope it was not routed for.
+    #
+    # `choices` so a typo in the workflow is an argparse error, not a silently
+    # empty or silently total allowance — one of those two readings is dangerous
+    # and neither is what was meant.
+    #
+    # Empty means UNCONFINED, deliberately: the flag confines a job, and an
+    # operator running this by hand names no confinement. The workflow always
+    # passes it, which test_workflow_shape asserts where the workflow is the
+    # subject.
+    parser.add_argument("--allow", action="append", default=[],
+                        choices=["suggestions", "stacked_pr"],
+                        help="Delivery mode this job may perform; repeatable. "
+                             "Omitted, every mode is allowed.")
     args = parser.parse_args()
 
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -339,6 +361,18 @@ def main() -> None:
         delivery = decide_delivery(plan["steps"])
     except Refusal as exc:
         fail(f"plan verified but refused: {exc}")
+
+    # The job's own declaration of what it may deliver, checked after verification
+    # and before any live call. This is what makes routing on unverified plan
+    # structure safe: the routing job chooses which credential is minted, and this
+    # decides whether that credential may be USED for the mode the verified plan
+    # actually decided. A mismatch is a run that fails having written nothing.
+    if args.allow and delivery.mode not in args.allow:
+        fail(
+            f"delivery ({delivery.mode}) is not allowed in this job (--allow "
+            f"{' '.join(args.allow)}); the plan routed to a job that may not deliver it, "
+            "so nothing was executed"
+        )
 
     # TOCTOU precondition and delivery context in one fetch. For a stacked PR
     # the base is the reviewed PR's own head BRANCH — from this context, never

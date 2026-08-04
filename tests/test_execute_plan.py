@@ -1142,3 +1142,109 @@ class TestStackedPrDelivery:
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
         assert posted == []
+
+
+# ------------------------------------------------------ the --allow gate ---
+
+
+class TestTheAllowGate:
+    """`--allow` declares which delivery mode the JOB INVOKING THIS may perform,
+    and a mismatch fails closed after verification.
+
+    It exists because the lane routes on the plan's structure to decide which job
+    runs, and the two jobs hold different credentials: `execute` has
+    pull-requests: write, `stack` also has contents: write. The routing job holds
+    no credential and its input is a plan the executor has not yet verified, so
+    unverified structure decides which job STARTS.
+
+    This is what bounds that concession to exactly "which job starts". A plan
+    misrepresenting its own mode reaches a job whose --allow refuses it, so the
+    credential is minted and then not used: a self-inflicted DoS with no benefit,
+    rather than a delivery performed under a scope it should not have had.
+    """
+
+    def argv_with(self, monkeypatch, *allow):
+        argv = sys.argv[:]
+        for mode in allow:
+            argv += ["--allow", mode]
+        monkeypatch.setattr(sys, "argv", argv)
+
+    def test_a_suggestion_plan_is_delivered_when_suggestions_are_allowed(
+            self, delivery_env, posted, monkeypatch):
+        self.argv_with(monkeypatch, "suggestions")
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert len(posted) == 1
+
+    def test_a_stacked_plan_is_refused_by_a_suggestions_only_job(
+            self, stacked_env, stacked, monkeypatch, capsys):
+        # The case the whole gate exists for: a plan that routed as suggestions
+        # (or lied) arriving at the job WITHOUT contents: write must not deliver.
+        self.argv_with(monkeypatch, "suggestions")
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert stacked == []
+        err = capsys.readouterr().err
+        assert "stacked_pr" in err and "not allowed" in err
+
+    def test_a_suggestion_plan_is_refused_by_a_stacked_only_job(
+            self, delivery_env, posted, monkeypatch, capsys):
+        # And the other direction, which is not symmetric in consequence but is in
+        # posture: the job holding contents: write must not quietly do the other
+        # delivery either, or its credential is minted for work it was not routed
+        # to do.
+        self.argv_with(monkeypatch, "stacked_pr")
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert posted == []
+        assert "suggestions" in capsys.readouterr().err
+
+    def test_a_stacked_plan_is_delivered_when_stacked_is_allowed(
+            self, stacked_env, stacked, monkeypatch):
+        self.argv_with(monkeypatch, "stacked_pr")
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert len(stacked) == 1
+
+    def test_the_refusal_lands_before_any_write(self, stacked_env, stacked, monkeypatch):
+        # Fail-closed means nothing was created, not that the failure was reported
+        # after the fact.
+        self.argv_with(monkeypatch, "suggestions")
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert stacked == []
+
+    def test_an_unknown_mode_is_refused_at_parse_time(self, delivery_env, monkeypatch, capsys):
+        # A typo in the workflow must be refused BY ARGPARSE, and the distinction
+        # is not cosmetic. Without `choices` the run still exits -- an allowlist
+        # matching nothing refuses every plan -- so asserting SystemExit alone
+        # passes either way and enforces nothing. What separates them is WHERE the
+        # complaint comes from: argparse names the invalid choice on stderr and
+        # exits 2 without ever verifying a plan, while a nothing-matches allowlist
+        # reports a delivery refusal after doing the whole gate. The first is a
+        # deployment error the operator can read; the second looks like a bad plan.
+        self.argv_with(monkeypatch, "suggestionz")
+        with pytest.raises(SystemExit) as exit_info:
+            execute_plan.main()
+        assert exit_info.value.code == 2, "an invalid --allow must be an argparse error, not a refusal"
+        err = capsys.readouterr().err
+        assert "suggestionz" in err and "invalid choice" in err
+        assert "delivery" not in err, "the plan was verified before the typo was noticed"
+
+    def test_omitting_allow_permits_every_mode(self, delivery_env, posted, monkeypatch):
+        # Backwards-compatible by design: the flag CONFINES a job, and a caller
+        # that names no confinement (an operator running this by hand) is not
+        # silently confined to nothing. The workflow always passes it; that is
+        # asserted in test_workflow_shape, where the workflow is the subject.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert len(posted) == 1
+
+    def test_both_modes_may_be_allowed_at_once(self, stacked_env, stacked, monkeypatch):
+        self.argv_with(monkeypatch, "suggestions", "stacked_pr")
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert len(stacked) == 1
