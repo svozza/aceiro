@@ -463,13 +463,15 @@ _APPEND_PROBE = "\x00aipr-probe\x00"
 
 # markdown-it normalises CR and CRLF to LF before parsing, so the probe must be
 # appended to text normalised the same way or a lone \r shifts every token map
-# and the probe lands on the wrong line (found by a property test).
-_NEWLINES_RE = re.compile(r"\r\n?")
+# and the probe lands on the wrong line (found by a property test). Public because
+# suggest.comment_content needs the same normalisation for the same reason: it
+# compares a body GitHub returned (CRLF) against one this harness rendered (LF).
+NEWLINES_RE = re.compile(r"\r\n?")
 
 
 def _source_lines(text: str) -> list[str]:
     """The lines markdown-it will see, so token maps index into this list."""
-    return _NEWLINES_RE.sub("\n", text).split("\n")
+    return NEWLINES_RE.sub("\n", text).split("\n")
 
 
 def code_lines(text: str) -> list[tuple[str, bool]]:
@@ -513,7 +515,7 @@ def fence_info_strings(text: str) -> list[str]:
     """
     return [
         token.info.strip().lower()
-        for token in _PARSER.parse(_NEWLINES_RE.sub("\n", text))
+        for token in _PARSER.parse(NEWLINES_RE.sub("\n", text))
         if token.type == "fence" and token.info.strip()
     ]
 
@@ -533,7 +535,7 @@ def unterminated_fence(text: str) -> str | None:
 
     Returns the opener's marker, since a different one does not close the block.
     """
-    document = _NEWLINES_RE.sub("\n", text) + f"\n{_APPEND_PROBE}"
+    document = NEWLINES_RE.sub("\n", text) + f"\n{_APPEND_PROBE}"
     probe_line = len(document.split("\n")) - 1
     for token in _PARSER.parse(document):
         if token.type == "fence" and token.map and token.map[0] <= probe_line < token.map[1]:

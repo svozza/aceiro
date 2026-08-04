@@ -26,7 +26,12 @@ Its lessons, each measured on a real pull request there and each load-bearing:
   cannot be deleted, so spent ones are rewritten and minimized, best effort and
   never run-failing.
 - Content is compared with the executor-authored first and last lines dropped BY
-  POSITION, or the footer's per-run URL rewrites every comment every run.
+  POSITION, or the footer's per-run URL rewrites every comment every run — and
+  with line endings normalised, because only one side of that comparison came
+  back from GitHub.
+- Retraction is scoped to the COMMANDED finding: one run delivers one finding
+  (ADR-0007) while the listing is the whole pull request, so an unscoped pass
+  withdraws every other finding's live suggestion.
 
 Ownership is marker AND authenticated author throughout, the author half resolved
 from the write token itself (post.resolve_bot_login): the marker is copyable, so
@@ -48,7 +53,7 @@ from github_api import (
     submit_review,
     update_review_body,
 )
-from verify import code_lines, unterminated_fence
+from verify import NEWLINES_RE, code_lines, unterminated_fence
 
 # Identity marker for a suggestion comment of ours, carrying the fingerprint the
 # reconciler matches on. It RECOVERS a comment's identity on a later run rather
@@ -208,15 +213,23 @@ def strike_through(text: str) -> str:
     verify.code_lines, i.e. from markdown-it itself, which also covers indented
     blocks no fence-scanning version would notice.
 
+    `<s>` rather than `~~…~~`, because the wrapper must not be able to become
+    SYNTAX. A line already beginning with `~` — `~~Deprecated~~ …`, which the
+    allowlist admits, or a bare `~/.config` — turned into `~~~…` under the tilde
+    form, and CommonMark reads that as a tilde-fence opener: the suggestion block
+    and the `<sub>` attribution line below it were swallowed into one code block,
+    and close_open_fence then appended its marker after the footer rather than
+    before it. An HTML tag has no such reading, and raw HTML is refused in MODEL
+    text while remaining ours to emit.
+
     BEST EFFORT, and never the only signal: the text being struck is
-    model-authored, and the grammar permits markdown that defeats a span (a note
-    ending in `~~` closes ours). `retract` therefore leads with a plain-text
-    notice that nothing below it can capture.
+    model-authored, and the grammar permits markdown that defeats a span. `retract`
+    therefore leads with a plain-text notice that nothing below it can capture.
     """
     out = []
     for line, is_code in code_lines(text):
         skip = is_code or not line.strip() or line.startswith(("<!--", "<sub>"))
-        out.append(line if skip else f"~~{line}~~")
+        out.append(line if skip else f"<s>{line}</s>")
     return "\n".join(out)
 
 
@@ -416,17 +429,22 @@ def supersede_previous_reviews(repo: str, pr_number: int, bot_login: str) -> Non
         # what the POST returned.
         if (review.get("body") or "").strip() == SUPERSEDED_REVIEW_BODY.strip():
             continue
+        # `.get`, not `review["id"]`, and the same value in the handler: the
+        # subscript raised KeyError INSIDE the try, and the handler's own f-string
+        # then re-raised it out of a function whose contract is never to fail —
+        # losing the delivery to cosmetic tidying, since this runs before the POST.
+        review_id = review.get("id")
         try:
-            update_review_body(repo, pr_number, review["id"], SUPERSEDED_REVIEW_BODY)
-            print(f"marked review {review['id']} superseded")
+            update_review_body(repo, pr_number, review_id, SUPERSEDED_REVIEW_BODY)
+            print(f"marked review {review_id} superseded")
         except Exception as exc:  # noqa: BLE001
-            print(f"could not rewrite review {review['id']} ({exc}); continuing")
+            print(f"could not rewrite review {review_id} ({exc}); continuing")
         if node_id := review.get("node_id"):
             try:
                 minimize_review(node_id)
-                print(f"minimized review {review['id']}")
+                print(f"minimized review {review_id}")
             except Exception as exc:  # noqa: BLE001
-                print(f"could not minimize review {review['id']} ({exc}); continuing")
+                print(f"could not minimize review {review_id} ({exc}); continuing")
 
 
 # ---------------------------------------------------------- the reconciler ---
@@ -444,8 +462,18 @@ def comment_content(body: str) -> str:
     Dropping the footer is the point: its `[run]` URL differs on every run, so
     comparing whole bodies would report every comment as changed and rewrite all
     of them, every time.
+
+    Line endings are normalised before comparing, because only one side of the
+    comparison came back from GitHub: this harness sends LF and the API returns
+    bodies with CRLF (measured — post.check_marker's docstring records the same
+    fact), so an unchanged comment differed from its own re-render at every
+    interior newline and was rewritten every run without bound. Normalising here is
+    not the canonicality question ADR-0011 refuses to answer by rewriting: nothing
+    normalised is ever POSTED, this decides only whether two bodies say the same
+    thing.
     """
-    return "\n".join((body or "").split("\n")[1:-1]).strip()
+    lines = NEWLINES_RE.sub("\n", body or "").split("\n")
+    return "\n".join(lines[1:-1]).strip()
 
 
 def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
@@ -534,9 +562,23 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
     # listing, so a comment GitHub reports without one is out of scope and left
     # standing — the fail-closed reading, since the alternative is deleting a
     # comment whose subject could not be established.
-    for fingerprint, comment in ours:
-        if fingerprint in wanted:
-            continue
+    stale = [(fingerprint, comment) for fingerprint, comment in ours if fingerprint not in wanted]
+    if stale:
+        # Re-read immediately before the DELETEs. The listing above happened before
+        # the POST, the supersede pass and the re-render PATCHes — several live
+        # calls — and a human replying in that window was absent from the snapshot,
+        # so `retract` read "no discussion" and DELETED their reply's parent. The
+        # window cannot be closed (the read and the delete are not atomic) but it
+        # can be made as small as the last read, and the cost of a stale answer is
+        # asymmetric: a reply seen late means an unnecessary strike, a reply missed
+        # means a severed thread. Failing to re-read keeps the pre-write answer
+        # rather than losing the retraction.
+        try:
+            replied_ids = human_replied_ids(list(review_comments(repo, pr_number)), bot_login)
+        except Exception as exc:  # noqa: BLE001 — the snapshot we already hold is a safe answer
+            print(f"could not re-read replies before retracting ({exc}); using the earlier scan")
+
+    for fingerprint, comment in stale:
         if commanded_path is None or comment.get("path") != commanded_path:
             print(f"suggestion comment {comment['id']} is outside this command's scope, left as is")
             continue

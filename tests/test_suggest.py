@@ -628,6 +628,57 @@ class TestRetraction:
                                       commanded_path="src/app.py")
         assert calls["deleted"] == [10]
 
+    def test_a_reply_landing_during_the_run_still_blocks_the_delete(self, api, monkeypatch):
+        # The listing happens before the POST, the supersede pass and the re-render
+        # PATCHes. A human replying in that window was absent from the snapshot, so
+        # retract read "no discussion" and DELETED their reply's parent — the
+        # orphaned-reply outcome its own docstring gives as the reason to strike
+        # instead. Re-read before the deletes, which makes the window the last read
+        # rather than the whole run.
+        calls, _, _ = api
+        pages = [[comment(10)],
+                 [comment(10), {"id": 11, "body": "wait", "user": {"login": "a-human"},
+                                "in_reply_to_id": 10}]]
+        monkeypatch.setattr(suggest, "review_comments", lambda repo, pr: iter(pages.pop(0)))
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["deleted"] == [], "the late reply's parent was deleted"
+        assert len(calls["patched"]) == 1
+
+    def test_a_failing_reply_re_read_keeps_the_earlier_answer(self, api, monkeypatch):
+        # The re-read is a narrowing, not a new dependency: a 500 there must leave
+        # the pre-write snapshot in force rather than lose the retraction.
+        calls, _, _ = api
+        pages = [[comment(10)]]
+
+        def listing(repo, pr):
+            if pages:
+                return iter(pages.pop(0))
+            raise RuntimeError("500")
+
+        monkeypatch.setattr(suggest, "review_comments", listing)
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["deleted"] == [10]
+
+    def test_the_replies_are_not_re_read_when_nothing_is_stale(self, api, monkeypatch):
+        # One extra call, and only on the path that needs it: an unchanged plan
+        # must stay a single listing.
+        calls, _, _ = api
+        listings = []
+
+        def listing(repo, pr):
+            listings.append(pr)
+            return iter([comment(10)])
+
+        monkeypatch.setattr(suggest, "review_comments", listing)
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert len(listings) == 1
+
     def test_a_reaction_does_not_pin_a_stale_suggestion(self, api):
         # Reactions deliberately do not count: one 👍 would pin a stale
         # suggestion forever, and a reaction is not discussion.
@@ -682,8 +733,44 @@ class TestRetraction:
         assert "~~def load(path=None):~~" not in body
 
     def test_the_visible_prose_is_struck(self):
+        # Asked of the RENDERED result rather than of the wrapper's spelling, so
+        # the property survives a change of wrapper: the note's text must come out
+        # inside a strikethrough element.
+        from verify import _PARSER
+
         body = struck_body(body=comment(10, args={"note": "make path optional"})["body"])
-        assert "~~make path optional~~" in body
+        html = _PARSER.render(body)
+        assert "<s>make path optional</s>" in html or "<del>make path optional</del>" in html
+
+    @pytest.mark.parametrize("note", [
+        "~~Deprecated~~ - use the new helper instead.",   # legal: `s` is allowlisted
+        "~/.config is the wrong path here",               # a leading tilde, plainly
+        "~ this too",
+    ])
+    def test_striking_a_note_never_opens_a_fence(self, note):
+        # `~~line~~` around a line already beginning with `~` yields `~~~…`, which
+        # CommonMark reads as a TILDE FENCE opener: everything below — the
+        # suggestion block and the <sub> attribution line — is swallowed into one
+        # code block, and close_open_fence then appends its marker AFTER the footer
+        # rather than before it. The retraction's own transform manufacturing a
+        # fence that captures executor-authored text is exactly the hazard the
+        # notice-above-body rule exists to prevent, and ADR-0005's disclosure is
+        # what it eats.
+        from verify import code_lines
+
+        body = struck_body(body=comment(10, args={"note": note})["body"])
+        for line, is_code in code_lines(body):
+            if line.startswith("<sub>"):
+                assert not is_code, "the attribution footer was swallowed into a fence"
+            if METADATA["policy"] in line:
+                assert not is_code, "the policy hash was swallowed into a fence"
+
+    def test_a_struck_note_beginning_with_a_tilde_is_still_struck(self):
+        # Not fixed by giving up on the line: it is visible prose, so it must be
+        # crossed out like any other.
+        body = struck_body(body=comment(10, args={"note": "~/.config is wrong"})["body"])
+        assert "~/.config is wrong" in body
+        assert "~~~" not in body
 
     def test_an_already_struck_suggestion_is_left_alone(self, api):
         # Without this a re-run strikes and re-appends the note every time.
@@ -889,6 +976,29 @@ class TestAcrossRuns:
         assert len(github.posts) == 1, "reposted an unchanged suggestion"
         assert patched == [], "rewrote an unchanged comment because the run URL moved"
 
+    def test_a_body_github_returns_with_crlf_is_not_rewritten(self, monkeypatch):
+        # Only one side of the comparison came back from GitHub: this harness sends
+        # LF and the API returns CRLF (post.check_marker's docstring records the
+        # same measurement). Comparing them raw, an unchanged comment differed from
+        # its own re-render at every interior newline and was rewritten every run,
+        # without bound — the exact churn comment_content exists to prevent.
+        calls = {"reviews": [], "deleted": [], "patched": []}
+        served = comment(10)
+        served["body"] = served["body"].replace("\n", "\r\n")
+        monkeypatch.setattr(suggest, "review_comments", lambda repo, pr: iter([served]))
+        monkeypatch.setattr(suggest, "pull_reviews", lambda repo, pr: iter([]))
+        monkeypatch.setattr(suggest, "submit_review",
+                            lambda repo, pr, body, comments, head_sha: calls["reviews"].append(1))
+        monkeypatch.setattr(suggest, "patch_review_comment",
+                            lambda repo, cid, body: calls["patched"].append(cid))
+        monkeypatch.setattr(suggest, "delete_review_comment",
+                            lambda repo, cid: calls["deleted"].append(cid))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert calls["patched"] == []
+        assert calls["reviews"] == []
+
     def test_a_reworded_note_updates_in_place(self, monkeypatch):
         # Identity is the anchor, so the comment matches; its CONTENT changed, so
         # it must be re-rendered rather than left saying the old thing.
@@ -1065,6 +1175,18 @@ class TestReviewWrappers:
                                       bot_login=BOT, head_sha="reviewed-sha",
                                       commanded_path="src/app.py")
         assert len(calls["reviews"]) == 1
+
+    def test_a_review_the_api_lists_without_an_id_does_not_fail_the_run(self, api, monkeypatch):
+        # The handler must not raise what it is handling: `review["id"]` inside the
+        # except f-string re-raised the KeyError the try had caught, out of a
+        # function whose whole contract is never to fail — and this runs BEFORE the
+        # POST, so cosmetic tidying took the delivery with it.
+        calls, _, set_reviews = api
+        set_reviews([{"user": {"login": BOT}, "body": suggest.REVIEW_BODY, "node_id": "N2"}])
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha",
+                                      commanded_path="src/app.py")
+        assert len(calls["reviews"]) == 1, "the suggestions were delivered anyway"
 
     def test_superseding_happens_before_the_new_review_is_posted(self, api, monkeypatch):
         # So "every wrapper except the newest" needs no id bookkeeping: at that

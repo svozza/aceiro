@@ -481,6 +481,21 @@ class TestTheWindowComesFromTheHeadContent:
         empty = anchor_signatures(self.NARROW, content_source=self.source(tree={}))
         assert empty == anchor_signatures(self.NARROW)
 
+    @pytest.mark.parametrize("raised", [
+        FileNotFoundError("gone"),
+        IsADirectoryError("a directory"),
+        PermissionError("no"),
+        # Not an OSError: a reader given a name carrying an embedded NUL raises
+        # this from the stat rather than failing to open. "Unreadable" either way,
+        # and the fallback exists so an identity problem never costs the delivery.
+        ValueError("embedded null character in path"),
+    ])
+    def test_any_unreadable_path_degrades_rather_than_raising(self, raised):
+        def refuses(path):
+            raise raised
+
+        assert anchor_signatures(self.NARROW, content_source=refuses) == anchor_signatures(self.NARROW)
+
     def test_the_head_content_is_decoded_as_contributor_bytes(self):
         # File content at the head SHA is contributor-controlled, so an invalid
         # byte must yield a usable signature rather than raise out of the

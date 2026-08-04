@@ -148,10 +148,15 @@ def head_content_lines(content_source, path: str) -> dict[int, str] | None:
 
     Decoded as contributor bytes: this is head content, so an invalid byte is a
     reviewable fact about the file rather than something to raise over.
+
+    ValueError joins OSError because the reader may reject a path rather than fail
+    to open it — a name carrying an embedded NUL raises ValueError from the stat,
+    not OSError. Either way the answer is "unreadable", and the caller's fallback
+    exists precisely so an identity problem never costs the whole delivery.
     """
     try:
         raw = content_source(path)
-    except OSError:
+    except (OSError, ValueError):
         return None
     return dict(enumerate(split_diff_lines(decode_contributor_bytes(raw)), start=1))
 
