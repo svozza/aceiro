@@ -498,6 +498,26 @@ def code_lines(text: str) -> list[tuple[str, bool]]:
     return [(line, index in inside) for index, line in enumerate(lines)]
 
 
+def fence_info_strings(text: str) -> list[str]:
+    """Every fenced block's info string, lowercased and stripped.
+
+    The info string is what makes a fence more than code: GitHub reads
+    ``suggestion`` there as "this block is appliable to the commented lines".
+    Taken from the parser's own `token.info` rather than matched on the source,
+    because the ways to spell one opener are the fence rules again — a tilde
+    fence, a longer run, an indented opener, padding around the word — and every
+    hand-rolled version of those rules in this harness has been wrong.
+
+    Indented code blocks are absent by construction: they carry no info string,
+    so they can never be an applied suggestion however their text reads.
+    """
+    return [
+        token.info.strip().lower()
+        for token in _PARSER.parse(_NEWLINES_RE.sub("\n", text))
+        if token.type == "fence" and token.info.strip()
+    ]
+
+
 def unterminated_fence(text: str) -> str | None:
     """The opening marker of a code fence *text* never closes, or None.
 

@@ -1408,3 +1408,44 @@ class TestPlanMarkdownAndSecrets:
         # the same case check_secrets pins for review comments.
         with pytest.raises(Rejection, match="secret scan"):
             self.run(self.suggest_plan(note="uses key AKIA**IOSF**ODNN7EXAMPLE here"))
+
+    def test_a_note_carrying_its_own_suggestion_fence_rejects(self):
+        # The note is prose: markdown-checked, and NOTHING else. It gets no
+        # anchoring, no byte-match against the tree, no hunk containment and no
+        # bounding — those bind `new`. A ```suggestion fence inside it is
+        # therefore an APPLIABLE block of bytes no check ever saw, rendered
+        # above the real one and reached first.
+        with pytest.raises(Rejection, match="suggestion block"):
+            self.run(self.suggest_plan(
+                note="This needs a default.\n\n```suggestion\ndef load(path=None):\n```"
+            ))
+
+    @pytest.mark.parametrize("marker, info", [
+        ("```", "SUGGESTION"),        # GitHub's info string is case-insensitive
+        ("```", "  suggestion"),      # leading whitespace is not part of the word
+        ("```", "suggestion "),       # nor trailing
+        ("~~~", "suggestion"),        # a tilde fence is the same block
+        ("````", "suggestion"),       # so is a longer run
+    ])
+    def test_the_info_string_is_read_after_its_own_syntax(self, marker, info):
+        # Every spelling GitHub still reads as an applied suggestion. Refusing
+        # only the literal "```suggestion" would be refusing one spelling of the
+        # hazard rather than the hazard.
+        with pytest.raises(Rejection, match="suggestion block"):
+            self.run(self.suggest_plan(note=f"{marker}{info}\nx = 1\n{marker}"))
+
+    def test_an_ordinary_fenced_block_in_a_note_still_verifies(self):
+        # The refusal is of the APPLIABLE info string, not of fenced code: a note
+        # quoting the defect it describes is the common case and must survive.
+        self.run(self.suggest_plan(note="the guard is missing:\n\n```python\nif x:\n    pass\n```"))
+
+    def test_an_indented_code_block_naming_suggestion_still_verifies(self):
+        # An indented block has no info string at all, so it can never be an
+        # applied suggestion however its text reads.
+        self.run(self.suggest_plan(note="write:\n\n    suggestion goes here\n"))
+
+    def test_open_pr_body_may_carry_a_suggestion_fence(self):
+        # A pull-request body is not a review comment, so a suggestion fence in
+        # one applies to nothing. Refusing it there would be refusing prose for
+        # a hazard the surface does not have.
+        self.run(self.full_plan(body="Was:\n\n```suggestion\nold = 1\n```"))

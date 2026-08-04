@@ -47,6 +47,7 @@ from verify import (
     check_markdown_field,
     check_scalar,
     check_scalar_spec,
+    fence_info_strings,
     parse_diff_hunks,
     scanned_representations,
 )
@@ -843,13 +844,51 @@ def _iter_plan_markdown(plan: dict, policy: dict):
             yield f"plan.steps[{index}].args.{arg_name}", step["args"][arg_name]
 
 
+# The info string that makes a fenced block APPLIABLE rather than quoted. Read as
+# the first word, since GitHub takes the language from there and ignores the rest.
+_SUGGESTION_INFO = "suggestion"
+
+
+def check_note_carries_no_suggestion(note: str, where: str) -> None:
+    """Refuse a `note` whose own fence GitHub would offer to apply.
+
+    The note is prose, and prose is ALL it is checked as. Every check that makes
+    `new` safe to hand a contributor — the byte-match against the reviewed tree,
+    hunk containment, the bounding caps, one-suggestion-per-file — binds `new`
+    alone. A ```suggestion fence inside the note is therefore an appliable block
+    of bytes nothing anchored, bounded or compared, rendered ABOVE the real one
+    and so reached first; ADR-0005's human gate stays intact (the contributor
+    still clicks) but what the click commits was never verified.
+
+    Not refused for open_pr.body: a suggestion fence in a pull-request body
+    applies to nothing, and refusing prose for a hazard the surface does not have
+    would be refusing it for the shape of its syntax.
+    """
+    for info in fence_info_strings(note):
+        if info.split()[0] == _SUGGESTION_INFO:
+            raise Rejection(
+                f"{where}: contains a suggestion block, which GitHub offers to apply — "
+                "the note is checked as prose only, so its bytes are anchored against "
+                "nothing; the replacement belongs in `new`, which is"
+            )
+
+
 def check_plan_markdown(plan: dict, policy: dict) -> None:
     """Markdown-bearing args (suggest.note, open_pr.body) through the same
     allowlist gate a finding's body gets: they render in a posted comment or
     PR body, so nothing reaches GitHub's renderer that verify.py would not
-    have let a review comment carry."""
+    have let a review comment carry.
+
+    The note gets one check more than the allowlist, because it lands in the one
+    place a fence is more than code — see check_note_carries_no_suggestion.
+    """
     for where, value in _iter_plan_markdown(plan, policy):
         check_markdown_field(value, policy["markdown"], where)
+    for index, step in enumerate(plan["steps"]):
+        if step["kind"] == "suggest":
+            check_note_carries_no_suggestion(
+                step["args"]["note"], f"plan.steps[{index}].args.note"
+            )
 
 
 def check_plan_secrets(plan: dict, policy: dict) -> None:
