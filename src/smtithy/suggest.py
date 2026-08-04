@@ -158,6 +158,105 @@ NOT_A_HUMAN_REVIEW = (
 )
 
 
+WITHDRAWN_NOTE = (
+    "**This suggestion is no longer in the latest AI remediation.** It may have "
+    "been applied, or the model may simply not have produced it this time — this "
+    "note does not claim it was fixed. Please resolve this conversation if it has "
+    "been dealt with."
+)
+
+
+def human_replied_ids(all_comments: list[dict], bot_login: str) -> set[int]:
+    """Comment ids a non-bot account has replied to, from one scan.
+
+    Reactions deliberately do NOT count: a single 👍 would pin a stale suggestion
+    forever, and a reaction is not discussion worth preserving.
+
+    Built once per run rather than rescanned per retraction: the scan is over
+    every review comment on the pull request, which is unbounded on a long-lived
+    one, while the retractions are capped by the plan's steps.
+    """
+    return {
+        other["in_reply_to_id"]
+        for other in all_comments
+        if other.get("in_reply_to_id") is not None
+        and (other.get("user") or {}).get("login") != bot_login
+    }
+
+
+def strike_through(text: str) -> str:
+    """Strike every visible line of a comment body.
+
+    Per line rather than one span around the whole text, because `~~…~~` does not
+    cross block boundaries. Code is left alone: `~~` inside a fence renders
+    literally, so striking there would corrupt the suggestion's quoted code
+    instead of crossing it out — and which lines are code comes from
+    verify.code_lines, i.e. from markdown-it itself, which also covers indented
+    blocks no fence-scanning version would notice.
+
+    BEST EFFORT, and never the only signal: the text being struck is
+    model-authored, and the grammar permits markdown that defeats a span (a note
+    ending in `~~` closes ours). `retract` therefore leads with a plain-text
+    notice that nothing below it can capture.
+    """
+    out = []
+    for line, is_code in code_lines(text):
+        skip = is_code or not line.strip() or line.startswith(("<!--", "<sub>"))
+        out.append(line if skip else f"~~{line}~~")
+    return "\n".join(out)
+
+
+def close_open_fence(text: str) -> str:
+    """Append a closing fence if `text` leaves one open.
+
+    DEFENCE IN DEPTH. check_plan_markdown rejects a `note` that ends inside a
+    fence, so a verified plan cannot reach this with an open one. It stays because
+    the text it wraps is a comment body read back from GitHub, which a previous
+    run — on a previous version of the grammar — may have written.
+
+    Whether a fence is open, and the marker that closes it, both come from
+    verify.unterminated_fence: closing a ``~~~``-opened block with ``` ``` ```
+    does not close it.
+    """
+    marker = unterminated_fence(text)
+    return text if marker is None else f"{text}\n{marker}"
+
+
+def retract(repo: str, comment: dict, replied_ids: set[int], note: str) -> None:
+    """Withdraw one suggestion comment of ours.
+
+    Never GitHub-"resolves" it: resolved asserts the defect was addressed, which
+    the harness cannot know — a suggestion can vanish because the model had an off
+    run. The bot states only what it knows.
+
+    No human reply -> DELETE: the comment claims nothing and there is no
+    discussion to keep. A human replied -> PATCH, and the close decision is left
+    to the human already in the thread; DELETE would orphan their reply, which
+    survives but is promoted to a standalone comment severed from its context.
+
+    The note goes ABOVE the struck body. Below it, it is at the mercy of the
+    model's own markdown — an unclosed fence renders it as literal code, and the
+    struck marker then stops any later run from repairing it — while above the
+    body nothing the model wrote can capture it, and it is the first thing a
+    human reads.
+    """
+    if comment["id"] not in replied_ids:
+        delete_review_comment(repo, comment["id"])
+        print(f"deleted suggestion comment {comment['id']}")
+        return
+
+    if is_struck(comment):
+        print(f"suggestion comment {comment['id']} already retracted, left as is")
+        return
+
+    # The struck marker joins the fingerprint on the FIRST line, keeping both
+    # identity signals in the one place model text cannot reach.
+    head, _, rest = (comment.get("body") or "").partition("\n")
+    body = f"{head.strip()} {STRUCK_MARKER}\n{note}\n\n{close_open_fence(strike_through(rest))}"
+    patch_review_comment(repo, comment["id"], body)
+    print(f"struck through suggestion comment {comment['id']} (has a human reply)")
+
+
 def render_suggestion(step: dict, fingerprint: str, metadata: dict) -> str:
     """One verified suggest step as a review-comment body.
 
@@ -194,3 +293,188 @@ def render_suggestion(step: dict, fingerprint: str, metadata: dict) -> str:
         "<sub>🤖 model: `{model}` · policy: `{policy}` · reviewed SHA: `{sha}` · "
         "[run]({run_url})</sub>".format(**metadata),
     ])
+
+
+# ------------------------------------------------------- review wrappers ---
+
+# Identity marker for a review wrapper of ours, so a later run can recognise and
+# supersede it. Same status as the comment marker: executor-authored, and paired
+# with an author check because anyone can paste it into their own review.
+REVIEW_MARKER = "<!-- smtithy:review -->"
+
+# The reviews API requires a body on a COMMENT event, so this is the one line the
+# review itself carries; the substance is in the suggestion comments.
+REVIEW_BODY = (
+    f"{REVIEW_MARKER}\n"
+    "🤖 **AI-suggested fixes** — see the suggestion comments below. Not a human "
+    "review; counts toward no approval."
+)
+
+# Replaces a superseded wrapper's body. A spent wrapper's text says "see the
+# suggestion comments below" while the reconciler deletes comments independently
+# of the review that posted them, so a wrapper can end up pointing at nothing.
+# This states only what is still true.
+SUPERSEDED_REVIEW_BODY = (
+    f"{REVIEW_MARKER}\n"
+    "🤖 **Superseded AI remediation.** A later run has posted updated suggestions "
+    "on this pull request; any from this one that still apply are in the current "
+    "suggestion comments. Not a human review; counts toward no approval."
+)
+
+
+def is_our_review(review: dict, bot_login: str) -> bool:
+    """Whether a review is a wrapper this harness posted.
+
+    Both conditions are load-bearing, exactly as in owned_fingerprint: the marker
+    alone would let anyone hand us someone else's review to rewrite. This gates a
+    body OVERWRITE, so a mis-scope would destroy a human's review summary.
+    """
+    if not bot_login or (review.get("user") or {}).get("login") != bot_login:
+        return False
+    return (review.get("body") or "").strip().startswith(REVIEW_MARKER)
+
+
+def supersede_previous_reviews(repo: str, pr_number: int, bot_login: str) -> None:
+    """Neutralise the review wrappers left by earlier runs of this harness.
+
+    Every run that posts a suggestion comment must CREATE a review to carry it —
+    there is no "post into the existing review", and a submitted one cannot be
+    deleted (only PENDING ones can) — so on a long-lived pull request the wrappers
+    stack up, each claiming to point at comments the reconciler may since have
+    deleted. Only CREATION lacks an upsert; a submitted review's BODY is editable,
+    which is what this relies on.
+
+    Two mutations, in increasing order of the permission they need: rewrite the
+    body (REST, the same `pull-requests: write` this job already uses to POST
+    reviews), then minimize it so the UI collapses it (GraphQL-only).
+
+    Both are BEST EFFORT and neither may fail the run. This is cosmetic tidying in
+    front of an atomic POST: a permission the bot turns out not to have must cost a
+    collapsed timeline entry, never a delivery. Failures print and carry on.
+    """
+    try:
+        reviews = [review for review in pull_reviews(repo, pr_number) if is_our_review(review, bot_login)]
+    except Exception as exc:  # noqa: BLE001 — cosmetic tidying must never fail the run
+        print(f"could not list reviews to supersede ({exc}); continuing")
+        return
+
+    for review in reviews:
+        # The one just posted carries the current suggestions; only earlier ones are
+        # spent. Identified by body rather than by id, so this needs no coupling to
+        # what the POST returned.
+        if (review.get("body") or "").strip() == SUPERSEDED_REVIEW_BODY.strip():
+            continue
+        try:
+            update_review_body(repo, pr_number, review["id"], SUPERSEDED_REVIEW_BODY)
+            print(f"marked review {review['id']} superseded")
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not rewrite review {review['id']} ({exc}); continuing")
+        if node_id := review.get("node_id"):
+            try:
+                minimize_review(node_id)
+                print(f"minimized review {review['id']}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"could not minimize review {review['id']} ({exc}); continuing")
+
+
+# ---------------------------------------------------------- the reconciler ---
+
+
+def comment_content(body: str) -> str:
+    """One of our suggestion comments minus the two lines this module authored.
+
+    Used only to decide whether a live comment still says what the current plan
+    says. The first line is the marker and the last is the attribution footer;
+    both are ours, so they are dropped BY POSITION rather than searched for —
+    model text cannot reach either position, and nothing here has to recognise a
+    pattern model text could imitate.
+
+    Dropping the footer is the point: its `[run]` URL differs on every run, so
+    comparing whole bodies would report every comment as changed and rewrite all
+    of them, every time.
+    """
+    return "\n".join((body or "").split("\n")[1:-1]).strip()
+
+
+def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
+                          signatures: dict[tuple[str, int], str], metadata: dict,
+                          *, bot_login: str, head_sha: str) -> None:
+    """Make the pull request's suggestion comments match the verified plan's.
+
+    Re-posting is not idempotent — an identical comment on an unchanged line
+    creates a true duplicate — so the reconciler dedups itself on
+    suggestion_fingerprint: matched comments stay in place, new ones are posted,
+    and the ones whose suggestion is gone are retracted.
+
+    New comments go up BEFORE anything is retracted, because the batch is atomic:
+    if a line cannot be resolved the POST 422s and creates nothing, and failing at
+    that point must leave the existing comments standing rather than having
+    already deleted them.
+
+    `bot_login` and `head_sha` are keyword-only with no defaults. The first is the
+    security half of ownership; the second binds the review to the SHA the plan was
+    verified against, so a push landing mid-run leaves the suggestion marked
+    outdated rather than misplaced on content it never described.
+    """
+    all_comments = list(review_comments(repo, pr_number))
+    ours = [(fingerprint, c) for c in all_comments if (fingerprint := owned_fingerprint(c, bot_login))]
+    replied_ids = human_replied_ids(all_comments, bot_login)
+    wanted = {suggestion_fingerprint(step["args"], signatures): step for step in steps}
+    live = {fingerprint for fingerprint, _ in ours}
+
+    fresh = [(fingerprint, step) for fingerprint, step in wanted.items() if fingerprint not in live]
+    if fresh:
+        # BEFORE the POST, so "every wrapper except the newest" needs no id
+        # bookkeeping — at this moment the newest does not exist yet. Safe to do
+        # first because it only ever rewrites and collapses OUR OWN spent
+        # wrappers, never a comment; if the POST then 422s, the run fails having
+        # tidied history it was going to tidy anyway, and the suggestions on the
+        # pull request are untouched.
+        supersede_previous_reviews(repo, pr_number, bot_login)
+        submit_review(
+            repo,
+            pr_number,
+            REVIEW_BODY,
+            [
+                {
+                    "path": step["args"]["path"],
+                    "line": step["args"]["line"],
+                    # RIGHT always: the plan carries no side, so the model cannot
+                    # ask for LEFT (which 422s on an added line), and a suggestion
+                    # replaces the new-side content by definition.
+                    "side": "RIGHT",
+                    "body": render_suggestion(step, fingerprint, metadata),
+                }
+                for fingerprint, step in fresh
+            ],
+            head_sha=head_sha,
+        )
+        print(f"posted review with {len(fresh)} suggestion comment(s)")
+    else:
+        print("no new suggestions to post")
+
+    # A suggestion can be retracted on one run and produced again on the next. Its
+    # struck comment already holds the human thread, and a key match proves it is
+    # about the same code, so the comment is restored rather than left
+    # contradicting the review that carries it. AFTER the POST: restoring first
+    # would leave a stale comment live if the atomic POST then 422'd.
+    #
+    # A matched comment is also re-rendered when its CONTENT changed — the note or
+    # the replacement can be revised between runs while the anchor, and so the
+    # key, stays the same. Compared on comment_content rather than the whole body,
+    # so the per-run `[run]` URL does not make every comment look changed and
+    # rewrite them all.
+    for fingerprint, comment in ours:
+        if fingerprint not in wanted:
+            continue
+        body = render_suggestion(wanted[fingerprint], fingerprint, metadata)
+        if is_struck(comment):
+            patch_review_comment(repo, comment["id"], body)
+            print(f"restored previously retracted suggestion comment {comment['id']}")
+        elif comment_content(comment.get("body") or "") != comment_content(body):
+            patch_review_comment(repo, comment["id"], body)
+            print(f"updated suggestion comment {comment['id']} (its suggestion changed)")
+
+    for fingerprint, comment in ours:
+        if fingerprint not in wanted:
+            retract(repo, comment, replied_ids, WITHDRAWN_NOTE)

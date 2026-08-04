@@ -19,6 +19,7 @@ import pytest
 
 import suggest
 from diff_map import anchor_signatures
+from verify import unterminated_fence
 
 from test_plan_verify import PLAN_CHANGED_FILES, PLAN_DIFF, PLAN_TREE, tree_source
 
@@ -346,3 +347,193 @@ class TestOwnership:
         # is the gate, so it must not treat an empty login as matching a comment
         # whose author GitHub reported as null.
         assert suggest.owned_fingerprint({"id": 1, "body": comment(1)["body"], "user": None}, "") is None
+
+
+# ----------------------------------------------------------- retraction ---
+
+
+@pytest.fixture
+def api(monkeypatch):
+    """Record the reviews-API calls the reconciler makes, driven by canned
+    comments. Network is never reached."""
+    calls = {"reviews": [], "deleted": [], "patched": []}
+
+    def set_comments(comments):
+        monkeypatch.setattr(suggest, "review_comments", lambda repo, pr: iter(list(comments)))
+
+    def set_reviews(reviews):
+        monkeypatch.setattr(suggest, "pull_reviews", lambda repo, pr: iter(list(reviews)))
+
+    set_comments([])
+    set_reviews([])
+    monkeypatch.setattr(
+        suggest, "submit_review",
+        lambda repo, pr, body, comments, head_sha: calls["reviews"].append(
+            {"body": body, "comments": comments, "head_sha": head_sha}),
+    )
+    monkeypatch.setattr(suggest, "delete_review_comment",
+                        lambda repo, cid: calls["deleted"].append(cid))
+    monkeypatch.setattr(suggest, "patch_review_comment",
+                        lambda repo, cid, body: calls["patched"].append({"id": cid, "body": body}))
+    monkeypatch.setattr(suggest, "update_review_body", lambda repo, pr, rid, body: None)
+    monkeypatch.setattr(suggest, "minimize_review", lambda node: None)
+    return calls, set_comments, set_reviews
+
+
+def struck_body(body=None, note=None):
+    """The body retract() actually leaves behind, obtained by RUNNING it.
+
+    Derived from production rather than restating its format: a hand-written copy
+    would keep passing after retract() changed shape, which is exactly how an
+    already-struck case stops testing anything.
+    """
+    parent = comment(10, body=body)
+    captured = {}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(suggest, "patch_review_comment",
+                      lambda repo, cid, body: captured.update(body=body))
+        patch.setattr(suggest, "delete_review_comment",
+                      lambda repo, cid: pytest.fail("should have struck, not deleted"))
+        # {10} = a human replied to the parent, so retract must strike, not delete.
+        suggest.retract("o/r", parent, {10}, suggest.WITHDRAWN_NOTE if note is None else note)
+    return captured["body"]
+
+
+class TestRetraction:
+    def test_a_suggestion_with_no_reply_is_deleted(self, api):
+        calls, set_comments, _ = api
+        set_comments([comment(10)])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["deleted"] == [10]
+        assert calls["patched"] == []
+
+    def test_a_suggestion_a_human_replied_to_is_struck_not_deleted(self, api):
+        # DELETE would orphan the reply: it survives, but is promoted to a
+        # standalone comment severed from its context.
+        calls, set_comments, _ = api
+        set_comments([comment(10),
+                      {"id": 11, "body": "I disagree", "user": {"login": "a-human"},
+                       "in_reply_to_id": 10}])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["deleted"] == []
+        assert len(calls["patched"]) == 1
+        assert calls["patched"][0]["id"] == 10
+
+    def test_our_own_reply_does_not_block_deletion(self, api):
+        # Only a HUMAN reply is discussion worth preserving.
+        calls, set_comments, _ = api
+        set_comments([comment(10),
+                      {"id": 11, "body": "ours", "user": {"login": BOT}, "in_reply_to_id": 10}])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["deleted"] == [10]
+
+    def test_a_reply_to_a_different_comment_does_not_block_deletion(self, api):
+        calls, set_comments, _ = api
+        set_comments([comment(10),
+                      {"id": 11, "body": "about something else", "user": {"login": "a-human"},
+                       "in_reply_to_id": 99}])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["deleted"] == [10]
+
+    def test_a_reaction_does_not_pin_a_stale_suggestion(self, api):
+        # Reactions deliberately do not count: one 👍 would pin a stale
+        # suggestion forever, and a reaction is not discussion.
+        calls, set_comments, _ = api
+        pinned = comment(10)
+        pinned["reactions"] = {"total_count": 3, "+1": 3}
+        set_comments([pinned])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["deleted"] == [10]
+
+    def test_the_note_does_not_claim_the_defect_was_fixed(self):
+        # "Resolve" asserts the defect was addressed, which the harness cannot
+        # know — a suggestion can vanish because the model had an off run.
+        note = suggest.WITHDRAWN_NOTE.lower()
+        assert "no longer" in note
+        assert "does not claim" in note
+        for word in ("resolved", "fixed it", "has been addressed."):
+            assert word not in note
+
+    def test_nothing_resolves_a_conversation(self):
+        # The GraphQL resolve mutation must appear nowhere in the harness: the
+        # bot states only what it knows.
+        source = (Path(__file__).parent.parent / "src" / "smtithy").glob("*.py")
+        for path in source:
+            assert "resolveReviewThread" not in path.read_text(), path
+
+    def test_the_notice_is_above_the_struck_body(self):
+        # Below it, an unclosed model fence renders the notice as literal code —
+        # and the struck marker then stops any later run from repairing it. Above
+        # the body nothing the model wrote can capture it.
+        body = struck_body()
+        lines = body.split("\n")
+        assert suggest.STRUCK_MARKER in lines[0]
+        assert lines[1] == suggest.WITHDRAWN_NOTE
+
+    def test_the_struck_marker_joins_the_fingerprint_on_line_one(self):
+        # Both identity signals in the one place model text cannot reach.
+        body = struck_body()
+        assert suggest.is_struck({"body": body})
+        assert suggest.owned_fingerprint({"body": body, "user": {"login": BOT}}, BOT) == FINGERPRINT
+
+    def test_the_suggestion_fence_is_left_unstruck(self):
+        # `~~` inside a fence renders literally, so striking there would corrupt
+        # the quoted code rather than crossing it out.
+        body = struck_body()
+        assert "def load(path=None):" in body
+        assert "~~def load(path=None):~~" not in body
+
+    def test_the_visible_prose_is_struck(self):
+        body = struck_body(body=comment(10, args={"note": "make path optional"})["body"])
+        assert "~~make path optional~~" in body
+
+    def test_an_already_struck_suggestion_is_left_alone(self, api):
+        # Without this a re-run strikes and re-appends the note every time.
+        calls, set_comments, _ = api
+        already = comment(10, body=struck_body())
+        set_comments([already,
+                      {"id": 11, "body": "hm", "user": {"login": "a-human"}, "in_reply_to_id": 10}])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["patched"] == []
+        assert calls["deleted"] == []
+
+    def test_an_unclosed_fence_in_the_retracted_body_is_closed(self):
+        # Defence in depth: check_plan_markdown rejects a `note` ending inside a
+        # fence, so a verified plan cannot reach this — but the body being struck
+        # is read back from GitHub, where a previous run on a previous grammar may
+        # have written it.
+        hostile = f"{suggest.suggestion_marker(FINGERPRINT)}\nnote\n\n```python\nunclosed"
+        body = struck_body(body=hostile)
+        assert unterminated_fence(body) is None
+
+    def test_a_human_comment_carrying_our_marker_is_never_retracted(self, api):
+        calls, set_comments, _ = api
+        set_comments([comment(10, login="a-human")])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["deleted"] == []
+        assert calls["patched"] == []
+
+    def test_every_mutation_targets_a_comment_we_own(self, api):
+        # The whole-reconciler statement of the ownership gate: whatever the PR
+        # holds, nothing not ours is mutated.
+        calls, set_comments, _ = api
+        ours = comment(10)
+        set_comments([
+            ours,
+            comment(11, login="a-human"),
+            {"id": 12, "body": "plain human comment", "user": {"login": "a-human"}},
+            {"id": 13, "body": "<!-- aipr:0f1e2d3c4b5a6978 -->\nthe reviewer's finding",
+             "user": {"login": BOT}},
+            {"id": 14, "body": "bot comment with no marker", "user": {"login": BOT}},
+        ])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        touched = set(calls["deleted"]) | {p["id"] for p in calls["patched"]}
+        assert touched == {10}
