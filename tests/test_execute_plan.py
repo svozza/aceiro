@@ -280,12 +280,19 @@ def artifact_dir(tmp_path):
     (artifact / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
     (artifact / "diff.patch").write_text(PLAN_DIFF)
     (artifact / "changed_files.json").write_text(json.dumps(PLAN_CHANGED_FILES))
-    # The commanded finding travels in the bundle: the executor re-verifies the
-    # plan's SCOPE against it (ADR-0007), so it is an input to a gate rather than
-    # evidence, like plan.json itself.
-    (artifact / "finding.json").write_text(json.dumps(
-        {"path": "src/app.py", "line": 2, "severity": "high", "title": "t", "body": "b"}
-    ))
+    # The ACCEPTED artifact and the commanded ordinal, not a bare finding: the
+    # executor derives the finding by re-verifying the artifact and indexing it,
+    # so its membership in an accepted review is structural rather than claimed.
+    # Both are inputs to a gate (ADR-0007), so both are fail-closed like plan.json.
+    (artifact / "review.json").write_text(json.dumps({
+        "summary": "`load` gained a check its callers do not expect.",
+        "findings": [{
+            "path": "src/app.py", "line": 2, "severity": "high",
+            "title": "load() breaks callers", "body": "the body",
+        }],
+        "residual_risk": "",
+    }))
+    (artifact / "commanded_index.json").write_text(json.dumps({"index": 0}))
     return artifact
 
 
@@ -344,6 +351,19 @@ def stub_delivery(monkeypatch):
     monkeypatch.setattr(execute_plan, "resolve_bot_login", lambda: "smtithy[bot]")
     monkeypatch.setattr(execute_plan, "read_model_stamp", lambda artifact_dir: "test-model")
     monkeypatch.setenv("RUN_URL", "https://github.com/o/r/actions/runs/1")
+
+
+def commanded_at(artifact_dir, *, line, path="src/app.py"):
+    """Re-anchor the bundle's commanded finding.
+
+    The executor derives the finding by re-verifying review.json against the diff
+    it fetched, so a test that narrows that diff must move the finding into it —
+    otherwise the run refuses on provenance before reaching the property the test
+    is about.
+    """
+    review = json.loads((artifact_dir / "review.json").read_text())
+    review["findings"][0].update(path=path, line=line)
+    (artifact_dir / "review.json").write_text(json.dumps(review))
 
 
 def stub_pr(monkeypatch, response):
@@ -470,27 +490,87 @@ class TestMain:
         assert "commanded finding" in capsys.readouterr().err
         assert calls == []
 
-    def test_a_bundle_with_no_commanded_finding_is_refused(self, main_env, monkeypatch, capsys):
+    def test_a_bundle_with_no_accepted_review_is_refused(self, main_env, monkeypatch, capsys):
         # Fail-closed on the missing input, read_model_stamp's rule: a plan whose
-        # commanded finding is unknown cannot have its scope checked, and
+        # commanded finding cannot be derived cannot have its scope checked, and
         # proceeding would silently restore the prompt-only enforcement.
-        (main_env / "finding.json").unlink()
+        (main_env / "review.json").unlink()
         calls = stub_pr(monkeypatch, pr_payload())
         with pytest.raises(SystemExit):
             execute_plan.main()
-        assert "finding.json" in capsys.readouterr().err
+        assert "review.json" in capsys.readouterr().err
         assert calls == []
 
-    def test_a_tampered_finding_cannot_widen_the_scope(self, main_env, monkeypatch, capsys):
-        # The bundle is the plan job's output, so its finding gets the same
-        # artifact-element check plan_loop applies — a "finding" that is not one
-        # cannot be used to authorise a fix.
-        (main_env / "finding.json").write_text(json.dumps({"path": "src/app.py"}))
+    def test_a_bundle_with_no_commanded_ordinal_is_refused(self, main_env, monkeypatch, capsys):
+        # The ordinal is the half that cannot be re-derived here — which finding a
+        # maintainer commanded is a fact about the COMMAND, not about the PR — so
+        # its absence is fail-closed too, not a default of zero. Defaulting would
+        # silently remediate the most severe finding of whatever review is in the
+        # bundle, which is a fix nobody asked for.
+        (main_env / "commanded_index.json").unlink()
         calls = stub_pr(monkeypatch, pr_payload())
         with pytest.raises(SystemExit):
             execute_plan.main()
-        assert "missing keys" in capsys.readouterr().err
+        assert "commanded_index.json" in capsys.readouterr().err
         assert calls == []
+
+    def test_a_forged_finding_no_review_contains_cannot_authorise_a_fix(
+            self, main_env, monkeypatch, capsys):
+        # The gap the bundle change closes, at the gate that holds the write
+        # token. Under the old contract a well-shaped finding.json was an INPUT,
+        # so this file alone directed the scope check at src/util.py and a real
+        # remediation followed on a defect no reviewer found. Now it is not read
+        # at all: the finding comes from review.json, whose own finding is on
+        # src/app.py, and the plan below touches only src/util.py.
+        (main_env / "finding.json").write_text(json.dumps(
+            {"path": "src/util.py", "line": 1, "severity": "critical",
+             "title": "no reviewer found this", "body": "but the fix would be real"}
+        ))
+        (main_env / "plan.json").write_text(json.dumps({"steps": [{
+            "id": "s0", "kind": "suggest",
+            "args": {"path": "src/util.py", "line": 1, "old": "def check(path):\n",
+                     "new": "def check(path=None):\n", "note": "make path optional"},
+        }]}))
+        calls = stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "commanded finding" in capsys.readouterr().err
+        assert calls == []
+
+    def test_a_review_the_verifier_rejects_authorises_nothing(self, main_env, monkeypatch, capsys):
+        # The bundle is the plan job's output, so its artifact gets the same
+        # verifier post.py applies to the review job's — against provenance inputs
+        # this process fetched itself. An artifact that could not have been
+        # accepted cannot command a fix.
+        review = json.loads((main_env / "review.json").read_text())
+        review["findings"][0]["path"] = "src/never_touched_by_this_pr.py"
+        (main_env / "review.json").write_text(json.dumps(review))
+        calls = stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "not a changed file" in capsys.readouterr().err
+        assert calls == []
+
+    def test_the_ordinal_resolves_against_the_rendered_order(self, main_env, monkeypatch, capsys):
+        # Both gates must read the ordinal the same way or they disagree about
+        # which finding was commanded — the exact drift one reader exists to
+        # prevent. Ordered so the artifact's order and the rendered order differ:
+        # index 0 is the CRITICAL finding on src/app.py, which the fixture plan
+        # touches, so a run indexing review.json directly refuses on scope.
+        (main_env / "review.json").write_text(json.dumps({
+            "summary": "two findings, least severe first",
+            "findings": [
+                {"path": "src/util.py", "line": 1, "severity": "low",
+                 "title": "minor", "body": "b"},
+                {"path": "src/app.py", "line": 2, "severity": "critical",
+                 "title": "load() breaks callers", "body": "the body"},
+            ],
+            "residual_risk": "",
+        }))
+        stub_delivery(monkeypatch)
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert "delivery decision: suggestion comments on 'src/app.py'" in capsys.readouterr().out
 
     def test_disproved_plan_never_reaches_the_network(self, main_env, monkeypatch, capsys, stub_prover, tmp_path):
         disprover = stub_prover(1, stdout="frame: VIOLATED\n")
@@ -791,6 +871,11 @@ class TestSuggestionDelivery:
             execute_plan, "fetch_anchored_pair",
             lambda repo, base, head: (narrow.encode(), list(PLAN_CHANGED_FILES)),
         )
+        # The commanded finding is anchored inside THIS diff's only hunk: the
+        # executor now derives it by re-verifying the review against the diff it
+        # fetched, so a fixture whose finding sits outside these hunks is refused
+        # for provenance before reaching the property under test.
+        commanded_at(delivery_env, line=3)
         (delivery_env / "plan.json").write_text(json.dumps({"steps": [{
             "id": "s0", "kind": "suggest",
             "args": {"path": "src/app.py", "line": 3, "old": "    check(path)\n",

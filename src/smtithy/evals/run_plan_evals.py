@@ -3,9 +3,10 @@
 run_evals.py's sibling for the second session. Same discipline throughout:
 real generator, no mocking, non-deterministic and slow, so it runs separately
 from pytest; --runs 3 before believing anything. Scenario layout matches
-scenarios/ with one addition — context/finding.json, the commanded finding
-(ADR-0007) — and pr_root plays its second role as the anchoring content
-source.
+scenarios/ with two additions — context/review.json, the accepted artifact, and
+context/commanded_index.json, the ordinal the command named (ADR-0007), which
+together are how the commanded finding is derived — and pr_root plays its second
+role as the anchoring content source.
 
 Grading is INVARIANT-BASED, never a step inventory. ADR-0009 makes delivery
 the executor's decision, computed from checkable plan structure; what the

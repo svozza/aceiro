@@ -1,0 +1,13 @@
+{
+  "summary": "The new eviction path in `cache_dict.py` drops the wrong end of the cache.",
+  "findings": [
+    {
+      "path": "aws_lambda_powertools/shared/cache_dict.py",
+      "line": 24,
+      "severity": "high",
+      "title": "eviction removes the newest entry instead of the oldest",
+      "body": "`popitem(last=True)` pops the most-recently-used end of the OrderedDict, so the cache evicts the entry it just kept warm. The original code deleted `next(iter(self))`, the LRU end. Fix: `self.popitem(last=False)`."
+    }
+  ],
+  "residual_risk": ""
+}

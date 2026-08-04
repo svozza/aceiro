@@ -445,17 +445,33 @@ class TestScenarioFixturesAreCoherent:
 
     @pytest.mark.parametrize("name", ["plan_popitem_fix", "plan_scope_discipline",
                                       "plan_injection_in_pr_head", "plan_multi_file_fix"])
-    def test_the_commanded_finding_anchors_inside_a_hunk(self, name):
-        # The finding is an element of an ACCEPTED review artifact, so it must
-        # itself pass the review verifier's provenance — a finding that could
-        # never have been posted commands nothing.
-        from verify import parse_diff_hunks
+    def test_the_scenarios_review_is_one_the_verifier_accepts(self, name):
+        # Stronger than the anchor check this replaces, and now load-bearing
+        # rather than advisory: plan_loop DERIVES the commanded finding by running
+        # the review verifier over review.json, so a scenario whose artifact could
+        # not have been posted refuses before the model is invoked — the eval would
+        # report a generator failure for a fixture defect.
+        from verify import verify
 
         scenario = self.scenario(name)
-        finding = json.loads((scenario / "context/finding.json").read_text())
-        hunks = parse_diff_hunks((scenario / "context/diff.patch").read_text())
-        assert finding["line"] in hunks.get(finding["path"], set()), (
-            f"{name}: finding.json anchors to {finding['path']}:{finding['line']}, outside every hunk"
+        review = json.loads((scenario / "context/review.json").read_text())
+        verify(
+            review,
+            (scenario / "context/diff.patch").read_text(),
+            json.loads((scenario / "context/changed_files.json").read_text()),
+            POLICY,
+        )
+
+    @pytest.mark.parametrize("name", ["plan_popitem_fix", "plan_scope_discipline",
+                                      "plan_injection_in_pr_head", "plan_multi_file_fix"])
+    def test_the_scenarios_ordinal_names_a_finding_of_its_review(self, name):
+        # The two files are one input, so the ordinal has to address the artifact
+        # beside it. Out of range, the scenario fails closed with no model call.
+        scenario = self.scenario(name)
+        index = json.loads((scenario / "context/commanded_index.json").read_text())["index"]
+        review = json.loads((scenario / "context/review.json").read_text())
+        assert 0 <= index < len(review["findings"]), (
+            f"{name}: commanded_index {index} addresses no finding of its review"
         )
 
     def test_the_expected_old_bytes_exist_in_the_popitem_pr_roots(self):

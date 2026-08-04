@@ -141,9 +141,18 @@ class TestFencing:
             "diff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1,1 +1,1 @@\n+x\n"
         )
         (context / "changed_files.json").write_text(json.dumps(["src/a.py"]))
-        (context / "finding.json").write_text(json.dumps({
-            "path": "src/a.py", "line": 1, "severity": "high", "title": "real", "body": "the real one",
+        # The accepted artifact and the commanded ordinal: the planner derives the
+        # finding rather than being handed one, so the real finding reaches the
+        # fence through review.json.
+        (context / "review.json").write_text(json.dumps({
+            "summary": "the real summary",
+            "findings": [{
+                "path": "src/a.py", "line": 1, "severity": "high",
+                "title": "real", "body": "the real one",
+            }],
+            "residual_risk": "",
         }))
+        (context / "commanded_index.json").write_text(json.dumps({"index": 0}))
         message = plan_loop.build_plan_user_message(context, POLICY)
         assert message.count("<commanded_finding>") == 1
         assert message.count("</commanded_finding>") == 1

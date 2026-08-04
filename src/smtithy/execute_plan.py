@@ -42,7 +42,9 @@ Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA
 (the diff anchor), BASE_REF (the reviewed base BRANCH, which is what a retarget
 changes — ADR-0012), HEAD_REF (the reviewed head BRANCH, the one push target both
 gates refuse — ADR-0009 addendum), RUN_URL (the delivered comment's footer).
-Arguments: --artifact-dir (plan.json; the bundle's diff.patch and
+Arguments: --artifact-dir (plan.json, plus review.json and commanded_index.json —
+the accepted artifact and the ordinal, from which the commanded finding is
+DERIVED rather than taken on trust; the bundle's diff.patch and
 changed_files.json travel as evidence only, since both gates' provenance inputs
 are re-fetched here), --pr-root (the quarantine-fetched reviewed head, the anchor
 tree), --policy, and --prover (the built prove-cli.js).
@@ -62,7 +64,7 @@ from artifact import redact_line
 from diff_map import anchor_signatures
 from github_api import api_json, fail, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
-from plan_loop import check_commanded_finding
+from plan_loop import read_commanded_finding
 from plan_verify import tree_content_source, verify_plan
 from post import read_model_stamp, resolve_bot_login
 from prepare_context import fetch_anchored_pair
@@ -255,31 +257,46 @@ def main() -> None:
     plan = json.loads(read_harness_text(plan_path))
     policy = json.loads(read_harness_text(args.policy))
 
-    # The commanded finding, an INPUT to the scope gate rather than evidence, so
-    # it is read from the bundle and fail-closed like plan.json. It cannot be
-    # re-derived here: which finding a maintainer commanded is a fact about the
-    # command, and ADR-0007's "the command names one finding" is only a property
-    # if the process holding the write credential checks it.
-    finding_path = args.artifact_dir / "finding.json"
-    if not finding_path.is_file():
-        fail(
-            f"no finding.json in the bundle: the commanded finding is unknown, so the plan's "
-            f"scope cannot be verified and nothing is executed ({finding_path})"
-        )
-    commanded_finding = json.loads(read_harness_text(finding_path))
-    try:
-        check_commanded_finding(commanded_finding, policy)
-    except Rejection as exc:
-        fail("the bundle's commanded finding is not a review artifact's finding: "
-             f"{redact_line(str(exc), policy)}")
+    # Both halves of the command are INPUTS to the scope gate rather than
+    # evidence, so both are read from the bundle and fail-closed like plan.json.
+    # The ordinal cannot be re-derived here — which finding a maintainer commanded
+    # is a fact about the COMMAND — and ADR-0007's "the command names one finding"
+    # is only a property if the process holding the write credential checks it.
+    for name in ("review.json", "commanded_index.json"):
+        if not (args.artifact_dir / name).is_file():
+            fail(
+                f"no {name} in the bundle: the commanded finding cannot be derived, so the "
+                f"plan's scope cannot be verified and nothing is executed "
+                f"({args.artifact_dir / name})"
+            )
 
     # The provenance inputs are re-fetched, not read from the bundle. The plan
     # must come from the plan job — it IS that job's output — but the diff and
     # the changed-file list are facts about the PR that this job's own token can
     # establish, and the frame condition is only as strong as the list it
     # quantifies over. post.py takes the same posture toward the review job.
+    #
+    # Hoisted above the commanded finding, which the review verifier now needs:
+    # deriving the finding means accepting the artifact, and an artifact accepted
+    # against the bundle's own copy of the diff would be checked by the job this
+    # process distrusts.
     diff_bytes, changed_files = fetch_anchored_pair(repo, reviewed_base_sha, reviewed_sha)
     diff_text = decode_contributor_bytes(diff_bytes)
+
+    # DERIVED, not supplied: the accepted artifact is re-verified here with the
+    # review verifier — against the provenance inputs just fetched — and the
+    # ordinal indexes it. So "an element of an accepted review" is structural at
+    # the gate holding the write token, not a claim about a file the plan job
+    # wrote. A forged finding cannot authorise a fix because there is no forgeable
+    # finding input left, and no key is needed: this process accepts the artifact
+    # itself rather than comparing two copies of one.
+    try:
+        commanded_finding = read_commanded_finding(args.artifact_dir, policy,
+                                                   diff_text=diff_text,
+                                                   changed_files=changed_files)
+    except Rejection as exc:
+        fail("the bundle's commanded finding is not an accepted review's finding: "
+             f"{redact_line(str(exc), policy)}")
     # Written out because the prover takes a PATH, not a parsed list: pointing it
     # at the bundle's copy would prove the frame condition against the very list
     # this executor declined to trust. One list, both gates.
