@@ -44,7 +44,17 @@ And the plan prover, in TypeScript:
 | `ts/plan/schema.ts` | the shape gate, carrying ADR-0004's three reserved closures. Runs before the solver — an encoding built from an unchecked shape is reasoning about a structure it assumed. |
 | `ts/plan/prove.ts` | ordering and frame conditions, asserted **negated** so `unsat` means the policy holds on every path. Returns a counterexample on `sat`. |
 
-Still to arrive: context acquisition, rendering, and GitHub I/O.
+And the remediation lane, commanded per finding (ADR-0007):
+
+| | |
+| --- | --- |
+| `src/smtithy/fix_command.py` | the `/fix N` parse. The command must be the comment's whole content, in one exact spelling, and the ordinal is 1-based for humans — this is the only place that meets the 0-based index. |
+| `src/smtithy/prepare_fix_context.py` | every precondition the command channel adds, refused before a credential is in scope: the commander's trust (the COMMENT author), the issue being a pull request, drift, and a review this harness actually posted for the commanded head. |
+| `src/smtithy/plan_loop.py` | the plan generator, and `read_commanded_finding` — the one reader that DERIVES the commanded finding by verifying the accepted artifact and indexing it, so its membership in a real review is structural rather than claimed. |
+| `src/smtithy/execute_plan.py` | the trusted plan executor: re-verifies, re-proves via the TypeScript prover, decides the delivery from checkable structure, and delivers. |
+
+Still to arrive: the stacked follow-up pull request (ADR-0009's other half) and
+the decline channel.
 
 ## Running the evals
 
