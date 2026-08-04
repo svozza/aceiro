@@ -33,10 +33,17 @@ a plan a policy disproves), exit 2 means nothing was proved at all (an
 operational failure of the run, not evidence about the plan) — whether because an
 input was unreadable or because the solver could not decide a query.
 
-Suggestion delivery is built (suggest.py, the reconciler this ports from the
-extraction source); the stacked follow-up pull request is not, and a plan that
-decides it fails closed rather than being delivered as the other mode — the
-atomicity a pull request's merge has is the whole reason that mode was chosen.
+Both deliveries are built and they are ALTERNATIVES, never a fallback chain:
+suggest.py reconciles suggestion comments (ported from the extraction source),
+stack.py opens the stacked follow-up pull request. A plan deciding one is never
+delivered as the other — the atomicity a pull request's merge has is the whole
+reason that mode was chosen, and per-file suggestions of a coordinated fix can be
+half-applied.
+
+The stacked path additionally carries ADR-0007's deduplication key on
+(pr, head_sha, finding), which the suggestion path deliberately does not: a
+command is not idempotent the way a push is, and two maintainers typing `/fix 3`
+must not produce two branches and two pull requests.
 
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA
 (the diff anchor), BASE_REF (the reviewed base BRANCH, which is what a retarget
@@ -65,9 +72,11 @@ from diff_map import anchor_signatures
 from github_api import api_json, fail, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from plan_loop import read_commanded_finding
-from plan_verify import tree_content_source, verify_plan
+from plan_verify import apply_patch_steps, tree_content_source, verify_plan
 from post import read_model_stamp, resolve_bot_login
 from prepare_context import fetch_anchored_pair
+from stack import AlreadyDelivered, deliver_stacked_pr, fix_key
+from stack import Refusal as StackRefusal
 from suggest import reconcile_suggestions
 from verify import Rejection
 
@@ -341,19 +350,25 @@ def main() -> None:
             "does not exist in the base repository to base a PR on (ADR-0009 addendum)"
         )
 
-    if delivery.mode != "suggestions":
-        # The stacked follow-up pull request is not built. Failing closed is
-        # deliberate: a commander must see "decided but not delivered", never a
-        # green run that posted nothing — and never this plan delivered as the
-        # other mode, whose atomicity is the whole reason it was chosen.
-        print(f"delivery decision: stacked PR based on {pr['head']['ref']!r}")
-        fail(f"delivery ({delivery.mode}) is not implemented yet; nothing executed")
+    # Announced BEFORE anything delivery needs can fail. The decision is the
+    # commander's explanation of what this run chose to do, so it must survive a
+    # later failure — an ownership resolution that fails closed should read as
+    # "decided this, then could not proceed", not as a run that never decided.
+    if delivery.mode == "stacked_pr":
+        # The base is the reviewed pull request's own head BRANCH, from this live
+        # context and never from the plan: open_pr has no base argument, and both
+        # gates pin its argument set exactly (ADR-0009 addendum). The fix therefore
+        # merges INTO the open pull request and broken code never lands on the
+        # default branch.
+        base = pr["head"]["ref"]
+        print(f"delivery decision: stacked PR based on {base!r}")
+    else:
+        print(f"delivery decision: suggestion comments on {delivery.path!r}")
 
-    print(f"delivery decision: suggestion comments on {delivery.path!r}")
-
-    # Resolved before the first write: ownership decides which comments this
-    # token may edit or delete, so it must come from the credential in hand and
-    # fail closed rather than be guessed (post.resolve_bot_login).
+    # Resolved before the first write: ownership decides which comments and which
+    # follow-up pull requests this token may edit or delete, so it must come from
+    # the credential in hand and fail closed rather than be guessed
+    # (post.resolve_bot_login). Both deliveries need it.
     bot_login = resolve_bot_login()
 
     metadata = {
@@ -365,11 +380,52 @@ def main() -> None:
 
     # Identity keyed on the FETCHED diff, never the bundle's copy: a tampered
     # bundle diff would let the plan job choose which existing comment its
-    # suggestion collides with. The window comes from the quarantine tree — the
-    # reviewed head, the same bytes that anchored the plan — which is what makes
-    # the key independent of where the hunk boundaries happen to fall
-    # (ADR-0009 addendum).
+    # suggestion — or which existing follow-up pull request its fix — collides
+    # with. The window comes from the quarantine tree — the reviewed head, the same
+    # bytes that anchored the plan — which is what makes the key independent of
+    # where the hunk boundaries happen to fall (ADR-0009 addendum).
     signatures = anchor_signatures(diff_text, content_source=tree_content_source(args.pr_root))
+
+    if delivery.mode == "stacked_pr":
+        try:
+            delivered = deliver_stacked_pr(
+                repo,
+                plan["steps"],
+                # The bytes the VERIFIER produced, from the same function its
+                # anchoring phase ran. Re-deriving them here would be a second
+                # model of what patching means, which is the divergence eight of
+                # the chunk B review's fourteen findings came from.
+                apply_patch_steps(
+                    [(index, step) for index, step in enumerate(plan["steps"])
+                     if step["kind"] in FIX_KINDS],
+                    tree_content_source(args.pr_root),
+                ),
+                base=base,
+                reviewed_sha=reviewed_sha,
+                # ADR-0007's (pr, head_sha, finding), over the DERIVED finding, so
+                # nothing the plan job wrote can steer which existing fix this
+                # command dedups against.
+                key=fix_key(pr_number, reviewed_sha, commanded_finding, signatures),
+                metadata=metadata,
+                bot_login=bot_login,
+            )
+        except AlreadyDelivered as exc:
+            fail(f"command already delivered: {exc}")
+        except StackRefusal as exc:
+            fail(f"plan verified but refused at delivery: {exc}")
+        # The commander's receipt. A delivered remediation whose only trace was a
+        # green run would leave them hunting for the pull request.
+        print(f"delivered: opened follow-up pull request #{delivered.get('number')} "
+              f"({delivered.get('html_url')}) from the fix branch into {base!r}")
+        # No post-write drift re-check, and that is the difference from the
+        # suggestion path. A suggestion's value depends on the head it is anchored
+        # to, so a push landing mid-delivery has to fail the run. This delivery's
+        # artifact is a PULL REQUEST: if the head moved while it was being created,
+        # GitHub itself now shows the fix branch as behind and the merge as needing
+        # attention, which is the same fail-visible signal, in the place the human
+        # is already looking. Failing here would report a red run for a pull request
+        # that exists and is correct.
+        return
 
     steps = [step for step in plan["steps"] if step["kind"] == "suggest"]
     # The retraction scope. One command names one finding (ADR-0007), so this run

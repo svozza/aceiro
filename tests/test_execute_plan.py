@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 import execute_plan
+import stack
 from diff_map import anchor_signatures
 from execute_plan import Refusal, decide_delivery
 from verify import Rejection
@@ -393,9 +394,15 @@ class TestMain:
 
     def test_verified_patch_plan_decides_stacked_pr_on_the_head_branch(
             self, main_env, monkeypatch, capsys):
+        # The DECISION, not the delivery: resolve_bot_login is left to fail closed
+        # so the run stops right after announcing, which is also what pins the
+        # announcement's position -- a decision printed only on the success path
+        # would leave a failed run with no record of what it chose.
         (main_env / "plan.json").write_text(json.dumps(
             {"steps": [patch(), push(), open_pr()]}))
         stub_pr(monkeypatch, pr_payload(head_ref="feature/x"))
+        monkeypatch.setattr(execute_plan, "resolve_bot_login",
+                            lambda: execute_plan.fail("could not resolve the token's own login"))
         with pytest.raises(SystemExit):
             execute_plan.main()
         # The base comes from the live PR context, never the plan (open_pr
@@ -941,15 +948,19 @@ class TestSuggestionDelivery:
         expected = hashlib.sha256(policy_path.read_bytes()).hexdigest()[:12]
         assert posted[0]["metadata"]["policy"] == expected
 
-    def test_a_stacked_pr_plan_still_refuses(self, delivery_env, posted, monkeypatch, capsys):
-        # The other delivery is not built. It must fail visibly rather than
-        # silently deliver nothing, and it must not be delivered AS suggestions.
+    def test_a_stacked_pr_plan_is_never_delivered_as_suggestions(
+            self, delivery_env, posted, stacked, monkeypatch):
+        # What survives of the refusal this replaces. The two deliveries are
+        # ALTERNATIVES, not a fallback chain: a plan whose fix spans files (or
+        # coordinates several hunks in one) is only correct as a whole, and
+        # per-file suggestions of it can be half-applied. ADR-0009's atomicity
+        # rule is why the stacked PR exists, so falling back to suggestions here
+        # would deliver exactly the state the rule refuses.
         (delivery_env / "plan.json").write_text(json.dumps({"steps": [patch(), push(), open_pr()]}))
         stub_pr(monkeypatch, pr_payload())
-        with pytest.raises(SystemExit):
-            execute_plan.main()
-        assert posted == []
-        assert "not implemented yet" in capsys.readouterr().err
+        execute_plan.main()
+        assert posted == [], "a stacked plan must not be delivered as suggestion comments"
+        assert len(stacked) == 1
 
     def test_suggestions_are_delivered_on_a_fork_pr(self, delivery_env, posted, monkeypatch):
         # The whole reason this is the delivery built first: a stacked PR needs the
@@ -980,4 +991,154 @@ class TestSuggestionDelivery:
         stub_pr(monkeypatch, pr_payload())
         with pytest.raises(SystemExit):
             execute_plan.main()
+        assert posted == []
+
+
+# --------------------------------------------------- stacked PR delivery ---
+
+
+@pytest.fixture
+def stacked(monkeypatch):
+    """Capture deliver_stacked_pr's arguments without reaching the tree API."""
+    calls = []
+
+    def fake(repo, steps, applied, **kwargs):
+        calls.append({"repo": repo, "steps": steps, "applied": applied, **kwargs})
+        return {"number": 99, "html_url": "https://github.com/o/r/pull/99"}
+
+    monkeypatch.setattr(execute_plan, "deliver_stacked_pr", fake)
+    return calls
+
+
+@pytest.fixture
+def stacked_env(delivery_env):
+    """delivery_env with a patch-chain plan, which decides stacked_pr."""
+    (delivery_env / "plan.json").write_text(json.dumps(
+        {"steps": [patch(), push(), open_pr()]}))
+    return delivery_env
+
+
+class TestStackedPrDelivery:
+    def test_a_verified_patch_plan_is_delivered(self, stacked_env, stacked, monkeypatch, capsys):
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert len(stacked) == 1
+        assert "opened" in capsys.readouterr().out
+
+    def test_the_run_exits_zero_once_delivered(self, stacked_env, stacked, monkeypatch):
+        # The fail() this replaces made every stacked decision a red run. A
+        # delivered remediation must not look like a failed one.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()  # no SystemExit
+
+    def test_the_base_is_the_reviewed_prs_own_head_branch(self, stacked_env, stacked, monkeypatch):
+        # ADR-0009's addendum, end to end: the base comes from the LIVE PR context,
+        # so the fix merges INTO the open pull request and broken code never lands
+        # on the default branch.
+        stub_pr(monkeypatch, pr_payload(head_ref="contributor/their-branch"))
+        execute_plan.main()
+        assert stacked[0]["base"] == "contributor/their-branch"
+
+    def test_the_base_is_not_the_prs_base_branch(self, stacked_env, stacked, monkeypatch):
+        # The absurd reading the addendum was written to forbid: basing on `main`
+        # means "merge the bug, then merge the fix".
+        stub_pr(monkeypatch, pr_payload(base_ref="main", head_ref="feature/x"))
+        execute_plan.main()
+        assert stacked[0]["base"] == "feature/x"
+        assert stacked[0]["base"] != "main"
+
+    def test_the_applied_bytes_come_from_the_shared_applier(self, stacked_env, stacked, monkeypatch):
+        # Not a re-derivation: these are the bytes plan_verify's anchoring phase
+        # produced, which are the bytes that were bounded, denylisted and
+        # secret-scanned. The fixture patch turns `def load(path):` into
+        # `def load(path=None):` in src/app.py.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert stacked[0]["applied"] == {
+            "src/app.py": b"import os\ndef load(path=None):\n    check(path)\n    return os.environ\n"
+        }
+
+    def test_the_key_is_the_commanded_findings_key(self, stacked_env, stacked, monkeypatch):
+        # ADR-0007's (pr, head_sha, finding). The finding is the DERIVED one, so
+        # the key cannot be steered by anything the plan job wrote.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        expected = stack.fix_key(
+            1, "reviewed-sha",
+            {"path": "src/app.py", "line": 2},
+            execute_plan.anchor_signatures(
+                PLAN_DIFF, content_source=execute_plan.tree_content_source(
+                    Path(sys.argv[sys.argv.index("--pr-root") + 1]))),
+        )
+        assert stacked[0]["key"] == expected
+
+    def test_the_reviewed_sha_is_passed_as_the_commit_parent_source(
+            self, stacked_env, stacked, monkeypatch):
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert stacked[0]["reviewed_sha"] == "reviewed-sha"
+
+    def test_a_fork_pr_is_refused_before_delivery(self, stacked_env, stacked, monkeypatch, capsys):
+        # A fork PR's head branch does not exist in the base repository, so there
+        # is no branch for a stacked PR to base on (ADR-0009 addendum).
+        stub_pr(monkeypatch, pr_payload(head_repo="fork-owner/r"))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert stacked == []
+        assert "fork" in capsys.readouterr().err
+
+    def test_an_already_delivered_command_refuses_without_re_delivering(
+            self, stacked_env, stacked, monkeypatch, capsys):
+        # ADR-0007: two maintainers typing /fix 3, or one typing it twice, must not
+        # produce two branches and two pull requests.
+        def already(*args, **kwargs):
+            raise execute_plan.AlreadyDelivered("already at #12")
+
+        monkeypatch.setattr(execute_plan, "deliver_stacked_pr", already)
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "already" in capsys.readouterr().err
+
+    def test_a_refused_shape_fails_the_run(self, stacked_env, stacked, monkeypatch, capsys):
+        def refuse(*args, **kwargs):
+            raise execute_plan.StackRefusal("no patched content to commit")
+
+        monkeypatch.setattr(execute_plan, "deliver_stacked_pr", refuse)
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "no patched content" in capsys.readouterr().err
+
+    def test_nothing_is_delivered_for_a_rejected_plan(self, stacked_env, stacked, monkeypatch):
+        (stacked_env / "plan.json").write_text(json.dumps(
+            {"steps": [patch(path="src/evil.py"), push(), open_pr()]}))
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert stacked == []
+
+    def test_nothing_is_delivered_for_a_disproved_plan(
+            self, stacked_env, stacked, monkeypatch, stub_prover):
+        disprover = stub_prover(1, stdout="frame: VIOLATED\n")
+        argv = sys.argv[:]
+        argv[argv.index("--prover") + 1] = str(disprover)
+        monkeypatch.setattr(sys, "argv", argv)
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert stacked == []
+
+    def test_nothing_is_delivered_when_the_head_moved(self, stacked_env, stacked, monkeypatch):
+        stub_pr(monkeypatch, pr_payload(head="moved-sha"))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert stacked == []
+
+    def test_no_suggestion_is_posted_for_a_patch_plan(self, stacked_env, stacked, posted, monkeypatch):
+        # The two deliveries are alternatives, not a fallback chain: a stacked plan
+        # must not also post suggestions, whose half-application is the state
+        # ADR-0009's atomicity rule refuses.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
         assert posted == []

@@ -268,6 +268,16 @@ def create_blob(repo: str, content: bytes) -> str:
     return blob["sha"]
 
 
+def read_commit(repo: str, sha: str) -> dict:
+    """One commit object, for its `tree` SHA.
+
+    A GET, so it is retried. Needed because /git/trees takes a TREE sha while
+    everything else in this path speaks commit SHAs: the reviewed head is a commit,
+    and passing it where a tree is expected names a different object.
+    """
+    return cast("dict", api_json(f"/repos/{repo}/git/commits/{sha}"))
+
+
 def create_tree(repo: str, base_tree: str, blobs: dict[str, str]) -> str:
     """Build a tree that is `base_tree` with `blobs` (path -> blob SHA) replaced.
 
