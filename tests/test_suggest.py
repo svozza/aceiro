@@ -20,7 +20,8 @@ import pytest
 
 import suggest
 from diff_map import anchor_signatures
-from verify import unterminated_fence
+from plan_verify import check_suggestion_new_survives_markdown
+from verify import Rejection, unterminated_fence
 
 from test_plan_verify import PLAN_CHANGED_FILES, PLAN_DIFF, PLAN_TREE, tree_source
 
@@ -116,11 +117,14 @@ class TestSuggestionFence:
         body = suggest.render_suggestion(step(new="a"), FINGERPRINT, METADATA)
         assert "```suggestion\na\n```" in body
 
-    def test_a_crlf_line_keeps_its_carriage_return(self):
-        # Only the \n is the terminator this consumes: a CRLF file's line ending
-        # is content, and stripping it would rewrite the file's convention.
-        body = suggest.render_suggestion(step(new="a\r\n"), FINGERPRINT, METADATA)
-        assert "```suggestion\na\r\n```" in body
+    def test_a_carriage_return_never_reaches_the_renderer(self):
+        # The renderer consumes only the \n, so a CR would ride into the block as
+        # content — and markdown would then fold it to LF before the applier saw
+        # it, committing bytes the plan did not describe. The renderer is not where
+        # that is caught: check_suggestion_new_survives_markdown refuses the step,
+        # so the shape below is unreachable rather than handled.
+        with pytest.raises(Rejection, match="carriage return"):
+            check_suggestion_new_survives_markdown("a\r\n", "plan.steps[0].args.new")
 
     def test_an_empty_new_is_a_deletion_suggestion(self):
         # min_length 0 in the policy: a suggestion that removes the anchored

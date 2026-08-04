@@ -707,6 +707,22 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                     f"plan.steps[{index}].args.old: spans line {spanned} of {path!r}, which "
                     "is not inside any diff hunk"
                 )
+        # And `new` must terminate the way the applier will terminate it. A
+        # suggestion block's lines are what GitHub commits, and a block line
+        # always arrives with its newline — there is no way to express "join this
+        # to the following line" in one. So a `new` whose last line drops the
+        # terminator `old` carried is proved above as a JOIN (the replace() model)
+        # that the applier will not perform: the bytes checked for bounds,
+        # denylist and secrets are not the bytes committed. Exempt where `old`
+        # ends the file unterminated too, because then there is no following line
+        # to join to and the two models agree.
+        new = step["args"]["new"]
+        if new and not new.endswith("\n") and old_bytes.endswith(b"\n"):
+            raise Rejection(
+                f"{where.replace('.old', '.new')}: drops the line terminator `old` carried, which "
+                "a suggestion block cannot express — its lines are always committed terminated, so "
+                "the join this describes would be verified and then not performed"
+            )
 
 
 # -------------------------------------------------------------- cardinality --
@@ -848,6 +864,37 @@ def _iter_plan_markdown(plan: dict, policy: dict):
 # the first word, since GitHub takes the language from there and ignores the rest.
 _SUGGESTION_INFO = "suggestion"
 
+# Bytes CommonMark rewrites before a renderer ever sees them: CR and CRLF become
+# LF, and NUL becomes U+FFFD. Nothing else in the harness cares, because nothing
+# else delivers file content THROUGH markdown.
+_MANGLED_BY_COMMONMARK = {"\r": "carriage return", "\x00": "NUL"}
+
+
+def check_suggestion_new_survives_markdown(new: str, where: str) -> None:
+    """Refuse a `new` a suggestion block cannot carry unchanged.
+
+    `new` reaches the contributor's file through a markdown code fence, so
+    CommonMark's preprocessing is part of this delivery: it normalises CR and CRLF
+    to LF and substitutes U+FFFD for NUL. Bytes that do not survive it would be
+    proved here — for bounds, the denylist, the secret scan — and then silently
+    rewritten on the way in, so what the contributor's click commits is not what
+    was checked.
+
+    Refused rather than normalised, ADR-0011's posture: the checked bytes must BE
+    the delivered bytes, and quietly folding a CRLF file's line endings to LF
+    would rewrite the file's own convention on the model's behalf.
+
+    A `patch` step's `new` is exempt and deliberately not routed here — the
+    executor writes that file directly, where a CR is just a byte.
+    """
+    for char, name in _MANGLED_BY_COMMONMARK.items():
+        if char in new:
+            raise Rejection(
+                f"{where}: a suggestion block cannot carry a {name} — markdown rewrites it "
+                "before the applier sees it, so the committed bytes would not be the "
+                "checked ones; deliver this as a patch instead"
+            )
+
 
 def check_note_carries_no_suggestion(note: str, where: str) -> None:
     """Refuse a `note` whose own fence GitHub would offer to apply.
@@ -888,6 +935,9 @@ def check_plan_markdown(plan: dict, policy: dict) -> None:
         if step["kind"] == "suggest":
             check_note_carries_no_suggestion(
                 step["args"]["note"], f"plan.steps[{index}].args.note"
+            )
+            check_suggestion_new_survives_markdown(
+                step["args"]["new"], f"plan.steps[{index}].args.new"
             )
 
 

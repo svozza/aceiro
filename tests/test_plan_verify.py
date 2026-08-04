@@ -700,6 +700,35 @@ class TestSuggestLineProvenance:
             content_source=tree_source(tree),
         )
 
+    # `new`'s terminator: the block's lines are what GitHub commits, and a block
+    # line always arrives terminated. So a `new` whose last line has no newline,
+    # replacing an `old` whose last line HAS one, is proved as a join the applier
+    # will not perform — the checked bytes are not the committed bytes.
+
+    def test_a_new_dropping_the_terminator_old_had_rejects(self):
+        with pytest.raises(Rejection, match="terminator"):
+            contained({"steps": [anchored_suggest(line=2, old="def load(path):\n",
+                                                  new="def load(path=None):")]})
+
+    def test_a_new_keeping_the_terminator_passes(self):
+        contained({"steps": [anchored_suggest(line=2, old="def load(path):\n",
+                                              new="def load(path=None):\n")]})
+
+    def test_a_terminatorless_new_passes_at_end_of_file(self):
+        # Where `old` ends the file with no newline either, the two agree: there
+        # is no following line for a missing terminator to join to.
+        tree = {"src/app.py": b"import os\ndef load(path):\n    check(path)\n    return os.environ"}
+        contained(
+            {"steps": [anchored_suggest(line=4, old="    return os.environ",
+                                        new="    return dict(os.environ)")]},
+            content_source=tree_source(tree),
+        )
+
+    def test_an_empty_new_is_still_a_deletion(self):
+        # "" removes the anchored lines and has no last line to terminate, so the
+        # terminator rule must not catch the deletion suggestion.
+        contained({"steps": [anchored_suggest(line=2, old="def load(path):\n", new="")]})
+
 
 class TestBounding:
     def test_at_cap_distinct_files_pass(self):
@@ -1408,6 +1437,20 @@ class TestPlanMarkdownAndSecrets:
         # the same case check_secrets pins for review comments.
         with pytest.raises(Rejection, match="secret scan"):
             self.run(self.suggest_plan(note="uses key AKIA**IOSF**ODNN7EXAMPLE here"))
+
+    def test_a_suggestion_new_that_commonmark_would_mangle_rejects(self):
+        # `new` reaches the contributor's file THROUGH a markdown code fence, so
+        # CommonMark's preprocessing is part of the delivery: it normalises CR and
+        # CRLF to LF and replaces NUL with U+FFFD. Bytes the applier cannot carry
+        # unchanged are refused rather than proved and then silently rewritten.
+        for mangled in ("a\r\nb\n", "a\rb\n", "a\x00b\n"):
+            with pytest.raises(Rejection, match="suggestion block cannot carry"):
+                self.run(self.suggest_plan(new=mangled))
+
+    def test_a_patch_new_may_still_carry_those_bytes(self):
+        # The refusal is about the DELIVERY, not the bytes: a patch is applied by
+        # the executor writing the file, where a CR is just a byte.
+        self.run(self.full_plan(new="def load(path=None):\r\n"))
 
     def test_a_note_carrying_its_own_suggestion_fence_rejects(self):
         # The note is prose: markdown-checked, and NOTHING else. It gets no
