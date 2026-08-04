@@ -707,6 +707,44 @@ class TestSuggestionDelivery:
         execute_plan.main()
         assert posted[0]["bot_login"] == "smtithy[bot]"
 
+    def test_a_push_landing_while_delivering_fails_the_run(self, delivery_env, posted, monkeypatch, capsys):
+        # The pre-check and the write are not atomic, and several live API calls
+        # sit between them (the login resolve, the comment listing, the supersede
+        # pass). post.py re-checks after ITS write for exactly this reason, and
+        # submit_review's docstring says the post-write half of the check stays.
+        # Unchecked, the run reports "delivered" green having already retracted the
+        # previous run's comments against a head that no longer exists.
+        payloads = [pr_payload(), pr_payload(head="pushed-over-us")]
+        monkeypatch.setattr(execute_plan, "api_json",
+                            lambda path, method="GET", payload=None: payloads.pop(0))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert len(posted) == 1, "the suggestions were already posted; this is the check AFTER"
+        err = capsys.readouterr().err
+        assert "head moved since review" in err
+        assert "while delivering" in err, "the message must say the write already happened"
+
+    def test_nothing_is_withdrawn_when_the_head_moves_under_a_delivery(
+            self, delivery_env, posted, monkeypatch, capsys):
+        # And the failure does NOT undo the posting. The comments are bound to the
+        # reviewed SHA by commit_id, so GitHub marks them OUTDATED against the new
+        # head — fail-visible, which is the property ADR-0009 leans on. Deleting
+        # them would destroy correctly-outdated suggestions and any human thread
+        # under them; the run fails so the commander sees it, and leaves them be.
+        payloads = [pr_payload(), pr_payload(head="pushed-over-us")]
+        monkeypatch.setattr(execute_plan, "api_json",
+                            lambda path, method="GET", payload=None: payloads.pop(0))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "withdrawn" not in capsys.readouterr().err
+
+    def test_a_delivery_on_an_unmoved_head_does_not_fail(self, delivery_env, posted, monkeypatch):
+        # The check must not fire on the ordinary path: two fetches of an unmoved
+        # PR agree, so a green run stays green.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()  # no SystemExit
+        assert len(posted) == 1
+
     def test_the_retraction_scope_is_the_commanded_findings_path(self, delivery_env, posted, monkeypatch):
         # One command names one finding (ADR-0007), so this run may only withdraw
         # what that command could have produced. Unscoped, the reconciler reads

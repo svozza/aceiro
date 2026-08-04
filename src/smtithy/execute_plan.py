@@ -366,6 +366,23 @@ def main() -> None:
                           commanded_path=commanded_finding["path"])
     print(f"delivered {len(steps)} suggestion(s) on {delivery.path!r}")
 
+    # TOCTOU guard, second half — the posture post.py takes after ITS write, and
+    # what submit_review's docstring means by "the pre- and post-write drift checks
+    # stay". The pre-check and the write are not atomic and several live calls sit
+    # between them, so a push (or a retarget) can land mid-delivery.
+    #
+    # Nothing is withdrawn, which is where this differs from post.py's single
+    # upsert: the comments are bound to the reviewed SHA by commit_id, so GitHub
+    # marks them OUTDATED against the new head rather than misplacing them — the
+    # fail-visible behaviour ADR-0009 leans on. Deleting them would destroy
+    # correctly-outdated suggestions and any human thread beneath them. So the run
+    # FAILS, because a commander must see that the fix was delivered against a head
+    # that has since moved, and the comments stay for them to read.
+    if moved := pr_moved(cast("dict", api_json(f"/repos/{repo}/pulls/{pr_number}")),
+                         reviewed_sha, reviewed_base_ref):
+        fail(f"{moved} while delivering; the suggestions were posted against "
+             f"{reviewed_sha} and GitHub marks them outdated against the new head")
+
 
 if __name__ == "__main__":
     main()
