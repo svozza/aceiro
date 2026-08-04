@@ -101,8 +101,10 @@ with the full `--runs 3` before believing the change, since a fix measured on
 one scenario has been observed to move the failure to another.
 
 The plan generator has its own suite over the same layout plus a
-`context/finding.json` (the commanded finding, ADR-0007), graded on the
-ADR-0009 shape invariants rather than step inventories. CI runs it in the
+`context/review.json` and `context/commanded_index.json` — the accepted artifact
+and the ordinal the command named, from which the commanded finding is derived
+rather than supplied (ADR-0007 and its second addendum) — graded on the ADR-0009
+shape invariants rather than step inventories. CI runs it in the
 same gated job as the review suite; locally:
 
 ```bash
