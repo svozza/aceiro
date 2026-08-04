@@ -13,6 +13,7 @@ Network is never touched: the reviews helpers are stubbed.
 
 import json
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -271,10 +272,18 @@ class TestSuggestionFingerprint:
 # ------------------------------------------------------------ ownership ---
 
 
-def comment(cid, fingerprint=FINGERPRINT, login=BOT, in_reply_to=None, body=None, args=None):
-    """A live review comment as GitHub would list it."""
+def comment(cid, fingerprint=None, login=BOT, in_reply_to=None, body=None, args=None):
+    """A live review comment as GitHub would list it, wrapping one suggest step.
+
+    The fingerprint DEFAULTS to the real key for the step's args rather than to a
+    constant: a canned comment carrying an arbitrary key is a comment about some
+    other suggestion, so every reconciliation case would exercise the fresh-post
+    path and none would exercise a match.
+    """
+    canned = step(**(args or {}))
     if body is None:
-        body = suggest.render_suggestion(step(**(args or {})), fingerprint, METADATA)
+        body = suggest.render_suggestion(
+            canned, fingerprint or suggest.suggestion_fingerprint(canned["args"], SIGNATURES), METADATA)
     return {"id": cid, "body": body, "user": {"login": login}, "in_reply_to_id": in_reply_to}
 
 
@@ -476,10 +485,13 @@ class TestRetraction:
         assert lines[1] == suggest.WITHDRAWN_NOTE
 
     def test_the_struck_marker_joins_the_fingerprint_on_line_one(self):
-        # Both identity signals in the one place model text cannot reach.
+        # Both identity signals in the one place model text cannot reach: the
+        # retraction must not cost the comment its identity, or the next run sees
+        # an unknown comment and posts a second one alongside it.
         body = struck_body()
         assert suggest.is_struck({"body": body})
-        assert suggest.owned_fingerprint({"body": body, "user": {"login": BOT}}, BOT) == FINGERPRINT
+        assert (suggest.owned_fingerprint({"body": body, "user": {"login": BOT}}, BOT)
+                == suggest.suggestion_fingerprint(step()["args"], SIGNATURES))
 
     def test_the_suggestion_fence_is_left_unstruck(self):
         # `~~` inside a fence renders literally, so striking there would corrupt
@@ -537,3 +549,393 @@ class TestRetraction:
                                       bot_login=BOT, head_sha="reviewed-sha")
         touched = set(calls["deleted"]) | {p["id"] for p in calls["patched"]}
         assert touched == {10}
+
+
+# ------------------------------------------------------- ordering + churn ---
+
+
+class TestPostBeforeRetract:
+    """The review POST is atomic: an unresolvable line 422s and creates ZERO
+    comments (verified live in the extraction source). So failing there must leave
+    the pull request's existing comments standing, never already deleted.
+    """
+
+    def test_a_failing_post_deletes_nothing(self, api, monkeypatch):
+        calls, set_comments, _ = api
+        order = []
+        set_comments([comment(10, args={"line": 3, "old": "    check(path)\n"})])
+        monkeypatch.setattr(suggest, "delete_review_comment",
+                            lambda repo, cid: order.append(("delete", cid)))
+        monkeypatch.setattr(suggest, "patch_review_comment",
+                            lambda repo, cid, body: order.append(("patch", cid)))
+
+        def failing_post(repo, pr, body, comments, head_sha):
+            order.append(("post", len(comments)))
+            raise urllib.error.HTTPError("/x", 422, "Line could not be resolved", {}, None)
+
+        monkeypatch.setattr(suggest, "submit_review", failing_post)
+
+        with pytest.raises(urllib.error.HTTPError):
+            suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                          bot_login=BOT, head_sha="reviewed-sha")
+
+        assert ("post", 1) in order
+        assert not [entry for entry in order if entry[0] in ("delete", "patch")], (
+            f"a comment was mutated before the POST failed: {order}"
+        )
+
+    def test_a_failing_post_does_not_leave_a_restore_applied(self, api, monkeypatch):
+        # The restore path runs AFTER the POST for this reason: restoring first
+        # would leave a stale comment live if the POST then 422'd.
+        calls, set_comments, _ = api
+        order = []
+        returning = comment(10, body=struck_body())
+        set_comments([returning,
+                      {"id": 11, "body": "hm", "user": {"login": "a-human"}, "in_reply_to_id": 10}])
+        monkeypatch.setattr(suggest, "patch_review_comment",
+                            lambda repo, cid, body: order.append(("patch", cid)))
+
+        def failing_post(repo, pr, body, comments, head_sha):
+            order.append(("post", len(comments)))
+            raise urllib.error.HTTPError("/x", 422, "Line could not be resolved", {}, None)
+
+        monkeypatch.setattr(suggest, "submit_review", failing_post)
+
+        with pytest.raises(urllib.error.HTTPError):
+            suggest.reconcile_suggestions(
+                "o/r", 1,
+                [step(), step(line=3, old="    check(path)\n", new="    check(path or '')\n")],
+                SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+
+        assert ("post", 1) in order
+        assert not [entry for entry in order if entry[0] == "patch"], (
+            f"a restore was applied before the POST failed: {order}"
+        )
+
+
+class FakeGitHub:
+    """A pull request's suggestion comments, mutated by the calls the reconciler
+    actually makes.
+
+    Exists so a test can drive reconcile_suggestions MORE THAN ONCE and have the
+    second run see what the first really did. Every other case here hands run 2 a
+    hand-authored picture of run 1's output, which cannot catch a bug whose trigger
+    is inter-run state: a hand-written expected state encodes what the author
+    BELIEVES the previous run posted. Here it is whatever production wrote.
+
+    Only the three mutations the reconciler issues are modelled, each the way
+    GitHub behaves: POST appends comments with fresh ids, PATCH replaces a body,
+    DELETE removes the comment while any human reply survives as a now-parentless
+    comment (all verified live in the extraction source).
+    """
+
+    def __init__(self, comments=()):
+        self.comments = list(comments)
+        self.next_id = 100
+        self.posts = []
+
+    def install(self, monkeypatch):
+        monkeypatch.setattr(suggest, "review_comments", lambda repo, pr: iter(list(self.comments)))
+        monkeypatch.setattr(suggest, "pull_reviews", lambda repo, pr: iter([]))
+        monkeypatch.setattr(suggest, "submit_review", self._submit)
+        monkeypatch.setattr(suggest, "patch_review_comment", self._patch)
+        monkeypatch.setattr(suggest, "delete_review_comment", self._delete)
+        return self
+
+    def _submit(self, repo, pr, body, comments, head_sha):
+        self.posts.append({"body": body, "comments": comments, "head_sha": head_sha})
+        for posted in comments:
+            self.comments.append({
+                "id": self.next_id, "body": posted["body"], "user": {"login": BOT},
+                "in_reply_to_id": None, "line": posted["line"], "path": posted["path"],
+            })
+            self.next_id += 1
+
+    def _patch(self, repo, cid, body):
+        for existing in self.comments:
+            if existing["id"] == cid:
+                existing["body"] = body
+                return
+        raise AssertionError(f"patched a comment that does not exist: {cid}")
+
+    def _delete(self, repo, cid):
+        before = len(self.comments)
+        # A human reply outlives its parent, promoted to top-level (verified live).
+        for other in self.comments:
+            if other.get("in_reply_to_id") == cid:
+                other["in_reply_to_id"] = None
+        self.comments = [c for c in self.comments if c["id"] != cid]
+        if len(self.comments) == before:
+            raise AssertionError(f"deleted a comment that does not exist: {cid}")
+
+    def ours(self):
+        return [c for c in self.comments if suggest.owned_fingerprint(c, BOT)]
+
+
+def run(github, steps, metadata=None):
+    suggest.reconcile_suggestions("o/r", 1, steps, SIGNATURES, metadata or METADATA,
+                                  bot_login=BOT, head_sha="reviewed-sha")
+
+
+class TestAcrossRuns:
+    """Driven against a FakeGitHub carrying run 1's real output into run 2.
+
+    Unreachable by any other tier: a single reconcile call has no previous run to
+    disagree with, and this is where the churn defects the reference
+    implementation measured actually live.
+    """
+
+    def test_an_unchanged_plan_re_run_writes_nothing(self, monkeypatch):
+        # The guard on the content comparison. Re-rendering every matched comment
+        # would rewrite all of them on every run, because the footer's [run] URL
+        # differs per run — the churn this whole design removes.
+        github = FakeGitHub().install(monkeypatch)
+        run(github, [step()])
+        assert len(github.posts) == 1
+        assert len(github.ours()) == 1
+
+        patched = []
+        monkeypatch.setattr(suggest, "patch_review_comment",
+                            lambda repo, cid, body: patched.append(cid))
+        run(github, [step()], metadata={**METADATA, "run_url": "https://github.com/o/r/actions/runs/999"})
+
+        assert len(github.posts) == 1, "reposted an unchanged suggestion"
+        assert patched == [], "rewrote an unchanged comment because the run URL moved"
+
+    def test_a_reworded_note_updates_in_place(self, monkeypatch):
+        # Identity is the anchor, so the comment matches; its CONTENT changed, so
+        # it must be re-rendered rather than left saying the old thing.
+        github = FakeGitHub().install(monkeypatch)
+        run(github, [step(note="make path optional")])
+        original_id = github.ours()[0]["id"]
+
+        run(github, [step(note="`load` should default its argument")])
+
+        assert [c["id"] for c in github.ours()] == [original_id], "the comment was replaced, not updated"
+        assert len(github.posts) == 1, "a reworded note reposted the suggestion"
+        assert "`load` should default its argument" in github.ours()[0]["body"]
+
+    def test_a_revised_replacement_updates_in_place(self, monkeypatch):
+        github = FakeGitHub().install(monkeypatch)
+        run(github, [step(new="def load(path=None):\n")])
+        original_id = github.ours()[0]["id"]
+
+        run(github, [step(new="def load(path=''):\n")])
+
+        assert [c["id"] for c in github.ours()] == [original_id]
+        assert "def load(path=''):" in github.ours()[0]["body"]
+        assert "def load(path=None):" not in github.ours()[0]["body"], (
+            "the withdrawn replacement is still on the pull request"
+        )
+
+    def test_a_returning_suggestion_restores_its_struck_comment(self, monkeypatch):
+        # A suggestion retracted on one run and produced again on the next: the
+        # struck comment holds the human thread, and a key match proves it is about
+        # the same code, so it is restored rather than left contradicting the
+        # review that carries it.
+        github = FakeGitHub().install(monkeypatch)
+        run(github, [step()])
+        parent_id = github.ours()[0]["id"]
+        github.comments.append({"id": 900, "body": "why?", "user": {"login": "a-human"},
+                                "in_reply_to_id": parent_id})
+
+        run(github, [])
+        assert suggest.is_struck(github.ours()[0]), "a replied-to comment was not struck"
+
+        run(github, [step()])
+        assert [c["id"] for c in github.ours()] == [parent_id], "the comment was replaced, not restored"
+        assert not suggest.is_struck(github.ours()[0]), "the restored comment is still marked struck"
+        assert len(github.posts) == 1, "the returning suggestion was reposted alongside its own comment"
+
+    def test_a_retracted_suggestion_does_not_orphan_a_human_reply(self, monkeypatch):
+        github = FakeGitHub().install(monkeypatch)
+        run(github, [step()])
+        parent_id = github.ours()[0]["id"]
+        github.comments.append({"id": 900, "body": "why?", "user": {"login": "a-human"},
+                                "in_reply_to_id": parent_id})
+
+        run(github, [])
+
+        assert [c["id"] for c in github.ours()] == [parent_id]
+        reply = next(c for c in github.comments if c["id"] == 900)
+        assert reply["in_reply_to_id"] == parent_id, "the human's reply was orphaned"
+
+    def test_a_grown_hunk_does_not_churn_the_comment(self, monkeypatch):
+        # The window-source contract, observed where it matters. An unrelated push
+        # grows the hunk around the anchored line; under a diff-derived window the
+        # signature moved, so the executor deleted a live thread and reposted the
+        # same suggestion.
+        head = tree_source({"x.py": b"alpha\ntarget()\nomega\ntail()\n"})
+        narrow = ("diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+                  "@@ -2,1 +2,1 @@\n+target()\n")
+        wide = ("diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+                "@@ -1,4 +1,4 @@\n alpha\n+target()\n omega\n tail()\n")
+        moved = step(path="x.py", line=2, old="target()\n", new="target(fixed)\n")
+
+        github = FakeGitHub().install(monkeypatch)
+        suggest.reconcile_suggestions(
+            "o/r", 1, [moved], anchor_signatures(narrow, content_source=head), METADATA,
+            bot_login=BOT, head_sha="reviewed-sha")
+        original_id = github.ours()[0]["id"]
+
+        suggest.reconcile_suggestions(
+            "o/r", 1, [moved], anchor_signatures(wide, content_source=head), METADATA,
+            bot_login=BOT, head_sha="reviewed-sha")
+
+        assert [c["id"] for c in github.ours()] == [original_id], (
+            "a grown hunk deleted the live comment and reposted the same suggestion"
+        )
+        assert len(github.posts) == 1
+
+
+class TestReviewWrappers:
+    def test_our_previous_wrapper_is_rewritten_and_minimized(self, api, monkeypatch):
+        calls, _, set_reviews = api
+        updated, minimized = [], []
+        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "update_review_body",
+                            lambda repo, pr, rid, body: updated.append({"id": rid, "body": body}))
+        monkeypatch.setattr(suggest, "minimize_review", lambda node: minimized.append(node))
+
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+
+        assert [u["id"] for u in updated] == [7]
+        assert updated[0]["body"] == suggest.SUPERSEDED_REVIEW_BODY
+        assert minimized == ["PRR_7"]
+
+    def test_a_human_review_is_never_touched(self, api, monkeypatch):
+        _, _, set_reviews = api
+        updated = []
+        set_reviews([{"id": 7, "body": "looks good to me", "user": {"login": "a-human"},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "update_review_body",
+                            lambda repo, pr, rid, body: updated.append(rid))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert updated == []
+
+    def test_a_human_review_carrying_our_marker_is_never_touched(self, api, monkeypatch):
+        # This gates a body OVERWRITE, so a mis-scope destroys a human's review
+        # summary. The marker is copyable; the author check is the backstop.
+        _, _, set_reviews = api
+        updated = []
+        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": "a-human"},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "update_review_body",
+                            lambda repo, pr, rid, body: updated.append(rid))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert updated == []
+
+    def test_an_already_superseded_wrapper_is_left_alone(self, api, monkeypatch):
+        _, _, set_reviews = api
+        updated = []
+        set_reviews([{"id": 7, "body": suggest.SUPERSEDED_REVIEW_BODY, "user": {"login": BOT},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "update_review_body",
+                            lambda repo, pr, rid, body: updated.append(rid))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert updated == []
+
+    def test_a_minimize_the_bot_cannot_perform_does_not_fail_the_run(self, api, monkeypatch):
+        # Cosmetic tidying in front of an atomic POST: a permission the bot turns
+        # out not to have must cost a collapsed timeline entry, never a delivery.
+        calls, _, set_reviews = api
+        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "minimize_review",
+                            lambda node: (_ for _ in ()).throw(RuntimeError("Resource not accessible")))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert len(calls["reviews"]) == 1, "a failed minimize cost the delivery"
+
+    def test_a_failing_body_rewrite_does_not_fail_the_run(self, api, monkeypatch):
+        calls, _, set_reviews = api
+        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "update_review_body",
+                            lambda repo, pr, rid, body: (_ for _ in ()).throw(RuntimeError("403")))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert len(calls["reviews"]) == 1
+
+    def test_a_failing_review_list_does_not_fail_the_run(self, api, monkeypatch):
+        calls, _, _ = api
+        monkeypatch.setattr(suggest, "pull_reviews",
+                            lambda repo, pr: (_ for _ in ()).throw(RuntimeError("500")))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert len(calls["reviews"]) == 1
+
+    def test_superseding_happens_before_the_new_review_is_posted(self, api, monkeypatch):
+        # So "every wrapper except the newest" needs no id bookkeeping: at that
+        # moment the newest does not exist yet.
+        _, _, set_reviews = api
+        order = []
+        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "update_review_body",
+                            lambda repo, pr, rid, body: order.append("supersede"))
+        monkeypatch.setattr(suggest, "submit_review",
+                            lambda repo, pr, body, comments, head_sha: order.append("post"))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert order == ["supersede", "post"]
+
+    def test_nothing_is_superseded_when_there_is_nothing_to_post(self, api, monkeypatch):
+        _, set_comments, set_reviews = api
+        updated = []
+        set_comments([comment(10)])
+        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+                      "node_id": "PRR_7"}])
+        monkeypatch.setattr(suggest, "update_review_body",
+                            lambda repo, pr, rid, body: updated.append(rid))
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert updated == []
+
+
+class TestPostedPayload:
+    def test_the_review_is_bound_to_the_verified_head_sha(self, api):
+        calls, _, _ = api
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["reviews"][0]["head_sha"] == "reviewed-sha"
+
+    def test_a_comment_anchors_to_the_steps_path_and_line(self, api):
+        calls, _, _ = api
+        suggest.reconcile_suggestions("o/r", 1, [step(line=3, old="    check(path)\n")],
+                                      SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+        posted = calls["reviews"][0]["comments"][0]
+        assert posted["path"] == "src/app.py"
+        assert posted["line"] == 3
+        assert posted["side"] == "RIGHT"
+
+    def test_one_atomic_review_carries_every_comment(self, api):
+        calls, _, _ = api
+        suggest.reconcile_suggestions(
+            "o/r", 1,
+            [step(), step(line=3, old="    check(path)\n", new="    check(path or '')\n")],
+            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+        assert len(calls["reviews"]) == 1
+        assert len(calls["reviews"][0]["comments"]) == 2
+
+    def test_an_empty_plan_posts_no_review(self, api):
+        calls, _, _ = api
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["reviews"] == []
+
+    def test_an_existing_suggestion_is_not_reposted(self, api):
+        # Re-posting is not deduped by GitHub: an identical comment on an
+        # unchanged line creates a true duplicate.
+        calls, set_comments, _ = api
+        set_comments([comment(10)])
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        assert calls["reviews"] == []
+        assert calls["deleted"] == []
+        assert calls["patched"] == []
