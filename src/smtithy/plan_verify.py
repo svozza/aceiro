@@ -395,6 +395,83 @@ def _line_count(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
+def apply_patch_steps(anchored: list[tuple[int, dict]], content_source) -> dict[str, bytes]:
+    """Apply the anchored steps in sequence and return the resulting file bytes.
+
+    THE one model of what patching means, called by the verifier as its anchoring
+    phase and by the stacked-PR delivery for the bytes it commits. Shared rather
+    than reimplemented because a second replace() model is the divergence the
+    chunk B review found eight instances of: the verifier proved a property about
+    `original.replace(old, new)` while the write did something subtly else, so the
+    bytes that were bounded, denylisted and secret-scanned were not the bytes that
+    landed. One function means "verified" and "delivered" cannot come apart.
+
+    Anchoring is part of the contract, not a precondition the caller supplies:
+    `old` must byte-match the file at the reviewed SHA — the closest analogue to
+    provenance a patch can have (ADR-0005) — RAW bytes against old's UTF-8, with no
+    normalization on either side, so an NFD `old` over an NFC file is a fragment the
+    model never saw and fails closed. Exactly-once is part of it too: zero matches
+    means the model wasn't looking at this file, two means the replacement (and a
+    suggestion's placement) is ambiguous, and an ambiguous write is refused rather
+    than guessed at. Returning bytes a caller could commit is only safe while those
+    rejections travel with them.
+
+    Steps apply IN SEQUENCE, so a later step's anchor is checked against the content
+    the earlier steps leave behind, not against the reviewed SHA. The exactly-once
+    guarantee is per-step-at-apply-time or it is not a guarantee: two steps on one
+    path can each be unique pre-plan while the first makes the second's anchor
+    duplicated or absent. BOTH representations must admit the anchor, for different
+    reasons — at the reviewed SHA because `old` is proof the model read the file, so
+    an anchor matching only text an earlier step INVENTED is not anchored at all;
+    against the pending content because that is where the write actually lands.
+
+    Covers suggest as well as patch, so the sequential check is not a patch-only
+    property. Two suggestions on one path are refused outright by
+    check_plan_cardinality (ADR-0009: a suggestion is independently applicable, so a
+    pair can be half-applied), which means pending content only ever differs from
+    the original across DIFFERENT paths for suggestions — but the threading is
+    deliberate rather than incidental: it is what makes the guarantee hold for
+    whatever kind a future policy admits here.
+
+    Takes (index, step) pairs rather than bare steps so every Rejection keeps
+    naming plan.steps[N], which is the audit trail's coordinate system. Only paths
+    an anchored step touched appear in the result, so the delivery uploads a blob
+    per genuinely changed file and nothing else.
+    """
+    applied: dict[str, bytes] = {}
+    for index, step in anchored:
+        path = step["args"]["path"]
+        where = f"plan.steps[{index}].args.old"
+        try:
+            original = content_source(path)
+        except OSError as exc:
+            raise Rejection(f"{where}: cannot read {path!r} at the reviewed SHA: {exc}")
+        pending = applied.get(path, original)
+        old_bytes = step["args"]["old"].encode("utf-8")
+
+        at_reviewed_sha = count_occurrences(original, old_bytes)
+        if at_reviewed_sha == 0:
+            raise Rejection(f"{where}: does not byte-match the content of {path!r} at the reviewed SHA")
+        if at_reviewed_sha > 1:
+            raise Rejection(
+                f"{where}: matches {path!r} {at_reviewed_sha} times at the reviewed SHA; "
+                "an ambiguous anchor cannot be applied"
+            )
+        occurrences = count_occurrences(pending, old_bytes)
+        if occurrences == 0:
+            raise Rejection(
+                f"{where}: no longer occurs in {path!r} once the earlier steps in this plan "
+                "have applied; an anchor an earlier step destroys cannot be applied"
+            )
+        if occurrences > 1:
+            raise Rejection(
+                f"{where}: matches {path!r} {occurrences} times once the earlier steps in this "
+                "plan have applied; an ambiguous anchor cannot be applied"
+            )
+        applied[path] = pending.replace(old_bytes, step["args"]["new"].encode("utf-8"), 1)
+    return applied
+
+
 BRANCH_ARGS = {"push_branch": "name", "open_pr": "branch"}
 
 
@@ -599,76 +676,34 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
             f"{policy_plan['max_plan_changed_bytes']}"
         )
 
-    # Anchoring: old must byte-match the file at the reviewed SHA — the
-    # closest analogue to provenance a patch can have (ADR-0005). RAW bytes
-    # against old's UTF-8, no normalization on either side: an NFD `old` over
-    # an NFC file is a fragment the model never saw, and it fails closed.
-    # Exactly-once is part of the anchor: zero matches means the model wasn't
-    # looking at this file, two means the executor's replacement (and a
-    # suggestion's placement) is ambiguous, and an ambiguous write is refused
-    # rather than guessed at.
-    # Steps apply IN SEQUENCE, so a later step's anchor is checked against the
-    # content the earlier steps leave behind, not against the reviewed SHA. The
-    # exactly-once guarantee is per-step-at-apply-time or it is not a guarantee:
-    # two steps on one path can each be unique pre-plan while the first makes the
-    # second's anchor duplicated or absent.
-    #
-    # This loop covers suggest as well as patch, so the sequential check is not a
-    # patch-only property. Two suggestions on one path are refused outright by
-    # check_plan_cardinality (ADR-0009: a suggestion is independently applicable,
-    # so a pair can be half-applied), which means the pending content only ever
-    # differs from the original across DIFFERENT paths for suggestions — but the
-    # threading is deliberate rather than incidental: it is what makes the
-    # guarantee hold for whatever kind a future policy admits here.
-    #
-    # `original` is what placement and hunk spans are measured against — those are
-    # provenance claims about the reviewed SHA, which is the diff the model read.
-    applied: dict[str, bytes] = {}
+    # Anchoring, via the applier the DELIVERY also calls (ADR-0005). Shared rather
+    # than duplicated here: the stacked PR commits what this returns, and a second
+    # replace() model is what the chunk B review found eight instances of. Every
+    # anchor rejection — byte-match at the reviewed SHA, exactly-once there and
+    # again at apply time — is apply_patch_steps's contract, so it is documented
+    # once beside the code that enforces it.
+    apply_patch_steps(anchored, content_source)
 
+    # Placement is checked HERE and not in the applier, because it is a provenance
+    # claim about the reviewed SHA rather than a fact about applying anything: it
+    # asks whether the region GitHub's suggestion block will replace is the region
+    # `old` anchored. `original` is therefore read again from the content source —
+    # the reviewed-SHA bytes, which is the diff the model read — never the applied
+    # result.
     for index, step in anchored:
+        if step["kind"] != "suggest":
+            continue
         path = step["args"]["path"]
         where = f"plan.steps[{index}].args.old"
-        try:
-            original = content_source(path)
-        except OSError as exc:
-            raise Rejection(f"{where}: cannot read {path!r} at the reviewed SHA: {exc}")
-        pending = applied.get(path, original)
+        # Already proved readable and unambiguously anchored by the applier above,
+        # so this cannot fail where that succeeded.
+        original = content_source(path)
         old_bytes = step["args"]["old"].encode("utf-8")
-
-        # BOTH representations must admit the anchor, and for different reasons.
-        # At the reviewed SHA (ADR-0005): `old` is proof the model read the file,
-        # so an anchor matching only text an earlier step INVENTED is not anchored
-        # at all. Against the pending content: that is where the executor applies
-        # it, so exactly-once has to hold there too.
-        at_reviewed_sha = count_occurrences(original, old_bytes)
-        if at_reviewed_sha == 0:
-            raise Rejection(f"{where}: does not byte-match the content of {path!r} at the reviewed SHA")
-        if at_reviewed_sha > 1:
-            raise Rejection(
-                f"{where}: matches {path!r} {at_reviewed_sha} times at the reviewed SHA; "
-                "an ambiguous anchor cannot be applied"
-            )
-        occurrences = count_occurrences(pending, old_bytes)
-        if occurrences == 0:
-            raise Rejection(
-                f"{where}: no longer occurs in {path!r} once the earlier steps in this plan "
-                "have applied; an anchor an earlier step destroys cannot be applied"
-            )
-        if occurrences > 1:
-            raise Rejection(
-                f"{where}: matches {path!r} {occurrences} times once the earlier steps in this "
-                "plan have applied; an ambiguous anchor cannot be applied"
-            )
-        # new replaces old at its single occurrence, which is what the executor
-        # will do.
-        applied[path] = pending.replace(old_bytes, step["args"]["new"].encode("utf-8"), 1)
 
         # Placement (ADR-0009 addendum: "`old` IS the anchored line"). GitHub's
         # suggestion block replaces the commented line range, not the text in
         # `old`, so the two must name the same region. Here rather than in the
         # in-hunk phase above because only the file content decides it.
-        if step["kind"] != "suggest":
-            continue
         offset = original.index(old_bytes)
         if offset > 0 and not original[offset - 1:offset] == b"\n":
             raise Rejection(

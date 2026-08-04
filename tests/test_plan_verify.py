@@ -11,12 +11,15 @@ import copy
 import json
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
 
+import plan_verify  # noqa: E402
 from plan_verify import (  # noqa: E402
+    apply_patch_steps,
     check_plan_cardinality,
     check_plan_containment,
     check_plan_ordering,
@@ -940,6 +943,81 @@ class TestAnchoring:
 
         with pytest.raises(Rejection, match="not a file this PR touched"):
             contained({"steps": [anchored_patch(path="src/evil.py")]}, content_source=exploding)
+
+
+class TestTheApplierIsSharedWithTheDelivery:
+    """apply_patch_steps is the ONE model of what patching means.
+
+    The stacked-PR delivery uploads the bytes it commits, and those bytes have to
+    be the bytes the verifier bounded, scanned and proved unambiguous. A second
+    replace() model in the executor is the divergence that produced eight of the
+    fourteen findings in the chunk B review — the verifier proved a property about
+    `original.replace(old, new)` while the delivery did something subtly else.
+
+    So this asserts the seam itself: the verifier's anchoring is a CALL to the
+    helper the delivery calls, not a private loop beside it.
+    """
+
+    def test_the_applied_bytes_are_returned_for_the_delivery_to_commit(self):
+        applied = apply_patch_steps(
+            [(0, anchored_patch(old="def load(path):\n", new="def load(path=None):\n"))],
+            tree_source(),
+        )
+        assert applied == {
+            "src/app.py": b"import os\ndef load(path=None):\n    check(path)\n    return os.environ\n"
+        }
+
+    def test_only_touched_paths_appear(self):
+        # The delivery uploads one blob per returned path, so an untouched file
+        # must not be in the map: re-committing identical bytes is noise in the
+        # follow-up PR's diff, and a path nothing anchored was never bounded.
+        applied = apply_patch_steps([(0, anchored_patch())], tree_source())
+        assert list(applied) == ["src/app.py"]
+
+    def test_sequential_steps_on_one_path_compose(self):
+        # Two disjoint hunks in one file are exactly what the stacked PR is for
+        # (check_plan_cardinality bounds suggestions this way, deliberately not
+        # patches), so the map must carry BOTH edits, not the last one.
+        applied = apply_patch_steps(
+            [
+                (0, anchored_patch("s0", old="import os\n", new="import os, sys\n")),
+                (1, anchored_patch("s1", old="    return os.environ\n",
+                                   new="    return dict(os.environ)\n")),
+            ],
+            tree_source(),
+        )
+        assert applied["src/app.py"] == (
+            b"import os, sys\ndef load(path):\n    check(path)\n    return dict(os.environ)\n"
+        )
+
+    def test_the_verifier_reaches_anchoring_through_this_helper(self):
+        # The seam, asserted rather than assumed: if check_plan_containment keeps
+        # its own copy of the loop, patching the helper leaves it working and the
+        # two models are free to drift. Substituting a helper that refuses
+        # everything must therefore make containment reject.
+        sentinel = Rejection("the shared applier ran")
+
+        def refuse(anchored, content_source):
+            raise sentinel
+
+        with mock.patch.object(plan_verify, "apply_patch_steps", refuse):
+            with pytest.raises(Rejection, match="the shared applier ran"):
+                contained({"steps": [anchored_patch()]})
+
+    def test_a_rejection_still_names_the_step_index(self):
+        # The helper takes (index, step) pairs so its messages keep pointing at
+        # plan.steps[N]: moving the loop must not cost the audit trail its
+        # coordinates. Index 3 rather than 0 so a hardcoded 0 fails.
+        with pytest.raises(Rejection, match=r"plan\.steps\[3\]\.args\.old"):
+            apply_patch_steps([(3, anchored_patch(old="not in the file\n"))], tree_source())
+
+    def test_the_anchor_guarantee_travels_with_the_helper(self):
+        # Exactly-once is what makes the returned bytes safe to commit, so it has
+        # to be the helper's property and not a check the caller happens to run
+        # first. Called directly, with no containment phase in front of it.
+        tree = {"src/app.py": b"pass\npass\n"}
+        with pytest.raises(Rejection, match="ambiguous"):
+            apply_patch_steps([(0, anchored_patch(old="pass\n"))], tree_source(tree))
 
 
 class TestWriteClassTargets:
