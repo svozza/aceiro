@@ -107,10 +107,11 @@ class DiffPosition(NamedTuple):
 
 
 # Indentation the signature deliberately ignores, and nothing else. `str.split()`
-# would be wrong here: it folds every Unicode whitespace code point, including
-# U+2028/U+2029/U+000B/U+000C/U+0085 — the very separators split_diff_lines
-# refuses to treat as line ends — so two different lines could collapse to one
-# signature and hand one comment's identity to another anchor. Whitespace
+# and `str.strip()` are both wrong here: each folds every Unicode whitespace code
+# point, including U+2028/U+2029/U+000B/U+000C/U+0085 — the very separators
+# split_diff_lines refuses to treat as line ends — so two different lines could
+# collapse to one signature and hand one comment's identity to another anchor.
+# This class is the whole answer for the interior AND the ends; whitespace
 # normalization exists to survive reindentation, not to erase content.
 _INDENT_RE = re.compile(r"[ \t]+")
 
@@ -124,8 +125,18 @@ def normalize_signature_line(text: str) -> str:
     live comment thread and repost the same comment, which is the churn the
     anchor design exists to prevent. NFC also composes before the fold, so a
     decomposed sequence cannot hide a separator from it.
+
+    Stripped of SPACES ONLY, never with a bare `str.strip()`: that folds every
+    Unicode whitespace code point, so _INDENT_RE's deliberate narrowness ended at
+    the first and last character and a line differing from its neighbour only by a
+    trailing U+2028 collapsed onto it. A collision hands one comment's identity —
+    and so the gate on every DELETE and PATCH — to a different anchor.
+
+    A space is the whole class needed because the fold has already run: every
+    `[ \\t]` run is one space by the time this strips, so there is no tab left to
+    name.
     """
-    return _INDENT_RE.sub(" ", unicodedata.normalize("NFC", text)).strip()
+    return _INDENT_RE.sub(" ", unicodedata.normalize("NFC", text)).strip(" ")
 
 
 def head_content_lines(content_source, path: str) -> dict[int, str] | None:

@@ -327,6 +327,37 @@ class TestAnchorSignatures:
         exotic = self.SHIFT_BEFORE.replace("+target()", f"+a{separator}b")
         assert anchor_signatures(spaced)[("x.py", 2)] != anchor_signatures(exotic)[("x.py", 2)]
 
+    @pytest.mark.parametrize("separator", [" ", " ", " ", "", "\v", "\f", "　"])
+    def test_non_ascii_whitespace_at_a_line_END_is_not_folded_either(self, separator):
+        # The case above pins the INTERIOR, where _INDENT_RE decides. The ends are
+        # decided by str.strip(), which folds every Unicode whitespace code point —
+        # so the deliberate narrowness of _INDENT_RE stopped at the first and last
+        # character, and a line differing from another only by a trailing U+2028
+        # collapsed onto it. Same cost as any collision: one comment's identity,
+        # and so its DELETE/PATCH gate, handed to another anchor.
+        plain = self.SHIFT_BEFORE.replace("+target()", "+a b")
+        trailing = self.SHIFT_BEFORE.replace("+target()", f"+a b{separator}")
+        assert anchor_signatures(plain)[("x.py", 2)] != anchor_signatures(trailing)[("x.py", 2)]
+
+    @pytest.mark.parametrize("padding", ["  ", "\t", " \t ", "\t\t"])
+    def test_indentation_at_a_line_end_still_normalizes(self, padding):
+        # The property the strip is FOR, pinned alongside the narrowing: trailing
+        # whitespace of the SAME class _INDENT_RE folds is reindentation, which the
+        # signature must survive. Each spelling separately, so stripping only one
+        # of space and tab leaves a case failing.
+        bare = self.SHIFT_BEFORE.replace("+target()", "+target()")
+        padded = self.SHIFT_BEFORE.replace("+target()", f"+target(){padding}")
+        assert anchor_signatures(bare)[("x.py", 2)] == anchor_signatures(padded)[("x.py", 2)]
+
+    @pytest.mark.parametrize("padding", ["  ", "\t", " \t "])
+    def test_leading_indentation_normalizes_too(self, padding):
+        # The other end, for the same reason: _INDENT_RE folds an interior run to
+        # one space, so without the strip a leading run would leave a space the
+        # bare line does not have.
+        bare = self.SHIFT_BEFORE.replace("+target()", "+target()")
+        indented = self.SHIFT_BEFORE.replace("+target()", f"+{padding}target()")
+        assert anchor_signatures(bare)[("x.py", 2)] == anchor_signatures(indented)[("x.py", 2)]
+
     def test_indentation_by_space_or_tab_still_normalizes(self):
         # The property the normalization is FOR, pinned alongside the narrowing
         # above so the fix cannot be read as "stop normalizing".
