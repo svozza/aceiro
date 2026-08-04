@@ -251,6 +251,44 @@ class TestSuggestionFingerprint:
         for overrides in ({"note": "x" * 900}, {"new": "y" * 900}, {"new": ""}):
             assert suggest.suggestion_fingerprint(step(**overrides)["args"], SIGNATURES) == base
 
+    def test_the_replaced_EXTENT_is_part_of_the_identity(self):
+        # Same anchored line, different number of lines replaced: two different
+        # suggestions, because the region they overwrite differs. Keyed on the
+        # window alone they collided, and a collision takes the PATCH branch —
+        # which rewrites the body but CANNOT move the addressed range, so the
+        # comment kept a one-line anchor while carrying a three-line replacement.
+        one_line = step(line=2, old="def load(path):\n")
+        three_lines = step(line=2, old="def load(path):\n    check(path)\n    return os.environ\n")
+        assert (suggest.suggestion_fingerprint(one_line["args"], SIGNATURES)
+                != suggest.suggestion_fingerprint(three_lines["args"], SIGNATURES))
+
+    def test_two_anchors_sharing_a_window_are_still_distinguished(self):
+        # A window=1 signature is not unique for periodic content: three lines
+        # repeating give lines 3 and 8 the same window. `old` is what separates
+        # them — it must byte-match the tree exactly once, so a verified plan's
+        # `old` is a fact about the file rather than something the model chose.
+        head = tree_source({"d.py": (b"def a():\n    if flag:\n        risky()\n        pass\n"
+                                     b"    return A\ndef b():\n    if flag:\n        risky()\n"
+                                     b"        pass\n    return B\n")})
+        diff = ("diff --git a/d.py b/d.py\n--- a/d.py\n+++ b/d.py\n@@ -1,10 +1,10 @@\n"
+                " def a():\n     if flag:\n+        risky()\n+        pass\n+    return A\n"
+                " def b():\n     if flag:\n+        risky()\n+        pass\n+    return B\n")
+        signatures = anchor_signatures(diff, content_source=head)
+        assert signatures[("d.py", 3)] == signatures[("d.py", 8)], "the windows really do collide"
+        first = {"path": "d.py", "line": 3, "old": "        risky()\n        pass\n    return A\n"}
+        second = {"path": "d.py", "line": 8, "old": "        risky()\n        pass\n    return B\n"}
+        assert (suggest.suggestion_fingerprint(first, signatures)
+                != suggest.suggestion_fingerprint(second, signatures))
+
+    def test_reindenting_the_anchor_still_keeps_identity(self):
+        # `old` joins the key canonicalized the same way the window is, so the
+        # churn the design exists to prevent stays prevented: a reformat that
+        # changes only indentation is the same suggestion.
+        spaces = step(line=2, old="def load(path):\n")
+        assert (suggest.suggestion_fingerprint(spaces["args"], SIGNATURES)
+                == suggest.suggestion_fingerprint(
+                    step(line=2, old="  def load(path):  \n")["args"], SIGNATURES))
+
     def test_a_missing_signature_falls_back_to_the_anchored_bytes(self):
         # Provenance makes this unreachable for a verified plan (line must be in a
         # hunk), but identity must degrade rather than crash — and the fallback is

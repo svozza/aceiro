@@ -78,18 +78,32 @@ def suggestion_fingerprint(step_args: dict, signatures: dict[tuple[str, int], st
     The line NUMBER is not in the key either: GitHub re-anchors a live comment
     when the diff shifts, so the number moves while the code does not.
 
-    A signature the map does not carry falls back to the anchored bytes
-    themselves, canonicalized the same way. Provenance makes that unreachable for
-    a verified plan — `line` must be in a hunk — but identity must degrade rather
-    than crash, and `old` is the one thing always in hand.
+    `old` joins the window, because the window alone does not say WHAT the
+    suggestion replaces. Two consequences of leaving it out, both measured here:
+    a window=1 signature is not unique for periodic code (three repeating lines
+    give two anchors the same window), and the same anchored line with a different
+    replaced EXTENT read as the same suggestion — so a broadened fix took the PATCH
+    branch, which rewrites a body but cannot move the addressed range, leaving a
+    one-line anchor carrying a multi-line replacement.
+
+    `old` is model-supplied but not model-CHOSEN: check_plan_containment requires
+    it to byte-match the reviewed tree exactly once, so for a verified plan it is a
+    fact about the file. Canonicalized the same way the window is, so the churn
+    this design exists to prevent stays prevented — a reindentation is still the
+    same suggestion.
+
+    A signature the map does not carry falls back to the anchored bytes alone.
+    Provenance makes that unreachable for a verified plan — `line` must be in a
+    hunk — but identity must degrade rather than crash, and `old` is the one thing
+    always in hand.
     """
     path, line = step_args["path"], step_args["line"]
+    anchored = "\x00".join(
+        normalize_signature_line(part) for part in step_args["old"].split("\n")
+    )
     signature = (signatures or {}).get((path, line))
-    if signature is None:
-        signature = "\x00".join(
-            normalize_signature_line(part) for part in step_args["old"].split("\n")
-        )
-    return hashlib.sha256("\0".join([path, signature]).encode()).hexdigest()[:16]
+    parts = [path, anchored] if signature is None else [path, signature, anchored]
+    return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
 
 
 # GitHub reads a ```suggestion block's content literally, so the delimiter must be
