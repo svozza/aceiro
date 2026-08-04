@@ -169,3 +169,94 @@ class TestSuggestionBody:
         fence_at = next(i for i, line in enumerate(lines) if line.endswith("suggestion"))
         prose = "\n".join(lines[1:fence_at])
         check_markdown_field(prose, POLICY["markdown"], "suggestion_comment")
+
+
+# ------------------------------------------------------------- identity ---
+
+
+class TestSuggestionFingerprint:
+    """Identity is the anchored CODE, never the model's prose and never the line.
+
+    Measured on live pull requests in the extraction source: a prose-derived key
+    never matched twice because the model reworded on essentially every run, so
+    each run deleted and reposted every comment; and (path, line) is out because
+    GitHub re-anchors a live comment when the diff shifts.
+    """
+
+    def test_rewording_the_note_keeps_the_same_identity(self):
+        # THE point: the same fix explained differently is the same fix, and keeps
+        # its comment and any human thread under it.
+        first = step(note="make path optional")
+        reworded = step(note="`load` should default its argument")
+        assert (suggest.suggestion_fingerprint(first["args"], SIGNATURES)
+                == suggest.suggestion_fingerprint(reworded["args"], SIGNATURES))
+
+    def test_the_suggested_replacement_is_not_in_the_key(self):
+        # `new` is what the fix DOES, not what it is about. A revised replacement
+        # for the same defect keeps the thread.
+        assert (suggest.suggestion_fingerprint(step(new="def load(path=''):\n")["args"], SIGNATURES)
+                == suggest.suggestion_fingerprint(step(new="def load(path=None):\n")["args"], SIGNATURES))
+
+    def test_a_different_anchor_is_a_different_suggestion(self):
+        assert (suggest.suggestion_fingerprint(step(line=2, old="def load(path):\n")["args"], SIGNATURES)
+                != suggest.suggestion_fingerprint(
+                    step(line=3, old="    check(path)\n")["args"], SIGNATURES))
+
+    def test_it_differs_on_path(self):
+        other = step(path="src/util.py", line=1, old="def check(path):\n")
+        assert (suggest.suggestion_fingerprint(step()["args"], SIGNATURES)
+                != suggest.suggestion_fingerprint(other["args"], SIGNATURES))
+
+    def test_a_line_shift_with_unchanged_code_keeps_identity(self):
+        # GitHub re-anchors across a push, so the line number moves while the code
+        # does not. The window moves with the code, so the key must not move.
+        head = tree_source({"x.py": b"alpha\ntarget()\nomega\n"})
+        shifted_head = tree_source({"x.py": b"new\nnew2\nalpha\ntarget()\nomega\n"})
+        before = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,3 +1,3 @@\n+alpha\n+target()\n+omega\n"
+        after = ("diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+                 "@@ -1,5 +1,5 @@\n+new\n+new2\n+alpha\n+target()\n+omega\n")
+        args_before = {"path": "x.py", "line": 2, "old": "target()\n"}
+        args_after = {"path": "x.py", "line": 4, "old": "target()\n"}
+        assert (suggest.suggestion_fingerprint(
+                    args_before, anchor_signatures(before, content_source=head))
+                == suggest.suggestion_fingerprint(
+                    args_after, anchor_signatures(after, content_source=shifted_head)))
+
+    def test_changing_the_anchored_code_changes_identity(self):
+        # The code the suggestion is about was edited, so it is about something
+        # new: the old comment is retracted rather than silently reused.
+        head = tree_source({"x.py": b"alpha\npopitem(last=True)\nomega\n"})
+        edited = tree_source({"x.py": b"alpha\npopitem(last=False)\nomega\n"})
+        diff = ("diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n"
+                "@@ -1,3 +1,3 @@\n+alpha\n+popitem(last=True)\n+omega\n")
+        args = {"path": "x.py", "line": 2, "old": "popitem(last=True)\n"}
+        assert (suggest.suggestion_fingerprint(args, anchor_signatures(diff, content_source=head))
+                != suggest.suggestion_fingerprint(args, anchor_signatures(diff, content_source=edited)))
+
+    def test_nothing_the_model_authors_reaches_the_key(self):
+        # The model must not be able to steer which comment its suggestion
+        # matches, so the whole key comes from the anchor.
+        base = suggest.suggestion_fingerprint(step()["args"], SIGNATURES)
+        for overrides in ({"note": "x" * 900}, {"new": "y" * 900}, {"new": ""}):
+            assert suggest.suggestion_fingerprint(step(**overrides)["args"], SIGNATURES) == base
+
+    def test_a_missing_signature_falls_back_to_the_anchored_bytes(self):
+        # Provenance makes this unreachable for a verified plan (line must be in a
+        # hunk), but identity must degrade rather than crash — and the fallback is
+        # still the anchored CODE, not the line number.
+        absent = step(path="nowhere.py", line=999)
+        assert suggest.suggestion_fingerprint(absent["args"], SIGNATURES)
+
+    def test_the_fallback_still_distinguishes_two_anchors(self):
+        # A fallback keyed on the line number would collide here; keyed on the
+        # bytes it does not.
+        first = step(path="nowhere.py", line=999, old="alpha\n")
+        second = step(path="nowhere.py", line=999, old="omega\n")
+        assert (suggest.suggestion_fingerprint(first["args"], SIGNATURES)
+                != suggest.suggestion_fingerprint(second["args"], SIGNATURES))
+
+    def test_the_fallback_ignores_reindentation_like_the_signature_does(self):
+        first = step(path="nowhere.py", line=999, old="    alpha\n")
+        second = step(path="nowhere.py", line=999, old="\talpha\n")
+        assert (suggest.suggestion_fingerprint(first["args"], SIGNATURES)
+                == suggest.suggestion_fingerprint(second["args"], SIGNATURES))
