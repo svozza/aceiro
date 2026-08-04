@@ -565,12 +565,92 @@ class TestTheCommandLaneHoldsNoCredential:
                     "it is attacker-authored text and would be shell-expanded"
                 )
 
-    def test_the_execute_job_is_the_only_writer(self):
+    def test_only_the_two_delivery_jobs_write(self):
+        # Two deliveries need two credentials (ADR-0009: suggestions need only
+        # pull-requests: write, a stacked PR also needs contents: write), so the
+        # writers are the two delivery jobs and nothing else. Hand-maintained on
+        # purpose: a third writer appearing is a named decision, not a quiet one.
         text = (WORKFLOWS / self.FIX).read_text()
         writers = [job for job in job_names(text) if "pull-requests: write" in job_block(text, job)]
-        assert writers == ["execute"], (
-            f"exactly one job may hold the write token, got {writers}"
+        assert writers == ["execute", "stack"], (
+            f"only the delivery jobs may hold a write token, got {writers}"
         )
+
+    def test_contents_write_lives_in_exactly_one_job(self):
+        # The scope that can push a branch. ADR-0009 records with approval that
+        # suggestions made the write scope SHRINK for the common case, and this is
+        # what keeps that true: a suggestion run must never mint it.
+        text = (WORKFLOWS / self.FIX).read_text()
+        holders = [job for job in job_names(text) if "contents: write" in job_block(text, job)]
+        assert holders == ["stack"], (
+            f"contents: write must live only in the stacked-PR job, got {holders}"
+        )
+
+    def test_the_suggestion_job_cannot_push_a_branch(self):
+        # The shrink, asserted from the other side.
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "execute")
+        assert "contents: write" not in block
+
+    def test_the_router_holds_no_credential(self):
+        # It reads an UNVERIFIED plan and its output selects which credential gets
+        # minted, so it must hold none itself: no write scope, no model key, no
+        # token beyond the runtime's own artifact access.
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "route")
+        assert "permissions: {}" in block
+        for scope in ("contents: write", "pull-requests: write", "id-token: write"):
+            assert scope not in block, f"the router holds {scope!r}; it decides which job writes"
+        assert "configure-aws-credentials" not in block
+        assert "ANTHROPIC_API_KEY" not in block
+
+    def test_each_delivery_job_declares_the_mode_it_may_deliver(self):
+        # --allow is what bounds the router's unverified input to "which job
+        # starts": a plan misrepresenting its mode reaches a job that refuses it
+        # after verification. Without it on BOTH jobs, the concession is unbounded
+        # in one direction.
+        text = (WORKFLOWS / self.FIX).read_text()
+        assert "--allow suggestions" in job_block(text, "execute"), (
+            "the suggestion job must refuse to deliver a stacked PR"
+        )
+        assert "--allow stacked_pr" in job_block(text, "stack"), (
+            "the stacked-PR job must refuse to deliver suggestions even though its "
+            "token could"
+        )
+
+    def test_the_delivery_jobs_are_mutually_exclusive(self):
+        # One command, one effect. Both jobs gate on the router's mode, so a plan
+        # cannot be delivered twice -- and the two deliveries are alternatives, not
+        # a fallback chain.
+        text = (WORKFLOWS / self.FIX).read_text()
+        assert "mode == 'suggestions'" in job_condition(text, "execute")
+        assert "mode == 'stacked_pr'" in job_condition(text, "stack")
+
+    def test_a_router_that_fails_delivers_nothing(self):
+        # Both jobs carry always(), so they are REACHED when the router fails; what
+        # stops them is that each requires an EQUALITY against a specific mode, and
+        # a failed router emits no output at all. Asserted because the fail-closed
+        # direction here is a property of how the condition is written: a
+        # `!= 'stacked_pr'` spelling on the suggestion job would read as equivalent
+        # and would deliver on an empty mode.
+        text = (WORKFLOWS / self.FIX).read_text()
+        for job, mode in (("execute", "suggestions"), ("stack", "stacked_pr")):
+            condition = job_condition(text, job)
+            assert f"== '{mode}'" in condition, (
+                f"{job} must require the mode to EQUAL {mode!r}; a negated condition would "
+                "run when the router produced no mode at all"
+            )
+            assert "!=" not in condition.split("mode")[-1], (
+                f"{job} gates on a negation, so an absent mode would deliver"
+            )
+
+    def test_the_stacked_job_runs_its_own_full_gate(self):
+        # It holds the broadest credential in the lane, so it must not trust
+        # another job's verification: the posture execute_plan.py is built on. A
+        # thin writer here would put contents: write behind the weakest link.
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "stack")
+        assert "npm run build" in block, "the prover must be built in this job"
+        assert "prove-cli.js" in block, "the plan must be re-proved here"
+        assert "Quarantine-fetch PR head" in block, "the anchor tree is this job's own fetch"
+        assert "execute_plan.py" in block, "verification happens in the job that writes"
 
     def test_the_plan_job_holds_no_write_scope(self):
         # The generator reads contributor-authored content with a model credential

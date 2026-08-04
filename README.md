@@ -51,10 +51,13 @@ And the remediation lane, commanded per finding (ADR-0007):
 | `src/smtithy/fix_command.py` | the `/fix N` parse. The command must be the comment's whole content, in one exact spelling, and the ordinal is 1-based for humans — this is the only place that meets the 0-based index. |
 | `src/smtithy/prepare_fix_context.py` | every precondition the command channel adds, refused before a credential is in scope: the commander's trust (the COMMENT author), the issue being a pull request, drift, and a review this harness actually posted for the commanded head. |
 | `src/smtithy/plan_loop.py` | the plan generator, and `read_commanded_finding` — the one reader that DERIVES the commanded finding by verifying the accepted artifact and indexing it, so its membership in a real review is structural rather than claimed. |
-| `src/smtithy/execute_plan.py` | the trusted plan executor: re-verifies, re-proves via the TypeScript prover, decides the delivery from checkable structure, and delivers. |
+| `src/smtithy/execute_plan.py` | the trusted plan executor: re-verifies, re-proves via the TypeScript prover, decides the delivery from checkable structure, and delivers. `--allow` names the one mode the invoking job may perform. |
+| `src/smtithy/route_delivery.py` | which job delivers, decided in a job holding `permissions: {}`. It reads step kinds and nothing else, so a suggestion run never mints `contents: write` — and because the plan it reads is unverified, every malformed shape refuses rather than emitting a mode. |
+| `src/smtithy/suggest.py` | the suggestion delivery: the default, and the only one that works on fork pull requests. |
+| `src/smtithy/stack.py` | the stacked follow-up pull request: the fallback for an atomic multi-file fix, committed through unreferenced objects so a partial failure leaves nothing behind, and carrying ADR-0007's `(pr, head_sha, finding)` deduplication key. |
 
-Still to arrive: the stacked follow-up pull request (ADR-0009's other half) and
-the decline channel.
+Still to arrive: the decline channel — the honest exit for a commanded fix the
+plan vocabulary cannot express.
 
 ## Running the evals
 

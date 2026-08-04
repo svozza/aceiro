@@ -374,10 +374,72 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  execute:
-    # plan already needs approve; its success implies the gate passed.
+  # Holds NO credential: permissions: {}, no token, no model key, no node. It reads
+  # the plan's step kinds and nothing else, and its answer selects which delivery
+  # job runs -- which is how ADR-0009's SHRUNK write scope survives having two
+  # deliveries needing two different credentials. A suggestion run never mints
+  # contents: write.
+  #
+  # WHAT THIS TRADES: the plan it reads is unverified, so unverified model output
+  # decides which credential gets minted. Bounded to exactly that, two ways. Each
+  # delivery job is the SOLE full gate for its own path, so the token holder is
+  # still the process that verified what it writes. And each passes --allow, naming
+  # the one mode it may deliver, so a plan misrepresenting its mode reaches a job
+  # that refuses it after verification: the credential is minted and then not used.
+  # A self-inflicted denial of service with no benefit.
+  route:
     needs: [command, plan]
     if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      mode: ${{ steps.route.outputs.mode }}
+    steps:
+      - name: Refuse to run unpinned
+        env:
+          PINNED_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$PINNED_SHA" ]; then
+            echo "::error::job.workflow_sha is empty; cannot pin the harness checkout" >&2
+            exit 1
+          fi
+      - name: Checkout harness (pinned to this workflow's own SHA)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install harness dependencies (hash-pinned)
+        run: pip install --require-hashes -r requirements.txt
+
+      # Same-run artifact, so this needs no `actions: read` — the runtime token
+      # covers it, which is what keeps this job's permissions empty.
+      - name: Download plan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ai-fix-plan-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bundle
+
+      - name: Route the delivery
+        id: route
+        run: |
+          python src/smtithy/route_delivery.py \
+            --artifact-dir "$RUNNER_TEMP/bundle"
+
+  execute:
+    # plan already needs approve; its success implies the gate passed.
+    needs: [command, plan, route]
+    if: always() && needs.route.outputs.mode == 'suggestions'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -464,4 +526,113 @@ jobs:
             --artifact-dir "$RUNNER_TEMP/bundle" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
             --policy src/smtithy/policy.json \
-            --prover dist/plan/prove-cli.js
+            --prover dist/plan/prove-cli.js \
+            --allow suggestions
+
+  # The ONLY job holding contents: write, and it runs only when the router said
+  # this plan's fix spans files (ADR-0009: a coordinated fix must never ship as
+  # independently applicable pieces, and a pull request's merge is atomic where
+  # per-file suggestions are not).
+  #
+  # Deliberately a FULL COPY of execute's gate rather than a thin writer trusting
+  # an upstream decision. The whole posture of execute_plan.py is that the process
+  # holding the write token re-establishes everything itself: it re-fetches the
+  # provenance inputs, re-derives the commanded finding, re-verifies in-process and
+  # re-proves via prove-cli. A `stack` job that skipped any of that because
+  # `execute` or `route` had "already checked" would put the broadest credential in
+  # the lane behind the weakest link in it.
+  #
+  # --allow stacked_pr is what makes the router's unverified input safe: this job
+  # refuses to perform any other delivery even though its token could.
+  stack:
+    needs: [command, plan, route]
+    if: always() && needs.route.outputs.mode == 'stacked_pr'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # The one place in either lane that holds it. A branch cannot be created
+      # without it, and no other delivery needs it -- which is the shrink ADR-0009
+      # records, kept by putting the scope here instead of on every fix run.
+      contents: write
+      pull-requests: write
+    env:
+      HEAD_SHA: ${{ needs.command.outputs.head_sha }}
+      BASE_SHA: ${{ needs.command.outputs.base_sha }}
+      BASE_REF: ${{ needs.command.outputs.base_ref }}
+      HEAD_REF: ${{ needs.command.outputs.head_ref }}
+    steps:
+      - name: Refuse to run unpinned
+        env:
+          PINNED_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$PINNED_SHA" ]; then
+            echo "::error::job.workflow_sha is empty; cannot pin the harness checkout" >&2
+            exit 1
+          fi
+      - name: Checkout harness (pinned to this workflow's own SHA)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install verifier dependencies (hash-pinned)
+        run: pip install --require-hashes -r requirements.txt
+
+      - name: Set up Node (the prover is TypeScript — ADR-0003)
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install and build the prover (hash-pinned lockfile)
+        run: |
+          npm ci
+          npm run build
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ai-fix-plan-${{ github.event.issue.number }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/bundle
+
+      - name: Quarantine-fetch PR head (the anchor tree, bytes only)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # The anchor tree is also the tree whose bytes get committed, so it is
+          # fetched here rather than carried from any other job: the source of the
+          # content this job WRITES is its own trust decision.
+          QUARANTINE="$RUNNER_TEMP/pr-head-quarantine"
+          git init --quiet "$QUARANTINE"
+          AUTH_HEADER="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -C "$QUARANTINE" -c http.extraheader="$AUTH_HEADER" fetch --quiet --depth 1 \
+            "https://github.com/${GITHUB_REPOSITORY}" "$HEAD_SHA"
+          git -C "$QUARANTINE" checkout --quiet FETCH_HEAD
+          rm -rf "$QUARANTINE/.git"
+          find "$QUARANTINE" -type l -print -delete
+          if [ "$(find "$QUARANTINE" -type l | wc -l | tr -d ' ')" != "0" ]; then
+            echo "::error::symlinks remain in the quarantine after stripping"
+            exit 1
+          fi
+
+      - name: Verify, re-prove and deliver the stacked PR (fail-closed)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python src/smtithy/execute_plan.py \
+            --artifact-dir "$RUNNER_TEMP/bundle" \
+            --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
+            --policy src/smtithy/policy.json \
+            --prover dist/plan/prove-cli.js \
+            --allow stacked_pr
