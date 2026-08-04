@@ -257,6 +257,44 @@ def retract(repo: str, comment: dict, replied_ids: set[int], note: str) -> None:
     print(f"struck through suggestion comment {comment['id']} (has a human reply)")
 
 
+def replaced_line_count(old: str) -> int:
+    """Lines `old` occupies in the file — the same count plan_verify derives.
+
+    A trailing newline ENDS the last line rather than starting an empty one, and a
+    last line with no terminator is still a line (plan_verify's at_line_end rule
+    admits end-of-file, so such an anchor verifies and must be addressable).
+    Twin of plan_verify._line_count for a reason: the range this addresses has to
+    be the range that was anchored, or the two disagree about what is replaced.
+    """
+    return old.count("\n") + (0 if old.endswith("\n") else 1) if old else 0
+
+
+def comment_anchor(step: dict) -> dict:
+    """Where one suggestion's comment attaches: the lines `old` replaces.
+
+    GitHub replaces the ADDRESSED RANGE with the suggestion block's lines, while
+    the verifier proves a property about substituting `old` with `new`. Those are
+    the same effect only when the addressed range is exactly the range `old`
+    covers — address one line of a three-line anchor and the applier commits the
+    replacement plus the two lines it was meant to absorb, which is bytes no check
+    ever saw. plan_verify admits a multi-line `old` and provenance-checks every
+    line it spans, so the extent is verified; this is where it reaches the write.
+
+    `start_line` is OMITTED for a single-line anchor rather than set equal to
+    `line`: GitHub requires start_line < line and 422s on the degenerate range.
+
+    RIGHT on both ends: the plan carries no side, so the model cannot ask for LEFT
+    (which 422s on an added line), and a suggestion replaces new-side content by
+    definition.
+    """
+    args = step["args"]
+    end = args["line"] + replaced_line_count(args["old"]) - 1
+    anchor = {"path": args["path"], "line": end, "side": "RIGHT"}
+    if end > args["line"]:
+        anchor |= {"start_line": args["line"], "start_side": "RIGHT"}
+    return anchor
+
+
 def render_suggestion(step: dict, fingerprint: str, metadata: dict) -> str:
     """One verified suggest step as a review-comment body.
 
@@ -435,18 +473,8 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             repo,
             pr_number,
             REVIEW_BODY,
-            [
-                {
-                    "path": step["args"]["path"],
-                    "line": step["args"]["line"],
-                    # RIGHT always: the plan carries no side, so the model cannot
-                    # ask for LEFT (which 422s on an added line), and a suggestion
-                    # replaces the new-side content by definition.
-                    "side": "RIGHT",
-                    "body": render_suggestion(step, fingerprint, metadata),
-                }
-                for fingerprint, step in fresh
-            ],
+            [comment_anchor(step) | {"body": render_suggestion(step, fingerprint, metadata)}
+             for fingerprint, step in fresh],
             head_sha=head_sha,
         )
         print(f"posted review with {len(fresh)} suggestion comment(s)")

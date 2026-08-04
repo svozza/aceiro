@@ -914,6 +914,61 @@ class TestPostedPayload:
         assert posted["line"] == 3
         assert posted["side"] == "RIGHT"
 
+    def test_a_single_line_suggestion_addresses_one_line(self, api):
+        # No start_line: a one-line anchor is the degenerate range, and sending
+        # start_line == line is a 422 ("must be less than line").
+        calls, _, _ = api
+        suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                      bot_login=BOT, head_sha="reviewed-sha")
+        posted = calls["reviews"][0]["comments"][0]
+        assert posted["line"] == 2
+        assert "start_line" not in posted
+
+    def test_a_multi_line_old_addresses_every_line_it_replaces(self, api):
+        # THE property. plan_verify admits a multi-line `old` and provenance-checks
+        # every line it spans (its own tests pin that), but GitHub replaces the
+        # ADDRESSED range with the block's lines. Addressing only `line` replaces
+        # one line and leaves the rest of the anchor standing — the contributor's
+        # one click then commits bytes no checker proved.
+        calls, _, _ = api
+        old = "def load(path):\n    check(path)\n    return os.environ\n"
+        suggest.reconcile_suggestions(
+            "o/r", 1, [step(old=old, new="def load(path=None):\n")],
+            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+        posted = calls["reviews"][0]["comments"][0]
+        assert posted["start_line"] == 2, "the range must begin where `old` is anchored"
+        assert posted["line"] == 4, "and end on the last line `old` replaces"
+        assert posted["start_side"] == posted["side"] == "RIGHT"
+
+    def test_the_addressed_range_is_the_replaced_range_for_every_extent(self, api):
+        # The arithmetic, over each extent the policy admits, because an off-by-one
+        # here leaves one line of the contributor's file overwritten unanchored or
+        # one line of the anchor unreplaced.
+        calls, _, _ = api
+        for span, old in enumerate(["def load(path):\n",
+                                    "def load(path):\n    check(path)\n",
+                                    "def load(path):\n    check(path)\n    return os.environ\n"]):
+            calls["reviews"].clear()
+            suggest.reconcile_suggestions("o/r", 1, [step(old=old, new="x = 1\n")],
+                                          SIGNATURES, METADATA, bot_login=BOT,
+                                          head_sha="reviewed-sha")
+            posted = calls["reviews"][0]["comments"][0]
+            assert posted["line"] == 2 + span
+            assert posted.get("start_line", 2) == 2
+
+    def test_an_old_with_no_final_newline_still_addresses_its_own_lines(self, api):
+        # A last line with no terminator is a line: plan_verify verifies that
+        # anchor (its at_line_end rule admits end-of-file), so the range must
+        # count it rather than dropping it.
+        calls, _, _ = api
+        suggest.reconcile_suggestions(
+            "o/r", 1, [step(line=3, old="    check(path)\n    return os.environ",
+                            new="    return {}\n")],
+            SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha")
+        posted = calls["reviews"][0]["comments"][0]
+        assert posted["start_line"] == 3
+        assert posted["line"] == 4
+
     def test_one_atomic_review_carries_every_comment(self, api):
         calls, _, _ = api
         suggest.reconcile_suggestions(
