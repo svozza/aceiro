@@ -650,3 +650,79 @@ class TestUnassemblableContextIsLogged:
         out = tmp_path / "out"
         assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
         assert any("cannot assemble the plan context" in r for r in self.reasons(out))
+
+
+class TestThePromptAgreesWithTheDeliveryDecision:
+    """What the prompt tells the model to produce must be deliverable.
+
+    The prompt and the executor are two statements of one rule -- "which step kind
+    expresses this fix?" -- and nothing checked that they said the same thing. They
+    did not. The prompt instructed:
+
+        express it as one `suggest` step per file when the fix is a single hunk in
+        each file it touches
+
+    For a fix touching TWO files that is precisely the shape decide_delivery
+    refuses, by ADR-0009's atomicity rule: suggestions are independently
+    applicable, so per-file suggestions of one coordinated fix can be half-applied.
+    So a model following the prompt exactly produced a plan that passed the schema,
+    cardinality, ordering, containment, frame and taint gates and was then refused
+    at the delivery decision -- a wasted session, and a refusal the session could
+    not have avoided because the instructions asked for it.
+
+    The ADR is right and the prompt was wrong, which is the direction this test
+    enforces: it drives the real decision function rather than pattern-matching the
+    prose, so the prompt cannot drift back.
+    """
+
+    def suggest_steps(self, *paths):
+        return [
+            {"id": f"s{index}", "kind": "suggest",
+             "args": {"path": path, "line": 2, "old": "a", "new": "b", "note": "n"}}
+            for index, path in enumerate(paths)
+        ]
+
+    def test_a_single_file_suggestion_plan_is_deliverable(self):
+        # The calibration case: one file, one hunk -> suggestions. Must stay legal,
+        # or the fix below would "pass" by making everything a stacked PR.
+        from execute_plan import decide_delivery
+
+        assert decide_delivery(self.suggest_steps("src/a.py")).mode == "suggestions"
+
+    def test_the_prompt_never_tells_the_model_to_span_files_with_suggestions(self):
+        # The contradiction, asserted against the DECISION rather than the prose: a
+        # two-file suggestion plan is refused, so the prompt must not ask for one.
+        from execute_plan import Refusal, decide_delivery
+
+        with pytest.raises(Refusal, match="span 2 files"):
+            decide_delivery(self.suggest_steps("src/a.py", "src/b.py"))
+
+        prompt = plan_loop.PLAN_PROMPT_PATH.read_text()
+        assert "one `suggest` step per file" not in prompt, (
+            "the prompt asks for one suggest step PER FILE, which for a multi-file fix "
+            "is the exact shape decide_delivery refuses (ADR-0009's atomicity rule). A "
+            "model following the prompt cannot have its plan delivered."
+        )
+
+    def test_the_prompt_routes_multi_file_fixes_to_patch_steps(self):
+        # And it must say the right thing, not merely omit the wrong one: a prompt
+        # silent on multi-file fixes leaves the model guessing at the one boundary
+        # that decides which credential the delivery needs.
+        prompt = plan_loop.PLAN_PROMPT_PATH.read_text()
+        assert "more than one file" in prompt, (
+            "the prompt must tell the model that a fix touching more than one file is "
+            "patch steps; suggestions cannot carry it"
+        )
+
+    def test_the_boundary_the_prompt_states_matches_the_one_enforced(self):
+        # Both sides of the rule, driven through the real function, so this test
+        # fails if EITHER the prompt's boundary or the executor's moves.
+        from execute_plan import Refusal, decide_delivery
+
+        # one file, any number of hunks -> the gate refuses two suggestions on one
+        # file at cardinality, so the deliverable suggestion plan is exactly one step
+        assert decide_delivery(self.suggest_steps("src/a.py")).mode == "suggestions"
+        # more than one file -> never suggestions
+        for paths in (("a.py", "b.py"), ("a.py", "b.py", "c.py")):
+            with pytest.raises(Refusal):
+                decide_delivery(self.suggest_steps(*paths))

@@ -27,8 +27,9 @@ The two step kinds that express a fix:
 
 - `suggest` — one contiguous replacement in one file, anchored to a diff
   line. This is the normal delivery: the contributor applies it with one
-  click. **At most one `suggest` step per file**, and the gate refuses a
-  second one.
+  click. **A suggestion plan is exactly ONE `suggest` step.** The gate refuses
+  a second one on the same file, and refuses a plan whose suggestions span
+  files; either way there is nothing to deliver.
 - `patch` — the same shape, for fixes that need a follow-up pull request
   (then the plan also carries `push_branch` and `open_pr` steps, in that
   order).
@@ -36,12 +37,20 @@ The two step kinds that express a fix:
 **You do not choose how the fix is delivered.** Whether the plan becomes
 suggestion comments or a follow-up pull request is the executor's decision,
 made from the structure of your verified plan. Your only job is to express
-the fix accurately; express it as one `suggest` step per file when the fix is
-a single hunk in each file it touches, and as `patch` steps plus `push_branch`
-and `open_pr` whenever it needs more than one hunk in the same file — whether
-or not those hunks depend on each other. A suggestion is applied on its own,
-so two on one file can be applied half-way; patch steps become one commit,
-which is why more than one hunk in a file belongs to them.
+the fix accurately, and the boundary is simple:
+
+- **one file, one hunk** → a single `suggest` step. Nothing else.
+- **anything larger** → `patch` steps plus `push_branch` and `open_pr`. That
+  means more than one hunk in a file, AND any fix touching more than one file,
+  whether or not the hunks depend on each other.
+
+The reason is that a suggestion is applied on its own, by one click: two
+suggestions can be applied half-way, in either order, leaving the branch in a
+state nobody intended. Patch steps become ONE commit whose merge is atomic. So
+a fix that is only correct as a whole must never be expressed as suggestions —
+and the gate enforces this, refusing a suggestion plan that spans files rather
+than delivering half of it. A plan asking for that cannot be delivered at all,
+so expressing a multi-file fix as suggestions wastes the whole session.
 
 ## How to work
 
