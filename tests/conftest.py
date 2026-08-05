@@ -138,6 +138,18 @@ def no_network(monkeypatch, request):
     backoff cases) installs its own urlopen fake, which happens after this
     fixture and so replaces the refusal — no opt-out is needed, and none exists:
     every escape is a visible monkeypatch in the test that needs it.
+
+    BOTH SEAMS are refused, because guarding one of them was itself the hole. The
+    client now sends every request through its own opener (github_api._OPENER, which
+    carries the handler that strips Authorization on a cross-origin redirect), and
+    `urllib.request.urlopen` does not call it. So a fixture guarding only urlopen
+    would have let a real request through the opener — the same "stub that misses
+    one call site" this docstring already records, one layer down.
+
+    test_github_api's redirect cases deliberately bind a loopback server and
+    replace _OPENER themselves, which happens after this fixture; they reach nothing
+    external, and they exist because mocking the transport is exactly what hid a
+    production 401.
     """
     import urllib.request
 
@@ -148,3 +160,11 @@ def no_network(monkeypatch, request):
         )
 
     monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+    # The opener the client actually uses. Imported lazily: conftest is collected
+    # for suites that never touch the API client.
+    try:
+        import github_api
+    except ImportError:
+        return
+    monkeypatch.setattr(github_api._OPENER, "open", refuse)
