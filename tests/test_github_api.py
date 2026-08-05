@@ -156,6 +156,142 @@ class TestApiRequest:
         assert delays == [5]  # honoured Retry-After, not the backoff default
 
 
+class TestTheTokenIsNotFollowedAcrossHosts:
+    """A redirect off api.github.com must NOT carry the Authorization header.
+
+    Measured in production, not theorised: `/actions/artifacts/{id}/zip` answers
+    302 to Azure Blob Storage, urllib follows it by default and re-sends every
+    header including `Authorization: Bearer`, and Azure rejects the request it did
+    not expect to be authenticated —
+
+        urllib.error.HTTPError: HTTP Error 401: Server failed to authenticate the
+        request. Please refer to the information in the www-authenticate header.
+
+    So the FIRST real `/fix` command failed in the credential-free `command` job,
+    at the one call in the lane whose endpoint redirects. Every other call this
+    client makes stays on api.github.com, which is why nothing caught it: the
+    artifact download is the only cross-host hop, and its caller
+    (`fetch_reviewed_artifact`) was stubbed in every test that reached it.
+
+    Sending a bearer token to a host that did not issue it is also a credential
+    leak in its own right — the redirect target is chosen by the response, not by
+    this code.
+    """
+
+    def redirecting_opener(self, monkeypatch, seen):
+        """Drive the real redirect handler: 302 to another host, then 200."""
+        class Handler(urllib.request.HTTPRedirectHandler):
+            pass
+
+        def fake_urlopen(request, timeout=None):
+            seen.append({
+                "url": request.full_url,
+                "auth": request.get_header("Authorization"),
+            })
+            if len(seen) == 1:
+                # What GitHub actually answers for an artifact zip.
+                raise urllib.error.HTTPError(
+                    url=request.full_url, code=302, msg="Found",
+                    hdrs={"Location": "https://productionresultssa.blob.core.windows.net/x?sig=abc"},
+                    fp=None,
+                )
+            return FakeResponse(b"PK\x03\x04zipbytes")
+
+        monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+
+    def test_the_artifact_zip_redirect_drops_the_authorization_header(self, monkeypatch):
+        seen = []
+        self.redirecting_opener(monkeypatch, seen)
+        github_api.api_request("/repos/o/r/actions/artifacts/42/zip")
+
+        assert len(seen) == 2, "the redirect was not followed"
+        assert seen[0]["auth"], "the first request must authenticate to api.github.com"
+        assert seen[1]["auth"] is None, (
+            "the Authorization header was re-sent to the redirect target; Azure answers "
+            "401 and the token has leaked to a host that did not issue it"
+        )
+
+    def test_the_redirect_target_is_still_fetched(self, monkeypatch):
+        # Dropping the header must not mean dropping the download.
+        seen = []
+        self.redirecting_opener(monkeypatch, seen)
+        assert github_api.api_request("/repos/o/r/actions/artifacts/42/zip") == b"PK\x03\x04zipbytes"
+
+    def test_a_lookalike_host_does_not_get_the_token(self, monkeypatch):
+        # `api.github.com.evil.test` CONTAINS the API host, so a substring or
+        # prefix test would forward the bearer token to it. Compared on
+        # scheme+netloc for exactly this reason.
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append({"url": request.full_url, "auth": request.get_header("Authorization")})
+            if len(seen) == 1:
+                raise urllib.error.HTTPError(
+                    url=request.full_url, code=302, msg="Found",
+                    hdrs={"Location": "https://api.github.com.evil.test/collect"}, fp=None,
+                )
+            return FakeResponse(b"{}")
+
+        monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+        github_api.api_request("/x")
+        assert seen[1]["auth"] is None, "the token was forwarded to a lookalike host"
+
+    def test_an_endless_redirect_chain_raises_rather_than_looping(self, monkeypatch, no_sleep):
+        # Bounded, or a server answering 302-to-itself forever hangs the job.
+        hops = []
+
+        def fake_urlopen(request, timeout=None):
+            hops.append(request.full_url)
+            raise urllib.error.HTTPError(
+                url=request.full_url, code=302, msg="Found",
+                hdrs={"Location": "https://elsewhere.test/again"}, fp=None,
+            )
+
+        monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(urllib.error.HTTPError):
+            github_api.api_request("/x")
+        assert len(hops) <= github_api.MAX_REDIRECTS + 1
+
+    def test_a_redirected_post_is_not_silently_repeated(self, monkeypatch, no_sleep):
+        # POST is excluded from RETRYABLE_METHODS because a failed one has an
+        # uncertain outcome. A redirect must not become a back door to re-sending
+        # it: the follow-up is a GET at the new location, never a second POST of
+        # the same body, or `create_ref` could produce two branches.
+        methods = []
+
+        def fake_urlopen(request, timeout=None):
+            methods.append(request.get_method())
+            if len(methods) == 1:
+                raise urllib.error.HTTPError(
+                    url=request.full_url, code=302, msg="Found",
+                    hdrs={"Location": "https://elsewhere.test/x"}, fp=None,
+                )
+            return FakeResponse(b"{}")
+
+        monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+        github_api.api_request("/x", method="POST", payload={"a": 1})
+        assert methods == ["POST", "GET"], f"a POST was repeated across a redirect: {methods}"
+
+    def test_a_same_host_redirect_keeps_the_header(self, monkeypatch):
+        # Only CROSS-HOST hops drop it: api.github.com redirecting within itself is
+        # still GitHub, and stripping the token there would break an authenticated
+        # endpoint that merely moved.
+        seen = []
+
+        def fake_urlopen(request, timeout=None):
+            seen.append({"url": request.full_url, "auth": request.get_header("Authorization")})
+            if len(seen) == 1:
+                raise urllib.error.HTTPError(
+                    url=request.full_url, code=302, msg="Found",
+                    hdrs={"Location": f"{github_api.API_ROOT}/elsewhere"}, fp=None,
+                )
+            return FakeResponse(b"{}")
+
+        monkeypatch.setattr(github_api.urllib.request, "urlopen", fake_urlopen)
+        github_api.api_request("/x")
+        assert seen[1]["auth"], "a redirect within api.github.com must stay authenticated"
+
+
 # ------------------------------------------------------------------ reviews ---
 
 

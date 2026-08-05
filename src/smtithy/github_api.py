@@ -26,6 +26,10 @@ RETRYABLE_METHODS = {"GET", "PATCH"}
 MAX_ATTEMPTS = 4
 
 
+REDIRECT_STATUS = {301, 302, 303, 307, 308}
+MAX_REDIRECTS = 5
+
+
 def api_request(
     path: str,
     method: str = "GET",
@@ -45,12 +49,33 @@ def api_request(
         },
     )
     attempts = MAX_ATTEMPTS if method in RETRYABLE_METHODS else 1
-    for attempt in range(1, attempts + 1):
+    redirects = 0
+    attempt = 0
+    while attempt < attempts:
+        attempt += 1
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 return response.read()
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
             status = getattr(exc, "code", None)
+            # A redirect is FOLLOWED HERE rather than by urllib, so the decision to
+            # carry the Authorization header is this code's own. urllib's default
+            # handler re-sends every header to the new host, and
+            # /actions/artifacts/{id}/zip answers 302 to Azure Blob Storage: the
+            # bearer token then reaches a host that never issued it, which answers
+            # 401 (measured — it broke the first real /fix command) and has been
+            # handed a credential it should never see.
+            if status in REDIRECT_STATUS:
+                location = (getattr(exc, "headers", None) or {}).get("Location")
+                if not location or redirects >= MAX_REDIRECTS:
+                    raise
+                request = _redirected(request, location)
+                redirects += 1
+                # A hop is not a failed attempt: the retry budget exists for
+                # transient faults, and spending it on redirects would let a single
+                # redirecting endpoint exhaust it before the real response arrives.
+                attempts += 1
+                continue
             retryable = status in RETRYABLE_STATUS or status is None
             if not retryable or attempt == attempts:
                 raise
@@ -59,6 +84,32 @@ def api_request(
             print(f"transient GitHub API failure ({exc}); retrying in {delay}s", file=sys.stderr)
             time.sleep(min(delay, 60))
     raise AssertionError("unreachable")
+
+
+def _redirected(request: urllib.request.Request, location: str) -> urllib.request.Request:
+    """The follow-up request for `location`, authenticated only if it stays on the
+    API host.
+
+    Same-host hops keep the token: api.github.com redirecting within itself is
+    still GitHub, and an authenticated endpoint that merely moved must not start
+    failing. Anything else is a different origin — a signed storage URL that
+    carries its own credential in the query string — so the header is dropped
+    rather than forwarded.
+
+    Compared on scheme+host, not by substring: `api.github.com.evil.test` contains
+    the API host as a prefix, and a prefix test would forward the token to it.
+    """
+    target = urllib.parse.urljoin(request.full_url, location)
+    api = urllib.parse.urlsplit(API_ROOT)
+    hop = urllib.parse.urlsplit(target)
+    same_origin = (hop.scheme, hop.netloc) == (api.scheme, api.netloc)
+
+    headers = {key: value for key, value in request.headers.items()
+               if same_origin or key.lower() != "authorization"}
+    # GET on the redirect target: the body has been accepted by the first host, and
+    # 303 mandates GET regardless. This client only ever follows a redirect for the
+    # artifact download, which is a GET already.
+    return urllib.request.Request(target, method="GET", headers=headers)
 
 
 def api_json(path: str, method: str = "GET", payload: dict | None = None) -> dict | list:
