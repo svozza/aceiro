@@ -92,6 +92,34 @@ FIX_KINDS = ("suggest", "patch")
 PROVER_TIMEOUT_SECONDS = 120
 
 
+def required_env(name: str) -> str:
+    """An environment variable that must be present AND non-empty.
+
+    Empty is refused, not just absent, and the distinction is what a production
+    failure turned up: the upstream step emitted two of its four outputs, so
+    BASE_REF and HEAD_REF arrived as empty strings. `os.environ[name]` succeeds for
+    those, so the fail-closed KeyError this module relied on never fired.
+
+    One of the two failures was loud — the retarget check compared a live base ref
+    against "" and refused every command. The other was silent and is the reason
+    this helper exists: HEAD_REF is what makes the reviewed-head-branch push
+    refusal reachable, and with an empty value `head_branch is not None` still holds
+    while `branch == ""` matches no real branch, so the check ran and enforced
+    nothing. An empty gate input is worse than a missing one precisely because it
+    looks like a value.
+
+    Checked here rather than trusted from the workflow because this process trusts
+    no other job — the posture the whole module is built on.
+    """
+    value = os.environ[name]
+    if not value:
+        fail(
+            f"{name} is set but empty; it is a gate input and an empty one disables the "
+            "check that reads it, so nothing was executed"
+        )
+    return value
+
+
 class Refusal(Exception):
     """The plan verified, but no delivery path can carry it.
 
@@ -270,19 +298,18 @@ def main() -> None:
 
     repo = os.environ["GITHUB_REPOSITORY"]
     pr_number = int(os.environ["PR_NUMBER"])
-    reviewed_sha = os.environ["HEAD_SHA"]
+    reviewed_sha = required_env("HEAD_SHA")
     # Two roles, deliberately separate (ADR-0012): the SHA anchors the diff, the
     # ref detects a retarget. BASE_SHA is unusable for the second because the
     # live base.sha tracks the branch tip.
-    reviewed_base_sha = os.environ["BASE_SHA"]
-    reviewed_base_ref = os.environ["BASE_REF"]
+    reviewed_base_sha = required_env("BASE_SHA")
+    reviewed_base_ref = required_env("BASE_REF")
     # The reviewed head BRANCH, which is the push target both gates must refuse
     # (ADR-0009 addendum: the harness never pushes to the contributor's branch).
     # From the event, not from pr_snapshot: that fetch is deliberately single and
     # happens after both gates, and hoisting it to get this value would widen the
-    # TOCTOU window it exists to close. Absent is a KeyError rather than a
-    # default, ADR-0012's reading -- a default here silently disables the check.
-    reviewed_head_ref = os.environ["HEAD_REF"]
+    # TOCTOU window it exists to close.
+    reviewed_head_ref = required_env("HEAD_REF")
 
     plan_path = args.artifact_dir / "plan.json"
     plan = json.loads(read_harness_text(plan_path))

@@ -216,3 +216,91 @@ class TestDrift:
         lane["pr"] = pr_payload(head_sha="current-head")
         run(lane)
         assert asked == ["current-head"]
+
+
+class TestTheStepOutputsCarryEveryRefTheGatesNeed:
+    """The four values the delivery jobs read from this step's outputs.
+
+    Found in production, on the first `/fix` command that got this far: the step
+    emitted only head_sha and base_sha, so BASE_REF and HEAD_REF reached the
+    executor as EMPTY STRINGS. Two consequences, and the second is the serious one:
+
+    - the TOCTOU check compared the live base ref against "" and refused every
+      command with "base retargeted since review (ai-pr-review != )". A verified,
+      fully proved plan was discarded at the last gate.
+    - HEAD_REF is what makes the reviewed-head-branch refusal reachable
+      (check_write_class_targets: the harness never pushes to the contributor's
+      branch, ADR-0009 addendum). Present-but-empty passes `os.environ[...]`, so the
+      `head_branch is not None` guard holds and `branch == ""` matches no real
+      branch: the check ran, enforced nothing, and reported nothing. That is the
+      failure mode this project's own notes call out -- a test or gate that reads as
+      enforcement while enforcing nothing.
+
+    So these assert the CONTRACT of prepare()'s return value, which main() writes
+    verbatim into GITHUB_OUTPUT.
+    """
+
+    def test_prepare_returns_the_base_ref(self, lane):
+        # The retarget check's input. ADR-0012: compared by REF, never by SHA.
+        assert run(lane)["base_ref"] == "main"
+
+    def test_prepare_returns_the_head_ref(self, lane):
+        # The push-target refusal's input, and the reason it is reachable at all.
+        assert run(lane)["head_ref"] == "feature/x"
+
+    def test_the_refs_come_from_the_pull_request_not_the_event(self, lane):
+        # issue_comment carries no refs at all, which is why they are resolved from
+        # the fetched pull request. A different PR must give different refs.
+        lane["pr"] = pr_payload(base_ref="release/2")
+        result = run(lane)
+        assert result["base_ref"] == "release/2"
+
+    def test_every_value_the_delivery_jobs_read_is_present_and_non_empty(self, lane):
+        # The whole contract in one assertion, because the defect was an ABSENT key
+        # rather than a wrong one: a test naming only the keys it expects would have
+        # passed on the broken version for every key it did not think to name.
+        result = run(lane)
+        for key in ("head_sha", "base_sha", "base_ref", "head_ref"):
+            assert key in result, f"{key} missing; the delivery job reads it as an empty string"
+            assert result[key], f"{key} is empty, which disables the gate that reads it"
+
+
+class TestTheEmittedOutputsMatchWhatPrepareReturned:
+    """main() writes the outputs, so the write is tested separately from the value.
+
+    The production defect lived HERE, not in prepare(): the values existed and the
+    writer only emitted two of them.
+    """
+
+    def emit(self, lane, monkeypatch, tmp_path, capsys):
+        output = tmp_path / "github_output"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+        monkeypatch.setenv("ISSUE_NUMBER", "7")
+        monkeypatch.setenv("COMMENT_BODY", "/fix 1")
+        monkeypatch.setenv("COMMENT_AUTHOR", "maintainer")
+        monkeypatch.setattr(
+            "sys.argv", ["prepare_fix_context.py", "--output-dir", str(lane["output"])])
+        assert pfc.main() == 0
+        return dict(
+            line.split("=", 1)
+            for line in output.read_text().splitlines() if "=" in line
+        )
+
+    def test_all_four_refs_are_emitted(self, lane, monkeypatch, tmp_path, capsys):
+        emitted = self.emit(lane, monkeypatch, tmp_path, capsys)
+        assert emitted["commanded"] == "true"
+        assert emitted["head_sha"] == "reviewed-sha"
+        assert emitted["base_sha"] == "event-base"
+        assert emitted["base_ref"] == "main", "BASE_REF reaches the executor empty; every command refuses"
+        assert emitted["head_ref"] == "feature/x", (
+            "HEAD_REF reaches the executor empty, so the reviewed-head-branch refusal "
+            "matches no branch and silently enforces nothing"
+        )
+
+    def test_nothing_is_emitted_empty(self, lane, monkeypatch, tmp_path, capsys):
+        # An empty value is worse than a missing one: os.environ[KEY] succeeds, so
+        # the executor's fail-closed KeyError never fires.
+        emitted = self.emit(lane, monkeypatch, tmp_path, capsys)
+        for key, value in emitted.items():
+            assert value != "", f"{key} was emitted empty; the reader cannot tell it apart from a real value"

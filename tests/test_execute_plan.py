@@ -1248,3 +1248,49 @@ class TestTheAllowGate:
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
         assert len(stacked) == 1
+
+
+class TestAnEmptyGateInputIsRefused:
+    """A required env var that is present but EMPTY must fail closed.
+
+    The reason KeyError alone is not enough, found in production: the upstream step
+    emitted only two of its four outputs, so BASE_REF and HEAD_REF arrived as empty
+    strings. `os.environ[...]` succeeds for those, so the fail-closed KeyError this
+    module relies on never fired, and:
+
+    - the retarget check compared a live base ref against "" and refused every
+      command -- loud, and merely broken;
+    - HEAD_REF is what makes the reviewed-head-branch push refusal REACHABLE
+      (check_write_class_targets). Empty, the `head_branch is not None` guard still
+      holds and `branch == ""` matches no real branch, so the check ran and enforced
+      nothing. Silent, and a containment hole.
+
+    An empty value is therefore worse than a missing one, and both must be refused
+    here rather than only upstream: this process trusts no other job.
+    """
+
+    @pytest.mark.parametrize("name", ["HEAD_SHA", "BASE_SHA", "BASE_REF", "HEAD_REF"])
+    def test_an_empty_required_env_var_fails_closed(self, main_env, monkeypatch, capsys, name):
+        monkeypatch.setenv(name, "")
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        err = capsys.readouterr().err
+        assert name in err, f"the failure must name {name}; got {err!r}"
+
+    @pytest.mark.parametrize("name", ["HEAD_SHA", "BASE_SHA", "BASE_REF", "HEAD_REF"])
+    def test_a_missing_required_env_var_still_fails_closed(self, main_env, monkeypatch, name):
+        # The KeyError posture ADR-0012 established, kept.
+        monkeypatch.delenv(name, raising=False)
+        with pytest.raises((SystemExit, KeyError)):
+            execute_plan.main()
+
+    def test_an_empty_head_ref_does_not_silently_pass_the_push_refusal(
+            self, main_env, monkeypatch, capsys):
+        # The containment case specifically: a plan pushing to the contributor's own
+        # branch must not be delivered because HEAD_REF happened to be empty.
+        monkeypatch.setenv("HEAD_REF", "")
+        (main_env / "plan.json").write_text(json.dumps(
+            {"steps": [patch(), push(name="smtithy/theirs"), open_pr(branch="smtithy/theirs")]}))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "HEAD_REF" in capsys.readouterr().err

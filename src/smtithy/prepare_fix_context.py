@@ -51,6 +51,17 @@ from prepare_context import fetch_anchored_pair
 from verify import Rejection, verify
 
 
+# The step outputs the delivery jobs read as environment variables, declared as one
+# set so the writer cannot emit a subset of them. It emitted only the two SHAs, and
+# the two refs therefore reached the executor as empty strings — see main().
+#
+# Every entry is a GATE INPUT, which is why an empty one is a defect rather than a
+# cosmetic gap: BASE_REF is the retarget comparison (ADR-0012, compared by ref
+# because base.sha tracks the branch tip) and HEAD_REF is what makes the
+# reviewed-head-branch push refusal reachable at all (ADR-0009 addendum).
+STEP_OUTPUTS = ("head_sha", "base_sha", "base_ref", "head_ref")
+
+
 class Refused(Exception):
     """A command that cannot be honoured, with the reason a commander should see.
 
@@ -139,6 +150,12 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
     pr = cast("dict", api_json(f"/repos/{repo}/pulls/{issue_number}"))
     head_sha = pr["head"]["sha"]
     base_sha = pr["base"]["sha"]
+    # Both REFS as well as both SHAs, because an issue_comment payload carries none
+    # of them and every one is a gate input downstream (ADR-0012 for the base ref,
+    # ADR-0009's addendum for the head ref). They are resolved here, once, from the
+    # pull request this command names.
+    base_ref = pr["base"]["ref"]
+    head_ref = pr["head"]["ref"]
 
     # The witness, against the LIVE head. This is also the drift refusal ADR-0007
     # requires: issue_comment carries no SHA, so the head is whatever it is now,
@@ -183,7 +200,8 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
     (output_dir / "changed_files.json").write_text(json.dumps(changed_files), encoding="utf-8")
     (output_dir / "review.json").write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
     (output_dir / "commanded_index.json").write_text(json.dumps({"index": index}), encoding="utf-8")
-    return {"head_sha": head_sha, "base_sha": base_sha, "index": index}
+    return {"head_sha": head_sha, "base_sha": base_sha,
+            "base_ref": base_ref, "head_ref": head_ref, "index": index}
 
 
 def main() -> int:
@@ -221,8 +239,21 @@ def main() -> int:
     if output := os.environ.get("GITHUB_OUTPUT"):
         with Path(output).open("a", encoding="utf-8") as handle:
             handle.write("commanded=true\n")
-            handle.write(f"head_sha={result['head_sha']}\n")
-            handle.write(f"base_sha={result['base_sha']}\n")
+            for name in STEP_OUTPUTS:
+                value = result[name]
+                # Emitted from a declared set rather than line by line, and refused
+                # if empty. Two of these were simply MISSING from the writer, so the
+                # executor read them as empty strings: the retarget check then
+                # compared a live ref against "" and refused every command, and the
+                # reviewed-head-branch refusal matched no branch and silently
+                # enforced nothing. An empty value is worse than an absent one,
+                # because os.environ[...] succeeds and the reader's fail-closed
+                # KeyError never fires.
+                if not value:
+                    print(f"::error::{name} resolved empty; it is a gate input and "
+                          "an empty one disables the gate that reads it", file=sys.stderr)
+                    return 1
+                handle.write(f"{name}={value}\n")
     return 0
 
 
