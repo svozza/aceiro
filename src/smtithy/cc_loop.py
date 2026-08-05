@@ -92,9 +92,26 @@ MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "30"))
 # inside the workflow's timeout-minutes. When this matched the job timeout, a
 # slow run was killed by GitHub mid-step and every diagnostic was lost with it:
 # the transcript is only useful if the process lives long enough to write it.
-WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "150"))
+#
+# 150s was the original value and it was wrong: a fast-feedback figure carried over
+# from a different repository and a simpler agent flow, never a measured production
+# budget. Measured here, it timed out a real review of a FOUR FILE, 5.5 KB diff --
+# because the ceiling bounds a whole agent SESSION (process spawn, model latency,
+# and every tool call the agent makes exploring the tree), not the diff. A reviewer
+# chasing one symbol across crates spends most of its budget on investigation. The
+# same input succeeded on a re-run, which is what identifies this as a ceiling set
+# too close to normal variance rather than a size limit.
+#
+# tests/test_workflow_shape.py pins the arithmetic against the agent jobs'
+# timeout-minutes, since the two numbers live in different files and nothing else
+# connects them.
+WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "420"))
 
-MAX_ATTEMPTS = 4
+# THREE, not four. Attempts defend against API errors, where a retry is cheap and
+# independent; a wall-clock timeout is not that kind of failure, so depth per
+# attempt is worth more than another shallow one. Three 7-minute attempts fit the
+# 25-minute job with headroom to spare, where four would cap each at 300s.
+MAX_ATTEMPTS = 3
 
 # Submissions are bounded separately from API-error attempts now that a
 # rejected submission retries in-session rather than consuming a whole CLI

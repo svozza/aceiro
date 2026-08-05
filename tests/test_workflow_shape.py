@@ -786,3 +786,79 @@ class TestSupplyChainPinning:
                 f"{workflow}:{number} runs `npm install`, which may resolve outside "
                 f"the lockfile; use `npm ci`: {text!r}"
             )
+
+
+class TestTheGeneratorBudgetFitsItsJob:
+    """WALL_CLOCK_SECONDS x MAX_ATTEMPTS plus backoff must fit inside the agent
+    job's timeout-minutes, with room to spare.
+
+    The constraint cc_loop's own comment states: the budget is PER ATTEMPT and must
+    leave room for MAX_ATTEMPTS of them inside the workflow's timeout, because when
+    it matched the job timeout "a slow run was killed by GitHub mid-step and every
+    diagnostic was lost with it -- the transcript is only useful if the process
+    lives long enough to write it."
+
+    Asserted here rather than trusted, because the two numbers live in different
+    files: the budget in cc_loop.py, the job timeout in the workflows. Nothing
+    connected them, so either could move alone and the arithmetic silently stop
+    holding.
+
+    The headroom is not decoration. Between the job starting and the generator
+    running there is a checkout, a Python setup, a hash-pinned pip install and a
+    quarantine fetch, and after it the transcript and artifact upload. A budget that
+    consumes the whole job leaves the failure path -- the one that needs the
+    transcript most -- with nowhere to write.
+    """
+
+    AGENT_JOBS = [("ai-pr-review.yml", "review"), ("ai-pr-fix.yml", "plan")]
+
+    def budget_seconds(self):
+        import cc_loop
+
+        backoff = sum(
+            cc_loop.API_ERROR_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            for attempt in range(1, cc_loop.MAX_ATTEMPTS)
+        )
+        return cc_loop.WALL_CLOCK_SECONDS * cc_loop.MAX_ATTEMPTS + backoff
+
+    @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
+    def test_the_whole_retry_budget_fits_the_job_timeout(self, workflow, job):
+        block = job_block((WORKFLOWS / workflow).read_text(), job)
+        timeout = int(next(
+            line.split(":")[1] for line in block.splitlines() if "timeout-minutes" in line
+        ))
+        budget = self.budget_seconds()
+        assert budget < timeout * 60, (
+            f"{workflow}:{job} allows {timeout} min but the generator may spend "
+            f"{budget / 60:.1f} min; GitHub would kill the step mid-run and the "
+            "transcript would be lost with it"
+        )
+
+    @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
+    def test_at_least_two_minutes_of_headroom_remain(self, workflow, job):
+        # Setup and teardown are not free: checkout, setup-python, a hash-pinned
+        # pip install, the quarantine fetch, then the artifact upload. Exhausting
+        # the job leaves the failure path unable to report why it failed.
+        block = job_block((WORKFLOWS / workflow).read_text(), job)
+        timeout = int(next(
+            line.split(":")[1] for line in block.splitlines() if "timeout-minutes" in line
+        ))
+        headroom = timeout * 60 - self.budget_seconds()
+        assert headroom >= 120, (
+            f"{workflow}:{job} leaves only {headroom / 60:.1f} min for checkout, install, "
+            "the quarantine fetch and the transcript upload"
+        )
+
+    def test_the_budget_is_not_the_original_development_value(self):
+        # 150s was a fast-feedback figure carried over from a different repository
+        # and a simpler agent flow, never a measured production budget. It timed out
+        # a real review of a FOUR FILE, 5.5 KB diff -- the ceiling bounds a whole
+        # agent session (process spawn, model latency, and every tool call it makes
+        # exploring the tree), not the diff, so a reviewer chasing a symbol across
+        # crates spends most of it on investigation.
+        import cc_loop
+
+        assert cc_loop.WALL_CLOCK_SECONDS > 150, (
+            "the wall-clock budget is still the development-loop default, which is "
+            "measured to time out real reviews"
+        )
