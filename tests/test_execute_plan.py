@@ -211,13 +211,41 @@ class TestRunProver:
             execute_plan.run_prover(tmp_path / "does-not-exist.js", *prover_inputs, head_branch="feature/x")
         assert "nothing was proved" in capsys.readouterr().err
 
+    def test_a_head_branch_beginning_with_a_dash_still_reaches_the_prover(
+            self, tmp_path, prover_inputs, capsys):
+        # git accepts `-evil` as a branch name (`git check-ref-format
+        # refs/heads/-evil` exits 0) and prepare_fix_context forwards head_ref
+        # verbatim, so a contributor chooses this value. Passed as a separate argv
+        # element, Node's parseArgs reads it as an option and throws, and every
+        # /fix on that pull request ends red blaming the harness.
+        #
+        # The stub is the REAL parseArgs, so it fails exactly as prove-cli does on
+        # the two-element form. A stub that accepted either spelling would pass
+        # whichever way the argv is built and pin nothing.
+        script = tmp_path / "parse_argv.js"
+        script.write_text(
+            "const { parseArgs } = require('node:util');\n"
+            "const { values } = parseArgs({ options: {\n"
+            "  plan: { type: 'string' }, 'changed-files': { type: 'string' },\n"
+            "  policy: { type: 'string' }, 'head-branch': { type: 'string' },\n"
+            "} });\n"
+            "process.stdout.write('head-branch seen: ' + values['head-branch'] + '\\n');\n"
+            "process.exitCode = 0;\n"
+        )
+        execute_plan.run_prover(script, *prover_inputs, head_branch="-evil")
+        assert "head-branch seen: -evil" in capsys.readouterr().out
+
 
 # --------------------------------------------------- pr_snapshot / fork ---
 
 
 def pr_payload(head="reviewed-sha", base_ref="main", base_sha="base-tip",
-               head_repo="o/r", base_repo="o/r", head_ref="feature/x"):
+               head_repo="o/r", base_repo="o/r", head_ref="feature/x", state="open"):
+    # `state` as GitHub really lists it: a remediation's premise dies with the pull
+    # request, so a payload without one would let every delivery case pass on a
+    # shape the API never returns.
     return {
+        "state": state,
         "head": {"sha": head, "ref": head_ref,
                  "repo": {"full_name": head_repo} if head_repo else None},
         "base": {"ref": base_ref, "sha": base_sha, "repo": {"full_name": base_repo}},
@@ -248,6 +276,37 @@ class TestPrSnapshot:
         with pytest.raises(SystemExit):
             execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
         assert "retargeted" in capsys.readouterr().err
+
+    def test_a_merged_pr_fails_before_any_effect(self, monkeypatch, capsys):
+        # A merged pull request keeps the reviewed head SHA, so pr_moved returns
+        # None and nothing else refuses: head.repo stays non-null so is_fork does
+        # not fire, and the commit and tree stay readable. On the stacked path the
+        # base is the head branch, which merging may have deleted, and create_ref
+        # runs before POST /pulls — so the run would leave a branch behind and no
+        # follow-up pull request.
+        self.stub(monkeypatch, pr_payload(state="closed"))
+        with pytest.raises(SystemExit):
+            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
+        err = capsys.readouterr().err
+        assert "not open" in err
+        assert "nothing executed" in err
+
+    def test_an_unknown_state_is_not_open(self, monkeypatch, capsys):
+        # Anything that is not exactly "open" is refused, so a state this harness
+        # has not seen reads as not-open rather than as permission.
+        self.stub(monkeypatch, pr_payload(state=None))
+        with pytest.raises(SystemExit):
+            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
+        assert "not open" in capsys.readouterr().err
+
+    def test_the_state_is_checked_before_the_move(self, monkeypatch, capsys):
+        # Ordering matters only for the message a commander reads: a merged pull
+        # request whose head ALSO moved should be reported as closed, since
+        # reopening it is not the remedy.
+        self.stub(monkeypatch, pr_payload(state="closed", head="new-sha"))
+        with pytest.raises(SystemExit):
+            execute_plan.pr_snapshot("o/r", 1, "reviewed-sha", "main")
+        assert "not open" in capsys.readouterr().err
 
     def test_a_base_branch_advance_still_executes(self, monkeypatch):
         # The plan was anchored to the event base, so an unrelated merge into

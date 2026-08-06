@@ -212,7 +212,10 @@ def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, polic
         "--plan", str(plan_path),
         "--changed-files", str(changed_files_path),
         "--policy", str(policy_path),
-        "--head-branch", head_branch,
+        # One argument, not two: a branch name may begin with `-` (git accepts it),
+        # and as a separate argv element parseArgs reads it as an option and throws
+        # — turning re-proof into an unconditional failure for that pull request.
+        f"--head-branch={head_branch}",
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=PROVER_TIMEOUT_SECONDS)
@@ -247,10 +250,29 @@ def pr_snapshot(repo: str, pr_number: int, reviewed_head: str, reviewed_base_ref
     unmoved check accepted, or a retarget between two fetches could pass the
     check with one state and deliver against another.
 
-    The precondition is github_api.pr_moved, shared with post.py: the two
-    executors must not disagree about what "moved" means.
+    Two preconditions, both before the first effect.
+
+    github_api.pr_moved is shared with post.py: the two executors must not
+    disagree about what "moved" means.
+
+    OPEN is checked here rather than in pr_moved, because it is not a fact about
+    drift and the reviewer does not need it — a review of a merged pull request is
+    a stale hint, while a remediation of one is a write whose premise is gone
+    (ADR-0009 addendum B: this delivery's premise dies with the head). A merged
+    pull request keeps the reviewed head SHA, so pr_moved returns None and every
+    other gate passes: head.repo stays non-null so is_fork does not refuse, and
+    the commit and tree stay readable. On the stacked path the base is the head
+    branch, which merging may have deleted, and create_ref runs before POST /pulls
+    — so the run would leave a branch behind and no follow-up pull request.
+    Anything that is not exactly "open" is refused, so an unexpected state reads
+    as not-open rather than as permission.
     """
     pr = cast("dict", api_json(f"/repos/{repo}/pulls/{pr_number}"))
+    if (state := pr.get("state")) != "open":
+        fail(
+            f"pull request {pr_number} is {state or 'in an unknown state'}, not open, so there is "
+            "no branch this fix belongs on; nothing executed"
+        )
     if moved := pr_moved(pr, reviewed_head, reviewed_base_ref):
         fail(f"{moved}; nothing executed")
     return pr
