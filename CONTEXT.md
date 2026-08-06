@@ -125,5 +125,14 @@ The application that posts findings about a pull request. Its effect is one
 idempotent comment upsert.
 
 **Remediator**:
-The application that proposes fixes by pushing a branch and opening a follow-up
-pull request. Never runs tests; see ADR-0001.
+The application that proposes a fix for one commanded finding. Its effect is
+inert and human-applied either way: suggestion comments by default, a stacked
+follow-up pull request where a suggestion cannot carry the fix. Never runs
+tests; see ADR-0001.
+
+**Delivery**:
+Which effect a remediation takes — suggestions or a stacked pull request. The
+executor's decision, read from the verified plan's step list, never the
+generator's. Not a size judgement: a fix that could be half-applied is not
+deliverable as suggestions.
+_Avoid_: mode, output, channel, strategy
