@@ -309,8 +309,9 @@ class TestTheTokenIsNotFollowedAcrossHosts:
             assert got == expected, f"{host} -> Authorization {got!r}, expected {expected!r}"
 
     def test_a_redirect_loop_terminates(self, server):
-        # urllib bounds this itself (max_redirections), and the bound is what stops
-        # a 302-to-itself server hanging the job forever.
+        # A 302-to-itself server would hang the job forever. Bounded by urllib's
+        # max_repeats (revisiting ONE url), which is stricter than MAX_REDIRECTS and
+        # is deliberately left at its default — see the handler.
         base, seen, routes = server
         routes["/loop"] = (f"{base.replace('127.0.0.1', 'localhost')}/loop", b"")
         routes["/loop2"] = (f"{base}/loop", b"")
@@ -318,6 +319,23 @@ class TestTheTokenIsNotFollowedAcrossHosts:
         with pytest.raises(urllib.error.HTTPError):
             github_api.api_request("/loop")
         assert len(seen) < 40, f"the chain did not terminate promptly: {len(seen)} hops"
+
+    def test_a_chain_of_distinct_hops_stops_at_the_declared_bound(self, server):
+        # MAX_REDIRECTS is what bounds a chain that never repeats a url, and this is
+        # the case that measures it. The constant was dead — nothing read it, so the
+        # effective bound was urllib's default of 10 and the region declared a limit
+        # no reader could rely on.
+        base, seen, routes = server
+        for hop in range(github_api.MAX_REDIRECTS + 4):
+            routes[f"/hop{hop}"] = (f"{base}/hop{hop + 1}", b"")
+
+        with pytest.raises(urllib.error.HTTPError):
+            github_api.api_request("/hop0")
+        # The first request plus MAX_REDIRECTS followed hops; the next one raises.
+        assert len(seen) == github_api.MAX_REDIRECTS + 1, (
+            f"followed {len(seen) - 1} hops for a declared bound of "
+            f"{github_api.MAX_REDIRECTS}; the constant is not the enforced limit"
+        )
 
 
 # ------------------------------------------------------------------ reviews ---

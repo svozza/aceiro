@@ -70,7 +70,11 @@ def routed_mode(plan_path: Path) -> str:
         plan = json.loads(read_harness_text(plan_path))
     except FileNotFoundError:
         fail(f"no plan at {plan_path}; nothing to route")
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # UnicodeDecodeError explicitly: it is a ValueError, not an OSError, so
+        # bytes that are not UTF-8 escaped this handler and the refusal reached the
+        # log as a traceback instead of the ::error:: annotation every other refusal
+        # here takes. Fail-closed either way; the audit record is what was lost.
         fail(f"plan at {plan_path} is unreadable ({exc}); nothing to route")
 
     if not isinstance(plan, dict):
@@ -87,10 +91,15 @@ def routed_mode(plan_path: Path) -> str:
             fail(f"plan.steps[{index}].kind is {kind!r}, not a string; nothing to route")
         args = step.get("args")
         for name in REQUIRED_ARGS.get(kind, ()):
-            if not isinstance(args, dict) or name not in args:
+            # Presence AND type. decide_delivery puts args["path"] in a set, so a
+            # list or object there raised an unhashable-type TypeError out of this
+            # module — fail-closed, but reported as a traceback rather than as the
+            # refusal record. A plan is as free to make this the wrong type as to
+            # omit it.
+            if not isinstance(args, dict) or not isinstance(args.get(name), str):
                 fail(
-                    f"plan.steps[{index}] is a {kind} step with no args.{name}, which the "
-                    "delivery decision reads; nothing to route"
+                    f"plan.steps[{index}] is a {kind} step whose args.{name} is not a string, "
+                    "and the delivery decision reads it; nothing to route"
                 )
 
     try:

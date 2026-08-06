@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import urllib.error
 
 from diff_map import normalize_signature_line
 from github_api import (
@@ -331,7 +332,23 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
     tree = create_tree(repo, base_tree, blobs)
     commit = create_commit(repo, commit_message(open_pr["args"]["title"], metadata),
                            tree=tree, parent=reviewed_sha)
-    create_ref(repo, branch, commit)
+    try:
+        create_ref(repo, branch, commit)
+    except urllib.error.HTTPError as exc:
+        if exc.code != 422:
+            raise
+        # The branch already exists, which the docstring above promises to report
+        # as a refusal naming it. Reached where the dedup key cannot see the prior
+        # effect — chiefly the deliberately-open window between 3 and 4, where a ref
+        # exists with no pull request carrying the marker. Raised as a Refusal so
+        # execute_plan reports it through fail() with the branch and the commit in
+        # the message; the bare HTTPError carried neither, and dropped GitHub's own
+        # "Reference already exists" body on the floor.
+        raise Refusal(
+            f"branch {branch!r} already exists in {repo}, so this fix was already pushed "
+            f"(possibly without its pull request); the commit built for it is {commit}. "
+            "Delete the branch or close its follow-up pull request to retry"
+        ) from exc
     print(f"created {branch!r} at {commit} ({len(blobs)} file(s) patched)")
 
     pull_request = open_pull_request(

@@ -20,6 +20,7 @@ Network is never touched: the github_api helpers are stubbed.
 
 import json
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -416,6 +417,37 @@ class TestTheDelivery:
         with pytest.raises(stack.Refusal, match="branch"):
             deliver(steps=steps)
         assert calls == []
+
+    def test_an_existing_branch_is_a_refusal_naming_it(self, calls, monkeypatch):
+        # The docstring promises "a re-run refuses at create_ref with a message
+        # naming that branch". GitHub answers 422 there, and a bare HTTPError is
+        # neither Refusal nor AlreadyDelivered — execute_plan caught neither, so the
+        # run ended in a traceback naming no branch and dropping GitHub's own
+        # "Reference already exists" body. Reachable through the deliberately-open
+        # window between create_ref and open_pull_request, where a ref exists with
+        # no pull request carrying the marker for find_existing_fix to see.
+        def exists(repo, branch, sha):
+            raise urllib.error.HTTPError(
+                f"https://api/repos/{repo}/git/refs", 422, "Unprocessable Content",
+                {}, None)
+
+        monkeypatch.setattr(stack, "create_ref", exists)
+        with pytest.raises(stack.Refusal, match="smtithy/fix-7") as caught:
+            deliver()
+        assert "commit-sha" in str(caught.value), "the orphaned commit is not named"
+        assert not any(c[0] == "pull" for c in calls)
+
+    def test_a_non_422_from_create_ref_is_not_swallowed(self, calls, monkeypatch):
+        # Only the branch-exists case is a refusal. A 500 means the push may or may
+        # not have happened, which is not something to report as "already pushed".
+        def broken(repo, branch, sha):
+            raise urllib.error.HTTPError(
+                f"https://api/repos/{repo}/git/refs", 500, "Server Error", {}, None)
+
+        monkeypatch.setattr(stack, "create_ref", broken)
+        with pytest.raises(urllib.error.HTTPError):
+            deliver()
+        assert not any(c[0] == "pull" for c in calls)
 
 
 class TestFindingAnExistingFix:

@@ -145,6 +145,32 @@ class TestItFailsClosedOnAnythingUnreadable:
         with pytest.raises(SystemExit):
             run(tmp_path, {"steps": [{"id": "s0", "kind": "suggest", "args": {}}]}, outputs)
 
+    def test_a_suggest_step_whose_path_is_not_a_string_is_refused(self, tmp_path, outputs, capsys):
+        # Presence is not enough: decide_delivery puts args["path"] in a SET, so a
+        # list there raised an unhashable-type TypeError out of the module. Still
+        # fail-closed, but the refusal reached the log as a traceback instead of the
+        # ::error:: record every other refusal here takes.
+        for bad in (["a.py"], {"p": 1}, 7, None):
+            with pytest.raises(SystemExit):
+                run(tmp_path, {"steps": [
+                    {"id": "s0", "kind": "suggest",
+                     "args": {"path": bad, "line": 2, "old": "a", "new": "b", "note": "n"}},
+                ]}, outputs)
+            err = capsys.readouterr().err
+            assert "::error::" in err, f"path={bad!r} refused without an audit record"
+            assert "args.path is not a string" in err
+        assert "mode=" not in outputs.text()
+
+    def test_a_plan_that_is_not_utf8_is_refused(self, tmp_path, outputs, capsys):
+        # UnicodeDecodeError is a ValueError, not an OSError, so it escaped the
+        # unreadable-plan handler and surfaced as a traceback.
+        (tmp_path / "plan.json").write_bytes(b'{"steps": [{"kind": "\xff\xfe"}]}')
+        sys.argv = ["route_delivery.py", "--artifact-dir", str(tmp_path)]
+        with pytest.raises(SystemExit):
+            route_delivery.main()
+        assert "::error::" in capsys.readouterr().err
+        assert "mode=" not in outputs.text()
+
     def test_an_unknown_step_kind_is_refused(self, tmp_path, outputs):
         # The schema gate would reject it, but the schema gate has not run. An
         # unknown kind is not a fix step, so decide_delivery would refuse it as

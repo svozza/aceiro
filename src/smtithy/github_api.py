@@ -26,6 +26,11 @@ RETRYABLE_METHODS = {"GET", "PATCH"}
 MAX_ATTEMPTS = 4
 
 
+# The depth this client will follow, enforced below by overriding urllib's own
+# max_redirections (10). Declared and ENFORCED in one place: as a bare constant it
+# was dead, and the effective bound was urllib's — so the region documented a limit
+# no reader could rely on. GitHub's API redirects at most once on the paths this
+# harness uses, so five is slack rather than a constraint.
 MAX_REDIRECTS = 5
 
 
@@ -51,6 +56,12 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
     `api.github.com.evil.test` contains the API host as a prefix, and a prefix test
     would forward the token to it.
     """
+
+    # urllib reads this off the handler, so the module's stated bound is the one the
+    # opener enforces rather than a second, larger default (10). max_repeats — the
+    # separate bound on revisiting ONE url — is deliberately left at urllib's
+    # default of 4, which is already stricter than this.
+    max_redirections = MAX_REDIRECTS
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
