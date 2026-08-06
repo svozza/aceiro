@@ -322,6 +322,58 @@ class TestTheGateJobWaitsAtTheEnvironmentTheWorkerVerifies:
         text = (WORKFLOWS / workflow).read_text()
         assert job_environment(text, worker_job) != job_environment(text, gate_job)
 
+    # ADR-0006's gate is asserted INSIDE the gated job and, per its own comment,
+    # "before any credential exists in it". Deleting the step is caught by
+    # test_every_gated_lane_is_listed; RELOCATING it was caught by nothing — the
+    # whole suite stayed green with the gate moved below the quarantine fetch, below
+    # configure-aws-credentials, and even below the generator itself. These are the
+    # two assertions TestEvalsApprovalGate already makes, parametrised over every
+    # lane so a new one gets them by existing rather than by being remembered.
+
+    def gate_index(self, steps, workflow, worker_job):
+        for index, step in enumerate(steps):
+            if "environment_gate.py" in step.get("run", ""):
+                return index
+        raise AssertionError(f"{workflow} job {worker_job!r} never runs environment_gate.py")
+
+    @pytest.mark.parametrize("workflow,gate_job,worker_job", LANES)
+    def test_the_gate_runs_before_any_untrusted_content(self, workflow, gate_job, worker_job):
+        # The agent lanes never CHECK OUT the head — they quarantine-fetch it as
+        # bytes — so the untrusted content arrives by a different step than the
+        # evals lane's checkout. Either way it must not be on disk before the gate:
+        # asking a pull request's own content whether it was approved is no check.
+        text = (WORKFLOWS / workflow).read_text()
+        steps = parse_steps(text, worker_job)
+        gate = self.gate_index(steps, workflow, worker_job)
+        untrusted = [
+            index for index, step in enumerate(steps)
+            if "quarantine" in step.get("name", "").lower()
+            or any("pull_request.head.sha" in str(value) for value in step.values())
+        ]
+        assert untrusted, f"{workflow} job {worker_job!r}: no untrusted content step found"
+        assert gate < min(untrusted), (
+            f"{workflow}: the gate is asserted at step {gate}, after untrusted content "
+            f"lands at step {min(untrusted)}"
+        )
+
+    @pytest.mark.parametrize("workflow,gate_job,worker_job", LANES)
+    def test_the_gate_runs_before_any_credential(self, workflow, gate_job, worker_job):
+        # A credential minted before the gate is a credential an ungated run held,
+        # whatever the gate then decides.
+        text = (WORKFLOWS / workflow).read_text()
+        steps = parse_steps(text, worker_job)
+        gate = self.gate_index(steps, workflow, worker_job)
+        credentials = [
+            index for index, step in enumerate(steps)
+            if "configure-aws-credentials" in step.get("uses", "")
+            or any(key.endswith(("ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY")) for key in step)
+        ]
+        assert credentials, f"{workflow} job {worker_job!r}: no credential step found"
+        assert gate < min(credentials), (
+            f"{workflow}: the gate is asserted at step {gate}, after a credential is "
+            f"minted at step {min(credentials)}"
+        )
+
 
 class TestNoUntrustedInfluencedCache:
     """A pull_request_target job runs under the BASE ref, so a cache it saves
