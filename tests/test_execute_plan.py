@@ -832,16 +832,24 @@ class TestSuggestionDelivery:
         execute_plan.main()  # no SystemExit
         assert len(posted) == 1
 
-    def test_the_retraction_scope_is_the_commanded_findings_path(self, delivery_env, posted, monkeypatch):
+    def test_the_retraction_scope_is_the_commanded_finding(self, delivery_env, posted, monkeypatch):
         # One command names one finding (ADR-0007), so this run may only withdraw
         # what that command could have produced. Unscoped, the reconciler reads
         # every OTHER finding's live suggestion as withdrawn and takes it down.
         # From the COMMANDED FINDING, not from the plan's steps: scope is a fact
-        # about the command, and check_plan_scope has already refused a plan that
-        # does not touch this path.
+        # about the command. The FINDING and not its file, because two findings of
+        # one accepted artifact routinely share a file.
+        import suggest
+
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
-        assert posted[0]["commanded_path"] == "src/app.py"
+        commanded = json.loads(
+            (delivery_env / "review.json").read_text())["findings"][0]
+        expected = suggest.finding_identity(
+            commanded, anchor_signatures(PLAN_DIFF, content_source=tree_source()))
+        assert posted[0]["commanded_finding_key"] == expected
+        # Not the file: a path is the set two commands speak for.
+        assert posted[0]["commanded_finding_key"] != commanded["path"]
 
     def test_an_unresolvable_login_posts_nothing(self, delivery_env, posted, monkeypatch, capsys):
         # Ownership decides which comments the write token may edit or delete, so

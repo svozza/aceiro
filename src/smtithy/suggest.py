@@ -66,9 +66,55 @@ SUGGESTION_MARKER_RE = re.compile(r"<!-- smtithy:suggest:([0-9a-f]{16}) -->")
 # recognises an already-retracted comment instead of striking it again every run.
 STRUCK_MARKER = "<!-- smtithy:struck -->"
 
+# Which COMMANDED FINDING a comment was delivered for. The retraction scope: a
+# command may withdraw its own finding's suggestions and nothing else. Read from
+# the marker line, like every other marker here, so contributor content cannot
+# present itself as another command's delivery.
+SUGGESTION_FINDING_RE = re.compile(r"<!-- smtithy:for:([0-9a-f]{16}) -->")
+
 
 def suggestion_marker(fingerprint: str) -> str:
     return f"<!-- smtithy:suggest:{fingerprint} -->"
+
+
+def finding_marker(finding_key: str) -> str:
+    return f"<!-- smtithy:for:{finding_key} -->"
+
+
+def finding_identity(finding: dict, signatures: dict[tuple[str, int], str] | None = None) -> str:
+    """Stable identity for the COMMANDED FINDING a delivery speaks for.
+
+    Keyed on the anchored code exactly as suggestion_fingerprint and stack.fix_key
+    are — path, line, and the line's anchor signature — never on the model's prose,
+    which is reworded on essentially every run. The line is included for the reason
+    stack.fix_key includes it: a window=1 signature is not unique for periodic
+    code, and two copy-pasted blocks are two findings.
+
+    Deliberately excludes head_sha, unlike stack.fix_key: suggestions outlive a
+    push (GitHub marks them outdated rather than removing them), so a comment
+    delivered for this finding at an earlier head is still this finding's.
+    """
+    path, line = finding["path"], finding["line"]
+    signature = (signatures or {}).get((path, line))
+    anchored = (
+        f"unanchored\0{line}" if signature is None
+        else f"anchored\0{line}\0{normalize_signature_line(signature)}"
+    )
+    return hashlib.sha256("\0".join([path, anchored]).encode()).hexdigest()[:16]
+
+
+def owned_finding_key(comment: dict, bot_login: str) -> str | None:
+    """The finding a comment of OURS was delivered for, else None.
+
+    None means the subject cannot be established — an older comment written before
+    the marker existed, or a comment that is not ours — and the caller must then
+    leave it standing. Ownership is checked here too, so a pasted marker cannot
+    make a contributor's comment look like another command's delivery.
+    """
+    if not bot_login or (comment.get("user") or {}).get("login") != bot_login:
+        return None
+    match = SUGGESTION_FINDING_RE.search(marker_line(comment))
+    return match.group(1) if match else None
 
 
 def suggestion_fingerprint(step_args: dict, signatures: dict[tuple[str, int], str] | None = None) -> str:
@@ -322,7 +368,8 @@ def comment_anchor(step: dict) -> dict:
     return anchor
 
 
-def render_suggestion(step: dict, fingerprint: str, metadata: dict) -> str:
+def render_suggestion(step: dict, fingerprint: str, metadata: dict,
+                      finding_key: str | None = None) -> str:
     """One verified suggest step as a review-comment body.
 
     Structure is ours; the model's `note` is inserted verbatim only after
@@ -348,8 +395,13 @@ def render_suggestion(step: dict, fingerprint: str, metadata: dict) -> str:
     if args["new"]:
         block.append(args["new"][:-1] if args["new"].endswith("\n") else args["new"])
     block.append(marker)
+    # Both markers on line 1: the fingerprint identifies the SUGGESTION, the
+    # finding key identifies the COMMAND that may retract it.
+    first_line = suggestion_marker(fingerprint)
+    if finding_key is not None:
+        first_line = f"{first_line} {finding_marker(finding_key)}"
     return "\n".join([
-        suggestion_marker(fingerprint),
+        first_line,
         NOT_A_HUMAN_REVIEW,
         "",
         args["note"],
@@ -478,7 +530,8 @@ def comment_content(body: str) -> str:
 
 def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
                           signatures: dict[tuple[str, int], str], metadata: dict,
-                          *, bot_login: str, head_sha: str, commanded_path: str | None) -> None:
+                          *, bot_login: str, head_sha: str,
+                          commanded_finding_key: str | None) -> None:
     """Make the pull request's suggestion comments match the verified plan's.
 
     Re-posting is not idempotent — an identical comment on an unchanged line
@@ -496,17 +549,27 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
     against, so a push landing mid-run leaves the suggestion marked outdated rather
     than misplaced on content it never described.
 
-    `commanded_path` is the SCOPE. One run delivers one commanded finding
+    `commanded_finding_key` is the SCOPE. One run delivers one commanded finding
     (ADR-0007), while the comment listing is the whole pull request, so retraction
     has to be told what this command could have produced or it withdraws every
     OTHER finding's live suggestion — with a note claiming it left the latest
     remediation, which is untrue, and deleting the human thread under it if there
     is no reply to force a strike. Two commands on one pull request is the designed
-    flow. The commanded finding's path is the scope because the scope gate already
-    requires the plan to touch it (check_plan_scope), so "a comment on that file"
-    is exactly the set this command speaks for. None retracts NOTHING: a run whose
-    scope is unknown may still post — its own suggestions are verified — but must
-    not take anything down.
+    flow.
+
+    The scope is the FINDING, not its file. A path was the scope first, on the
+    reasoning that the scope gate already requires the plan to touch it — but two
+    findings of one accepted artifact routinely share a file, and the reviewer was
+    measured doing exactly that (ADR-0009 addendum C), so a path is the set TWO
+    commands speak for. `/fix 2` then withdrew `/fix 1`'s live suggestion. Each
+    comment records the finding it was delivered for (finding_marker, on the marker
+    line), and a command retracts only comments carrying its own key.
+
+    None retracts NOTHING, and so does a comment whose own key cannot be
+    established: a run whose scope is unknown may still post — its own suggestions
+    are verified — but must not take anything down. That also makes the change
+    backward-safe, since comments delivered before the marker existed carry no key
+    and are left standing rather than withdrawn by the first command to follow.
     """
     all_comments = list(review_comments(repo, pr_number))
     ours = [(fingerprint, c) for c in all_comments if (fingerprint := owned_fingerprint(c, bot_login))]
@@ -527,7 +590,8 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             repo,
             pr_number,
             REVIEW_BODY,
-            [comment_anchor(step) | {"body": render_suggestion(step, fingerprint, metadata)}
+            [comment_anchor(step) | {
+                "body": render_suggestion(step, fingerprint, metadata, commanded_finding_key)}
              for fingerprint, step in fresh],
             head_sha=head_sha,
         )
@@ -549,7 +613,8 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
     for fingerprint, comment in ours:
         if fingerprint not in wanted:
             continue
-        body = render_suggestion(wanted[fingerprint], fingerprint, metadata)
+        body = render_suggestion(
+            wanted[fingerprint], fingerprint, metadata, commanded_finding_key)
         if is_struck(comment):
             patch_review_comment(repo, comment["id"], body)
             print(f"restored previously retracted suggestion comment {comment['id']}")
@@ -579,7 +644,7 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             print(f"could not re-read replies before retracting ({exc}); using the earlier scan")
 
     for fingerprint, comment in stale:
-        if commanded_path is None or comment.get("path") != commanded_path:
+        if commanded_finding_key is None or owned_finding_key(comment, bot_login) != commanded_finding_key:
             print(f"suggestion comment {comment['id']} is outside this command's scope, left as is")
             continue
         retract(repo, comment, replied_ids, WITHDRAWN_NOTE)

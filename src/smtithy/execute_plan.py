@@ -77,7 +77,7 @@ from post import read_model_stamp, resolve_bot_login
 from prepare_context import fetch_anchored_pair
 from stack import AlreadyDelivered, deliver_stacked_pr, fix_key
 from stack import Refusal as StackRefusal
-from suggest import reconcile_suggestions
+from suggest import finding_identity, reconcile_suggestions
 from verify import Rejection
 
 _HARNESS_ROOT = Path(__file__).resolve().parent
@@ -490,14 +490,16 @@ def main() -> None:
 
     steps = [step for step in plan["steps"] if step["kind"] == "suggest"]
     # The retraction scope. One command names one finding (ADR-0007), so this run
-    # speaks only for that finding's file: without it the reconciler would read
-    # every OTHER finding's live suggestion as withdrawn and take it down. Read
-    # from the commanded finding rather than from the plan's steps, because scope
-    # is a fact about the COMMAND — check_plan_scope has already refused a plan
-    # that does not touch this path.
+    # speaks only for THAT finding: without it the reconciler would read every
+    # OTHER finding's live suggestion as withdrawn and take it down. Derived from
+    # the commanded finding rather than from the plan's steps, because scope is a
+    # fact about the COMMAND. The finding, not its file — two findings of one
+    # accepted artifact routinely share a file, and a path is the set two commands
+    # speak for.
     reconcile_suggestions(repo, pr_number, steps, signatures, metadata,
                           bot_login=bot_login, head_sha=reviewed_sha,
-                          commanded_path=commanded_finding["path"])
+                          commanded_finding_key=finding_identity(
+                              commanded_finding, signatures))
     print(f"delivered {len(steps)} suggestion(s) on {delivery.path!r}")
 
     # TOCTOU guard, second half — the posture post.py takes after ITS write, and
