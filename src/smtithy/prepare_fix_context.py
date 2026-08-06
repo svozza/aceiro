@@ -46,7 +46,7 @@ from author_trust import is_trusted
 from canonicalize import read_harness_text
 from fix_command import parse_fix_command
 from github_api import api_json
-from post import posted_review_witness, resolve_bot_login
+from post import posted_review_witness, posting_run_id, resolve_bot_login
 from prepare_context import fetch_anchored_pair
 from verify import Rejection, verify
 
@@ -71,15 +71,23 @@ class Refused(Exception):
     """
 
 
-def fetch_reviewed_artifact(repo: str, pr_number: int, head_sha: str, output_dir: Path) -> dict:
-    """The accepted review artifact for `head_sha`, from the review run's own
-    Actions artifact.
+def fetch_reviewed_artifact(repo: str, pr_number: int, head_sha: str, output_dir: Path,
+                            *, run_id: int) -> dict:
+    """The accepted review artifact for `head_sha`, from the run that POSTED it.
 
-    The artifact is the trust anchor for the commanded finding, so where it comes
-    from is load-bearing: this is the review job's OUTPUT, uploaded by a run of the
-    pinned harness, and it is the only copy that exists. It is not re-generated —
-    a second review would be a different artifact, and the commander commanded a
-    finding of the one they read.
+    The artifact is the trust anchor for the commanded finding, so which artifact
+    this is decides which defect a `/fix N` addresses and what text the plan
+    session reads inside the `<commanded_finding>` fence. `run_id` is therefore
+    required, not optional: it comes from the footer of our own posted comment
+    (post.posting_run_id), so the artifact is bound to the run whose review the
+    commander actually read.
+
+    The name alone cannot establish that. It is derivable from the pull request
+    number and the head SHA — both public — and the listing is repository-wide, so
+    any artifact in the repository carrying that name would otherwise be a
+    candidate, and `max(id)` would prefer the newest one rather than the posted
+    one. Matching on `workflow_run.id` is what makes this the review job's OUTPUT
+    rather than merely something named like it.
 
     Retention is finite (90 days), and the name is keyed on the reviewed SHA, so
     "absent" is a real state rather than a theoretical one and it is refused rather
@@ -87,14 +95,18 @@ def fetch_reviewed_artifact(repo: str, pr_number: int, head_sha: str, output_dir
     """
     name = f"ai-review-{pr_number}-{head_sha}"
     listed = cast("dict", api_json(f"/repos/{repo}/actions/artifacts?name={name}"))
-    artifacts = [a for a in listed.get("artifacts", []) if not a.get("expired")]
+    artifacts = [
+        a for a in listed.get("artifacts", [])
+        if not a.get("expired")
+        and (a.get("workflow_run") or {}).get("id") == run_id
+    ]
     if not artifacts:
         raise Refused(
-            f"the review run's artifact {name!r} is no longer available, so the review whose "
-            "finding is commanded cannot be read; no fix"
+            f"no unexpired artifact {name!r} from run {run_id}, the run that posted the review "
+            "this command names, so the review whose finding is commanded cannot be read; no fix"
         )
-    # Newest first: a re-run of the review job for the same SHA uploads another,
-    # and the latest is the one whose comment is posted.
+    # One run uploads the name once; if that ever changes, the newest upload of
+    # THAT run is still the one its own comment describes.
     newest = max(artifacts, key=lambda a: a["id"])
     return download_review(repo, newest["id"], output_dir)
 
@@ -167,7 +179,19 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
             "review the command names, or no review was posted for it; no fix"
         )
 
-    review = fetch_reviewed_artifact(repo, issue_number, head_sha, output_dir)
+    # Which run posted it, so the artifact read below is that run's own output.
+    # Refused rather than defaulted: without this the artifact would be chosen by
+    # name and recency, and a same-named artifact from any other run in the
+    # repository would become the trust anchor for the commanded finding.
+    posting_run = posting_run_id(repo, issue_number, head_sha, bot_login=bot_login)
+    if posting_run is None:
+        raise Refused(
+            f"the posted review for {head_sha} carries no run link in its footer, so the artifact "
+            "whose finding is commanded cannot be bound to the run that posted it; no fix"
+        )
+
+    review = fetch_reviewed_artifact(
+        repo, issue_number, head_sha, output_dir, run_id=posting_run)
 
     diff_bytes, changed_files = fetch_anchored_pair(repo, base_sha, head_sha)
 

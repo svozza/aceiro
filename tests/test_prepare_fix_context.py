@@ -24,6 +24,10 @@ import prepare_fix_context as pfc
 from conftest import POLICY
 from test_plan_verify import PLAN_CHANGED_FILES, PLAN_DIFF
 
+# Captured before any fixture replaces the module attribute, so the tests that are
+# ABOUT the fetch can put the real one back.
+pfc_real_fetch = pfc.fetch_reviewed_artifact
+
 REVIEW = {
     "summary": "`load` gained a check its callers do not expect.",
     "findings": [
@@ -54,6 +58,9 @@ def lane(monkeypatch, tmp_path):
         "issue": {"number": 7, "pull_request": {"url": "https://api/pulls/7"}},
         "trusted": True,
         "witness": 4242,
+        # The run whose footer the witness read, and so the run whose artifact the
+        # commanded finding must come from.
+        "posting_run": 5001,
         "review": dict(REVIEW),
         # A REAL anchored pair: the review is verified here, so a placeholder diff
         # would refuse on provenance and every happy-path case would pass for the
@@ -79,14 +86,53 @@ def lane(monkeypatch, tmp_path):
         lambda repo, number, sha, bot_login: state["witness"],
     )
     monkeypatch.setattr(
-        pfc, "fetch_reviewed_artifact",
-        lambda repo, number, sha, output_dir: state["review"],
+        pfc, "posting_run_id",
+        lambda repo, number, sha, bot_login: state["posting_run"],
     )
+
+    def fake_fetch(repo, number, sha, output_dir, *, run_id):
+        # run_id is asserted rather than ignored: the artifact this lane returns is
+        # the posting run's, so a caller that stopped passing it would be caught
+        # here rather than silently reading whatever this stub holds.
+        assert run_id == state["posting_run"]
+        return state["review"]
+
+    monkeypatch.setattr(pfc, "fetch_reviewed_artifact", fake_fetch)
     monkeypatch.setattr(
         pfc, "fetch_anchored_pair", lambda repo, base, head: state["fetched"],
     )
     state["output"] = tmp_path / "context"
     return state
+
+
+def real_artifact_fetch(lane, monkeypatch, artifacts):
+    """Put the REAL fetch_reviewed_artifact back and serve it `artifacts`.
+
+    The lane stubs the fetch wholesale, which is right for the tests that are
+    about the other preconditions and wrong for the ones about the fetch itself:
+    a stub raising what it was told to raise proves nothing about the listing,
+    the expiry filter or the run binding.
+    """
+    monkeypatch.setattr(pfc, "fetch_reviewed_artifact", pfc_real_fetch)
+    inner = pfc.api_json
+
+    def fake(path, **kw):
+        if "/actions/artifacts?" in path:
+            return {"artifacts": artifacts}
+        return inner(path, **kw)
+
+    monkeypatch.setattr(pfc, "api_json", fake)
+
+
+def zipped_review(review):
+    """An Actions artifact zip, as download_review will really unzip it."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as bundle:
+        bundle.writestr("review.json", json.dumps(review))
+    return buf.getvalue()
 
 
 def run(lane, body="/fix 1"):
@@ -185,11 +231,28 @@ class TestThePreconditions:
     def test_a_missing_review_artifact_is_refused(self, lane, monkeypatch):
         # Actions artifacts expire (90 days), so this is a real state rather than
         # a theoretical one: the review is gone and the command cannot be honoured.
-        def gone(repo, number, sha, output_dir):
-            raise pfc.Refused("the review run's artifact is no longer available")
+        # The refusal is driven through the REAL fetch_reviewed_artifact against an
+        # empty listing, not a stub that raises what it was told to raise — the
+        # listing, the expiry filter and the run binding are the property here.
+        real_artifact_fetch(lane, monkeypatch, [])
+        with pytest.raises(pfc.Refused, match="no unexpired artifact"):
+            run(lane)
 
-        monkeypatch.setattr(pfc, "fetch_reviewed_artifact", gone)
-        with pytest.raises(pfc.Refused, match="no longer available"):
+    def test_an_expired_artifact_is_no_artifact(self, lane, monkeypatch):
+        # Expiry is what makes "absent" reachable, so it is filtered rather than
+        # trusted to be absent from the listing.
+        real_artifact_fetch(lane, monkeypatch, [
+            {"id": 100, "expired": True, "workflow_run": {"id": lane["posting_run"]}},
+        ])
+        with pytest.raises(pfc.Refused, match="no unexpired artifact"):
+            run(lane)
+
+    def test_the_command_is_refused_when_no_run_link_binds_the_review(self, lane, monkeypatch):
+        # posting_run_id returns None for a comment whose footer carries no run
+        # link. Without a run there is nothing to bind the artifact to, so the
+        # command is refused rather than falling back to name-and-recency.
+        monkeypatch.setattr(pfc, "posting_run_id", lambda *a, **k: None)
+        with pytest.raises(pfc.Refused, match="carries no run link"):
             run(lane)
 
 
@@ -304,3 +367,81 @@ class TestTheEmittedOutputsMatchWhatPrepareReturned:
         emitted = self.emit(lane, monkeypatch, tmp_path, capsys)
         for key, value in emitted.items():
             assert value != "", f"{key} was emitted empty; the reader cannot tell it apart from a real value"
+
+
+class TestTheArtifactIsTheOneThatWasPosted:
+    """The artifact the commanded finding is derived from must be the output of the
+    run that POSTED the review the commander read.
+
+    The name is derivable from the pull request number and the head SHA, both
+    public, and the listing is repository-wide — so name-and-recency alone would let
+    any artifact in the repository carrying that name become the trust anchor for
+    `/fix N`, deciding which defect is addressed and what text the plan session
+    reads inside the `<commanded_finding>` fence.
+
+    Driven through the real fetch_reviewed_artifact and the real download_review,
+    with only api_json/api_request standing in for the network, because the listing
+    filter and the run binding are the properties under test.
+    """
+
+    GENUINE = {"summary": "the posted review", "findings": [], "residual_risk": ""}
+    OTHER = {"summary": "another run's review", "findings": [], "residual_risk": ""}
+
+    def fetch(self, monkeypatch, tmp_path, artifacts, zips, run_id):
+        monkeypatch.setattr(
+            pfc, "api_json", lambda path, **kw: {"artifacts": artifacts})
+        import github_api
+        monkeypatch.setattr(
+            github_api, "api_request",
+            lambda path, **kw: zips[int(path.rstrip("/zip").rsplit("/", 1)[-1])])
+        return pfc.fetch_reviewed_artifact(
+            "o/r", 7, "reviewed-sha", tmp_path, run_id=run_id)
+
+    def test_the_posting_runs_artifact_is_the_one_read(self, monkeypatch, tmp_path):
+        review = self.fetch(
+            monkeypatch, tmp_path,
+            [{"id": 100, "expired": False, "workflow_run": {"id": 5001}}],
+            {100: zipped_review(self.GENUINE)},
+            run_id=5001,
+        )
+        assert review["summary"] == "the posted review"
+
+    def test_a_newer_same_named_artifact_from_another_run_is_not_read(
+            self, monkeypatch, tmp_path):
+        # The forge: a higher artifact id under the same name, from any other run in
+        # the repository. max(id) preferred it; the run binding refuses it.
+        review = self.fetch(
+            monkeypatch, tmp_path,
+            [
+                {"id": 100, "expired": False, "workflow_run": {"id": 5001}},
+                {"id": 200, "expired": False, "workflow_run": {"id": 5002}},
+            ],
+            {100: zipped_review(self.GENUINE), 200: zipped_review(self.OTHER)},
+            run_id=5001,
+        )
+        assert review["summary"] == "the posted review", (
+            "the artifact was chosen by recency, so a same-named artifact from "
+            "another run became the trust anchor for the commanded finding"
+        )
+
+    def test_an_artifact_carrying_no_run_is_not_read(self, monkeypatch, tmp_path):
+        # A listing entry with no workflow_run cannot be bound to the posting run,
+        # so it is not a candidate. Fail closed rather than treat absent as matching.
+        with pytest.raises(pfc.Refused, match="no unexpired artifact"):
+            self.fetch(
+                monkeypatch, tmp_path,
+                [{"id": 200, "expired": False}],
+                {200: zipped_review(self.OTHER)},
+                run_id=5001,
+            )
+
+    def test_an_unreadable_bundle_is_refused(self, monkeypatch, tmp_path):
+        # download_review's own refusal, reached through the real zipfile rather
+        # than asserted against a stub.
+        with pytest.raises(pfc.Refused, match="no readable review.json"):
+            self.fetch(
+                monkeypatch, tmp_path,
+                [{"id": 100, "expired": False, "workflow_run": {"id": 5001}}],
+                {100: b"not a zip at all"},
+                run_id=5001,
+            )
