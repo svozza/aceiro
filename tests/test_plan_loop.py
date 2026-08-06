@@ -397,10 +397,22 @@ class TestPlanUserMessage:
     def test_a_non_integer_ordinal_is_refused(self, tmp_path):
         # bool is an int in Python, so True would index findings[1]. A command's
         # ordinal is a number the workflow parsed out of a comment body.
-        context = self.write_context(tmp_path)
-        for value in ("1", 1.0, True, None, [1]):
+        #
+        # TWO findings, and matched on this guard's own message. With one finding
+        # True coerced to index 1, fell off the end, and was caught by the
+        # past-the-end guard — whose message also contains "index" — so the bool arm
+        # could be deleted with nothing failing. Two findings make findings[1] a real
+        # element, which is the case that bites: a fix delivered for a finding
+        # nobody commanded.
+        context = self.write_context(tmp_path, findings=[
+            {"path": "src/app.py", "line": 2, "severity": "high",
+             "title": "load() breaks callers", "body": "the body"},
+            {"path": "src/util.py", "line": 1, "severity": "low",
+             "title": "a second finding", "body": "the body"},
+        ])
+        for value in ("1", 1.0, True, False, None, [1]):
             (context / "commanded_index.json").write_text(json.dumps({"index": value}))
-            with pytest.raises(Rejection, match="index"):
+            with pytest.raises(Rejection, match="must be an integer"):
                 plan_loop.read_commanded_finding(context, POLICY)
 
     def mutate_finding(self, context, **fields):

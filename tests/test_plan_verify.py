@@ -1015,9 +1015,39 @@ class TestTheApplierIsSharedWithTheDelivery:
         # Exactly-once is what makes the returned bytes safe to commit, so it has
         # to be the helper's property and not a check the caller happens to run
         # first. Called directly, with no containment phase in front of it.
+        #
+        # Matched on "at the reviewed SHA", not the bare word "ambiguous" that BOTH
+        # ambiguity guards share: this input duplicates the anchor at the reviewed
+        # SHA and in pending content alike, so either guard alone satisfied a loose
+        # match and the reviewed-SHA one could be deleted with nothing failing.
         tree = {"src/app.py": b"pass\npass\n"}
-        with pytest.raises(Rejection, match="ambiguous"):
+        with pytest.raises(Rejection, match="at the reviewed SHA"):
             apply_patch_steps([(0, anchored_patch(old="pass\n"))], tree_source(tree))
+
+    def test_an_anchor_duplicated_only_at_the_reviewed_sha_is_ambiguous(self):
+        # The case that separates the two guards. Step 0 collapses the duplicate, so
+        # by the time step 1 is applied its anchor is unique in PENDING content and
+        # only the reviewed-SHA count is 2. That count is the provenance claim — the
+        # docstring's "`old` is proof the model read the file" — so a plan whose
+        # anchor was ambiguous in the file it was written against is refused even
+        # though applying it would be unambiguous.
+        tree = {"src/app.py": b"dup\ndup\n"}
+        with pytest.raises(Rejection, match="at the reviewed SHA"):
+            apply_patch_steps([
+                (0, anchored_patch("s0", old="dup\ndup\n", new="dup\n")),
+                (1, anchored_patch("s1", old="dup\n", new="unique\n")),
+            ], tree_source(tree))
+
+    def test_an_anchor_a_previous_step_duplicated_is_ambiguous_too(self):
+        # The complementary case, so neither guard can be deleted: unique at the
+        # reviewed SHA, duplicated once step 0 has applied. Distinguished by its own
+        # message, since matching "ambiguous" alone cannot tell which fired.
+        tree = {"src/app.py": b"keep\ndup\n"}
+        with pytest.raises(Rejection, match="have applied"):
+            apply_patch_steps([
+                (0, anchored_patch("s0", old="keep\n", new="dup\n")),
+                (1, anchored_patch("s1", old="dup\n", new="three\n")),
+            ], tree_source(tree))
 
 
 class TestWriteClassTargets:

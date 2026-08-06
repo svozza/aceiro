@@ -368,6 +368,34 @@ class TestTheEmittedOutputsMatchWhatPrepareReturned:
         for key, value in emitted.items():
             assert value != "", f"{key} was emitted empty; the reader cannot tell it apart from a real value"
 
+    @pytest.mark.parametrize("ref", ["base_ref", "head_ref"])
+    def test_an_empty_ref_is_refused_rather_than_emitted(self, lane, monkeypatch, tmp_path,
+                                                         capsys, ref):
+        # Scanning the lines the writer PRODUCED cannot reach the guard: it exists
+        # to stop an empty value being written, so on the happy path the file is
+        # byte-identical whether it is there or not. This drives an empty ref
+        # through main() instead, which is the only way the guard runs.
+        #
+        # Reachable because both refs come from the pull request payload, and a
+        # payload field this harness did not choose can be absent or empty.
+        monkeypatch.setattr(
+            pfc, "prepare",
+            lambda **kw: {"head_sha": "reviewed-sha", "base_sha": "event-base",
+                          "base_ref": "main", "head_ref": "feature/x", "index": 0} | {ref: ""},
+        )
+        output = tmp_path / "step-output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+        monkeypatch.setenv("ISSUE_NUMBER", "7")
+        monkeypatch.setenv("COMMENT_BODY", "/fix 1")
+        monkeypatch.setenv("COMMENT_AUTHOR", "maintainer")
+        monkeypatch.setattr(
+            "sys.argv", ["prepare_fix_context.py", "--output-dir", str(lane["output"])])
+        assert pfc.main() == 1, f"an empty {ref} was emitted instead of refused"
+        assert "gate" in capsys.readouterr().err
+        assert f"{ref}=" not in output.read_text()
+
 
 class TestTheArtifactIsTheOneThatWasPosted:
     """The artifact the commanded finding is derived from must be the output of the

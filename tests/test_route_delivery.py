@@ -14,6 +14,7 @@ counting step kinds, and it must fail closed rather than emit a guess.
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -185,18 +186,64 @@ class TestItTouchesNothingElse:
     def test_it_needs_no_token(self, tmp_path, outputs, monkeypatch):
         # The job holds permissions: {} and no secrets. Reading a token here would
         # be a credential in the one job that exists to have none.
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        assert "mode=suggestions" in run(tmp_path, {"steps": [suggest()]}, outputs)
+        #
+        # Deleting the variable only proves the module does not REQUIRE it: an
+        # os.environ.get, a log line, or any opportunistic use passes. So the read
+        # itself is observed — this is the file's only credential-boundary
+        # assertion, and it has to assert the boundary.
+        monkeypatch.setenv("GITHUB_TOKEN", "a-real-looking-token")
+        (tmp_path / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
+        sys.argv = ["route_delivery.py", "--artifact-dir", str(tmp_path)]
 
-    def test_it_reads_only_the_plan(self, tmp_path, outputs):
+        # Installed around main() only, and restored immediately: monkeypatch's own
+        # setenv/undo machinery reads os.environ, so a watcher left in place records
+        # the FIXTURE's reads and reports a credential the router never touched.
+        looked_for = []
+        real_getenv = os.environ.get
+
+        def watching(key, default=None):
+            if any(word in key for word in ("TOKEN", "SECRET", "PASSWORD")):
+                looked_for.append(key)
+            return real_getenv(key, default)
+
+        os.environ.get = watching
+        try:
+            route_delivery.main()
+        finally:
+            os.environ.get = real_getenv
+
+        assert "mode=suggestions" in outputs.text()
+        assert looked_for == [], f"the router read {looked_for}; this job holds no credential"
+        assert "a-real-looking-token" not in outputs.text()
+
+    def test_it_reads_only_the_plan(self, tmp_path, outputs, monkeypatch):
         # No review.json, no diff, no changed_files, no quarantine tree: the
         # routing decision is over step kinds alone, and anything else it read
         # would be an input nothing has verified being trusted for more than
         # choosing a job.
+        #
+        # The bundle's other files are PRESENT here. Asserting they are absent
+        # catches only an unconditional read, while the real CI condition is a
+        # bundle that carries them — so a router trusting review.json whenever one
+        # exists passed. Every open is recorded instead.
+        for name in ("review.json", "diff.patch", "changed_files.json"):
+            (tmp_path / name).write_text("{}")
+        opened = []
+        real_read = Path.read_text
+        real_open = Path.open
+
+        def watching_read(self, *args, **kwargs):
+            opened.append(self.name)
+            return real_read(self, *args, **kwargs)
+
+        def watching_open(self, *args, **kwargs):
+            opened.append(self.name)
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", watching_read)
+        monkeypatch.setattr(Path, "open", watching_open)
         assert "mode=suggestions" in run(tmp_path, {"steps": [suggest()]}, outputs)
-        # plan.json is the only thing it opened. The output file is the fixture's,
-        # written by the router on purpose; everything else the bundle carries --
-        # review.json, diff.patch, changed_files.json -- is absent here and the
-        # routing decision did not miss it.
-        assert not (tmp_path / "review.json").exists()
-        assert sorted(p.name for p in tmp_path.iterdir()) == ["github_output", "plan.json"]
+        assert set(opened) <= {"plan.json", "github_output"}, (
+            f"the router opened {sorted(set(opened) - {'plan.json', 'github_output'})}, "
+            "which nothing has verified"
+        )

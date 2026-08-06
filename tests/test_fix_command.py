@@ -10,6 +10,8 @@ position they READ, which is 1-based; commanded_index.json is 0-based, because i
 indexes a list. Every test here that names a number names both.
 """
 
+from pathlib import Path
+
 import pytest
 
 from conftest import POLICY
@@ -23,6 +25,37 @@ class TestTheCapIsThePolicys:
         # value after an operator raised the cap, and every command for a
         # newly-enabled finding would read correctly and do nothing.
         assert MAX_ORDINAL == POLICY["artifact_schema"]["findings"]["max_items"]
+
+    def test_the_cap_TRACKS_the_policy_rather_than_agreeing_with_it_today(self, tmp_path,
+                                                                         monkeypatch):
+        # The assertion above is satisfied by a hardcoded 10, because max_items IS 10
+        # — so it detects a WRONG constant but never a RESTATED one, which is the
+        # only failure the class exists to prevent. This reloads the module against a
+        # policy with a different cap: a literal cannot follow.
+        import importlib
+        import json as _json
+
+        import fix_command
+
+        raised = _json.loads(Path(fix_command.POLICY_PATH).read_text())
+        raised["artifact_schema"]["findings"]["max_items"] = 4
+        policy = tmp_path / "policy.json"
+        policy.write_text(_json.dumps(raised))
+
+        monkeypatch.setattr(fix_command, "POLICY_PATH", policy)
+        monkeypatch.setattr("artifact.POLICY_PATH", policy)
+        reloaded = importlib.reload(fix_command)
+        try:
+            assert reloaded.MAX_ORDINAL == 4, (
+                "MAX_ORDINAL did not follow the policy, so it is restated rather than "
+                "derived and would keep bounding at the old cap"
+            )
+            # And the pattern follows it too, or the top ordinal is refused a layer
+            # earlier than the range check.
+            assert reloaded.parse_fix_command("/fix 4") == 3
+        finally:
+            monkeypatch.undo()
+            importlib.reload(fix_command)
 
     def test_the_pattern_can_express_the_highest_legal_ordinal(self):
         # The digit bound and the cap are one decision. A pattern narrower than the
