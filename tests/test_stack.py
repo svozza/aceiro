@@ -79,6 +79,29 @@ class TestTheDedupKey:
         other = FINDING | {"path": "src/util.py", "line": 1}
         assert key() != key(finding=other)
 
+    def test_the_path_alone_distinguishes_two_findings(self):
+        # Varying path AND line together lets the anchored component carry the
+        # difference on its own, so `path` is never independently pinned. Two files
+        # sharing an anchor line is routine for boilerplate.
+        sigs = {("src/app.py", 1): "def handle(request):",
+                ("src/util.py", 1): "def handle(request):"}
+        here = FINDING | {"path": "src/app.py", "line": 1}
+        there = FINDING | {"path": "src/util.py", "line": 1}
+        assert key(finding=here, signatures=sigs) != key(finding=there, signatures=sigs)
+
+    def test_the_line_alone_distinguishes_two_findings(self):
+        # The collision that made a delivered fix refuse a DIFFERENT finding: two
+        # copy-pasted blocks give two anchors the same window=1 signature, so
+        # without the line the key cannot tell the two findings apart.
+        window = "    log.info(token)"
+        sigs = {("svc.py", 3): window, ("svc.py", 8): window}
+        first = FINDING | {"path": "svc.py", "line": 3}
+        second = FINDING | {"path": "svc.py", "line": 8}
+        assert key(finding=first, signatures=sigs) != key(finding=second, signatures=sigs), (
+            "two findings on repeated code share one key, so the follow-up pull "
+            "request for the first refuses every /fix for the second at this head"
+        )
+
     def test_the_key_ignores_the_findings_prose(self):
         # The measured lesson (ADR-0009 addendum): the model rewords every finding
         # on essentially every run over a byte-identical diff. A key that moves
@@ -185,6 +208,14 @@ class TestTheMarkerCarriesTheKey:
         # become ownership of a deleted author's PR.
         pr = {"body": f"{stack.fix_marker(key())}\nx", "user": None}
         assert stack.owned_fix_key(pr, "") is None
+        # A null author already fails the author comparison, so it cannot reach the
+        # `not bot_login` guard. This is the case that does: GitHub reports the
+        # login as the empty string, which an unresolved bot_login would EQUAL.
+        emptied = {"body": f"{stack.fix_marker(key())}\nx", "user": {"login": ""}}
+        assert stack.owned_fix_key(emptied, "") is None, (
+            "an unresolved identity claimed ownership, so every future /fix for "
+            "that finding would be refused against a PR nobody can prove is ours"
+        )
 
 
 def patch_plan(*paths):

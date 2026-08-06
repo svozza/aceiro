@@ -98,12 +98,21 @@ def fix_key(pr_number: int, head_sha: str, finding: dict,
       honoured. This is exactly where the key differs from a suggestion's, which
       deliberately excludes the SHA because the head churns when the suggestion
       does not.
-    - the finding, as its PATH plus the anchor signature of its line — the
-      anchored CODE, never the model's prose. Measured on the extraction source:
-      the model reworded every finding on every run over a byte-identical diff, so
-      a title-or-body-derived key never matched twice. Severity is out for the same
-      reason it is out of a suggestion's fingerprint: a re-graded finding is the
-      same defect.
+    - the finding, as its PATH plus its LINE plus the anchor signature of that
+      line — the anchored CODE, never the model's prose. Measured on the extraction
+      source: the model reworded every finding on every run over a byte-identical
+      diff, so a title-or-body-derived key never matched twice. Severity is out for
+      the same reason it is out of a suggestion's fingerprint: a re-graded finding
+      is the same defect.
+
+    The line is IN the key, on both branches. A window=1 signature is not unique
+    for periodic code — two copy-pasted blocks give two anchors the same window —
+    so signature-alone made two distinct findings one key, and the follow-up pull
+    request for the first then refused every later command for the second with
+    AlreadyDelivered, pointing the commander at a fix for another defect. Costs no
+    anchor stability to include: `head_sha` is already a component, so within one
+    key's scope the file's bytes are fixed and the line cannot shift. This is the
+    same collision suggest.suggestion_fingerprint answers by folding `old` in.
 
     A signature the map does not carry falls back to the path and line alone.
     Provenance makes that unreachable for a verified plan — the finding's line must
@@ -119,7 +128,7 @@ def fix_key(pr_number: int, head_sha: str, finding: dict,
     signature = signatures.get((path, line))
     anchored = (
         f"unanchored\0{line}" if signature is None
-        else f"anchored\0{normalize_signature_line(signature)}"
+        else f"anchored\0{line}\0{normalize_signature_line(signature)}"
     )
     parts = [str(pr_number), head_sha, path, anchored]
     return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
