@@ -51,7 +51,7 @@ from artifact import redact_line, rendered_findings, severity_ranks
 from github_api import api_json, fail, graphql, paginate, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from prepare_context import fetch_anchored_pair
-from verify import Rejection, verify
+from verify import NEWLINES_RE, Rejection, verify
 
 # The incumbent's marker and heading. Defaults, so a caller passing neither posts
 # exactly what it always did; a second generator overrides both.
@@ -73,6 +73,29 @@ def sha_stamp(sha: str) -> str:
     comment as THIS run's. Rendered by one function so the withdrawal's search
     string cannot drift from what render() wrote."""
     return f"reviewed SHA: `{sha}`"
+
+
+def stamped_for(body: str | None, sha: str) -> bool:
+    """Whether `body` is a comment WE rendered for `sha`.
+
+    Read from the LAST line, not searched for anywhere in the body. render()
+    splices the summary, every finding body and the residual risk above the
+    footer, and all three are generator text quoting contributor code — so a
+    contributor can plant `reviewed SHA: \\`<sha>\\`` in a line of their diff, have
+    it quoted into a finding, and a substring search would then accept that
+    comment as proof a review was posted for a SHA it was never posted for. The
+    footer is the only part of the body the executor authors, and it is the last
+    line, so POSITION is what makes the stamp ours rather than quoted. The clause
+    order within the footer is deliberately not matched: render() owns that
+    wording, and pinning it here would make the witness fail closed on a footer
+    reword — a refusal nobody would connect to this function.
+
+    Same shape as find_own_comments' marker-from-line-1 rule, and the same trade:
+    a line appended below our footer makes the comment unrecognisable. That fails
+    CLOSED here — an unrecognised comment is no witness and withdraws nothing.
+    """
+    last_line = NEWLINES_RE.sub("\n", body or "").rstrip("\n").rsplit("\n", 1)[-1]
+    return sha_stamp(sha) in last_line
 
 
 def render(
@@ -167,6 +190,34 @@ def resolve_bot_login() -> str:
     return login
 
 
+# The footer's run link, as render() writes it: .../actions/runs/<run_id>. Read
+# back to bind an artifact to the run that POSTED, never to pick a run.
+_FOOTER_RUN_RE = re.compile(r"/actions/runs/(\d+)")
+
+
+def posting_run_id(repo: str, pr_number: int, reviewed_sha: str, *,
+                   marker: str = MARKER, bot_login: str) -> int | None:
+    """The Actions run id that posted our review for `reviewed_sha`, or None.
+
+    The witness answers "was a review posted for this head". This answers "by
+    which run", which is what lets the remediation lane fetch the artifact that
+    run uploaded rather than whichever same-named artifact happens to be newest.
+
+    Read from the same last line as stamped_for, and for the same reason: the
+    footer is the only part of the body the executor authors. A run id recovered
+    from anywhere else in the body would be contributor-influenced, which is the
+    defect this closes rather than a way to close it. Returns None when the footer
+    carries no run link, so a caller must decide what an unbindable comment means
+    — this function never guesses a run.
+    """
+    existing = find_own_comment(repo, pr_number, marker, bot_login)
+    if existing is None or not stamped_for(existing.get("body"), reviewed_sha):
+        return None
+    body = NEWLINES_RE.sub("\n", existing.get("body") or "").rstrip("\n")
+    found = _FOOTER_RUN_RE.search(body.rsplit("\n", 1)[-1])
+    return int(found.group(1)) if found else None
+
+
 def posted_review_witness(repo: str, pr_number: int, reviewed_sha: str, *,
                           marker: str = MARKER, bot_login: str) -> int | None:
     """The id of our posted review for `reviewed_sha`, or None if there is none.
@@ -187,11 +238,11 @@ def posted_review_witness(repo: str, pr_number: int, reviewed_sha: str, *,
     question the artifact cannot.
 
     Ownership and the stamp are both reused rather than restated — find_own_comment
-    for the marker-and-author rule, sha_stamp for the search string — so a witness
+    for the marker-and-author rule, stamped_for for the footer test — so a witness
     cannot come to disagree with the comment render() writes.
     """
     existing = find_own_comment(repo, pr_number, marker, bot_login)
-    if existing is None or sha_stamp(reviewed_sha) not in (existing.get("body") or ""):
+    if existing is None or not stamped_for(existing.get("body"), reviewed_sha):
         return None
     return cast("int", existing["id"])
 
@@ -367,7 +418,7 @@ def withdraw_own_review(repo: str, pr_number: int, marker: str, reviewed_sha: st
     never stale and no event to correct it.
     """
     existing = find_own_comment(repo, pr_number, marker, bot_login)
-    if existing is None or sha_stamp(reviewed_sha) not in (existing.get("body") or ""):
+    if existing is None or not stamped_for(existing.get("body"), reviewed_sha):
         print(f"our review for {reviewed_sha} is no longer the posted comment; nothing withdrawn")
         return False
     api_json(

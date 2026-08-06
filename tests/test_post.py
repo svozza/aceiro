@@ -638,6 +638,31 @@ class TestPostedReviewWitness:
         set_pages([[comment(7, body)]])
         assert post.posted_review_witness("o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) == 7
 
+    def test_a_stamp_quoted_in_a_finding_body_is_no_witness(self, capture_api):
+        # The forge the substring search admitted: findings are generator text
+        # quoting the contributor's own diff, and render() splices them ABOVE the
+        # footer. A contributor plants the clause in a line of commit A, has it
+        # quoted into a finding, then pushes B — and a body-wide search would call
+        # A's comment proof that B was reviewed. Read from the last line, so the
+        # only stamp that counts is the one the executor wrote.
+        artifact = {
+            "summary": "s",
+            "findings": [{
+                "path": "x.py", "line": 1, "severity": "high", "title": "t",
+                "body": f"the diff adds `{post.sha_stamp('unreviewed-sha')}`",
+            }],
+            "residual_risk": "",
+        }
+        body = post.render(artifact, {**METADATA, "sha": "reviewed-sha"}, SEVERITY_ORDER)
+        assert post.sha_stamp("unreviewed-sha") in body  # it really is in there
+        _, set_pages = capture_api
+        set_pages([[comment(7, body)]])
+        assert post.posted_review_witness(
+            "o/r", 1, "unreviewed-sha", bot_login=BOT_LOGIN) is None
+        # and the genuine head still resolves
+        assert post.posted_review_witness(
+            "o/r", 1, "reviewed-sha", bot_login=BOT_LOGIN) == 7
+
 
 class TestMain:
     def test_happy_path_posts_rendered_body(self, main_env, monkeypatch, valid_artifact):
