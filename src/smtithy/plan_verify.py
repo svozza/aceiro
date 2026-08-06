@@ -758,6 +758,22 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                 "a suggestion block cannot express — its lines are always committed terminated, so "
                 "the join this describes would be verified and then not performed"
             )
+        # The complementary shape, and the same divergence from the other side. The
+        # placement rule above admits an `old` that stops just BEFORE a mid-file
+        # terminator without consuming it (its "the terminator is the next byte"
+        # arm), and the join rule cannot fire because `old` carries no terminator to
+        # drop. The applier then leaves that newline in place — modelling an extra
+        # blank line, or an empty one for a deletion — while the suggestion block
+        # replaces the whole addressed line and commits neither. Requiring `old` to
+        # consume the terminator whenever one follows makes the applier's model and
+        # the committed bytes the same object again, which is what ADR-0005's single
+        # applier is for. Exempt at end of file, where there is no terminator.
+        if not old_bytes.endswith(b"\n") and original[end:end + 1] == b"\n":
+            raise Rejection(
+                f"{where}: stops just before the line terminator of {path!r} without consuming "
+                "it, so the applier would model an extra line where the suggestion block replaces "
+                "the whole addressed line — include the terminator in `old`"
+            )
 
 
 # -------------------------------------------------------------- cardinality --

@@ -290,9 +290,13 @@ def review_comments(repo: str, pr_number: int):
 # fix and no pull request to explain it. Blobs, trees and commits are UNREFERENCED
 # objects: nothing is visible to anyone until the final create_ref, and every
 # partial failure before that point leaves only garbage GitHub eventually
-# collects. The single visible mutation is also what gives the dedup key its
-# atomicity — create_ref 422s on a ref that already exists, so GitHub itself is
-# the compare-and-swap.
+# collects. The single visible mutation is create_ref, which 422s on a ref that
+# already exists — atomic, but on the BRANCH NAME. It is not the deduplication key's
+# compare-and-swap and must not be read as one: the branch is named by a
+# model-authored push_branch step while the key is fix_key(pr, head_sha, finding),
+# and nothing binds the two. Deduplication is stack.find_existing_fix's line-1
+# marker search, plus the fix lane's per-pull-request concurrency group, which is
+# what makes that read-then-write sequence safe.
 #
 # Every call below is a POST and therefore never retried. That is deliberate and
 # it is why the ordering matters: an uncertain outcome on an unreferenced object
@@ -383,10 +387,13 @@ def create_ref(repo: str, branch: str, sha: str) -> dict | list:
     outside refs/heads, which no pull request can open from and nothing in the UI
     shows.
 
-    422s if the ref already exists, which is the compare-and-swap this delivery's
-    deduplication relies on rather than a failure to paper over: GitHub decides who
-    wins, atomically, with no read-then-write window for a second command to slip
-    into.
+    422s if the ref already exists. Atomic, and GitHub decides who wins — but on
+    the BRANCH NAME, which is not the deduplication key. Two commands for one
+    finding whose plans word the branch differently both succeed here; what refuses
+    the second is stack.find_existing_fix reading the key from line 1 of the
+    follow-up pull request's body, serialised by the lane's concurrency group.
+    stack.deliver_stacked_pr turns this 422 into a Refusal naming the branch, since
+    a bare HTTPError reaches a commander as a traceback.
     """
     return api_json(
         f"/repos/{repo}/git/refs",

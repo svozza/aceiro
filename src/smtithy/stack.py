@@ -286,8 +286,12 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
        anything;
     2. blobs, a tree and a commit — all UNREFERENCED objects, invisible to
        everyone and eventually garbage-collected;
-    3. create_ref, the first visible mutation, and the compare-and-swap: it 422s if
-       the branch exists, so two concurrent commands cannot both win;
+    3. create_ref, the first visible mutation. It 422s if the branch exists, which
+       is atomic on the BRANCH NAME — not on the deduplication key, which nothing
+       binds to the branch the plan happens to name. What makes step 1 safe despite
+       being a read-then-write is the fix lane's per-pull-request concurrency group
+       (`cancel-in-progress: false`), which serialises commands rather than running
+       them together;
     4. open_pull_request.
 
     The one window that cannot be closed is between 3 and 4: a failure there leaves

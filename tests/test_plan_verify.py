@@ -732,6 +732,33 @@ class TestSuggestLineProvenance:
         # terminator rule must not catch the deletion suggestion.
         contained({"steps": [anchored_suggest(line=2, old="def load(path):\n", new="")]})
 
+    # The complementary shape, and the same divergence from the other side: an `old`
+    # that stops just BEFORE a mid-file terminator without consuming it. The
+    # placement rule admits it ("the terminator is the next byte"), and the join rule
+    # above cannot fire because `old` carries no terminator to drop — so the applier
+    # left the newline in place, modelling an extra line, while the suggestion block
+    # replaces the whole addressed line and commits neither.
+
+    @pytest.mark.parametrize("new", ["def load(path=None):\n", "", "a\nb\n"])
+    def test_an_old_stopping_before_a_mid_file_terminator_rejects(self, new):
+        # Parametrised over the shapes that reach it differently: a terminated
+        # replacement, the deletion form (exempt from the join rule), and a
+        # multi-line one.
+        with pytest.raises(Rejection, match="without consuming it"):
+            contained({"steps": [anchored_suggest(line=2, old="def load(path):", new=new)]})
+
+    def test_the_applied_bytes_are_the_committed_bytes_for_every_admitted_suggestion(self):
+        # The property the rule exists for, asserted directly rather than through the
+        # rejection: for an `old` that DOES consume its terminator, what the shared
+        # applier models is what a contributor's click commits.
+        tree = {"src/app.py": b"import os\ndef load(path):\n    check(path)\n"}
+        step = anchored_suggest(line=2, old="def load(path):\n", new="def load(path=None):\n")
+        contained({"steps": [step]}, content_source=tree_source(tree))
+        applied = apply_patch_steps([(0, step)], tree_source(tree))["src/app.py"]
+        assert applied == b"import os\ndef load(path=None):\n    check(path)\n"
+        # One line in, one line out: the addressed range and the applier agree.
+        assert applied.count(b"\n") == tree["src/app.py"].count(b"\n")
+
 
 class TestBounding:
     def test_at_cap_distinct_files_pass(self):
