@@ -168,6 +168,20 @@ def pr_moved(pr: dict, reviewed_head: str, reviewed_base_ref: str) -> str | None
     return None
 
 
+def is_fork(pr: dict) -> bool:
+    """Head repo differs from base repo — or is gone entirely (a deleted fork's
+    head.repo is null), which gets the same treatment: no branch in the base
+    repository for a stacked pull request to base on (ADR-0009's addendum).
+
+    Here rather than in execute_plan because the command channel now asks the same
+    question, to decline an undeliverable command in seconds instead of after a
+    model session (ADR-0014). Two readers of one property, so it has one spelling —
+    the defect class three misleading `create_ref` comments came from.
+    """
+    head_repo = (pr["head"].get("repo") or {}).get("full_name")
+    return head_repo != pr["base"]["repo"]["full_name"]
+
+
 # ------------------------------------------------------- pull request reviews --
 
 # The reviews API is the one endpoint family in this client that can gate a

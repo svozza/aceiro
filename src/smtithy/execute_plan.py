@@ -14,7 +14,10 @@ output. Everything the plan is CHECKED against is first-party.
 The delivery decision is the EXECUTOR's, computed from checkable structure of
 the verified plan, never the model's (ADR-0009):
 
-- every fix step is `suggest` and they target ONE file -> suggestion comments;
+- the fix is ONE `suggest` step -> suggestion comments. One file and one
+  REGION: two suggestions on one path would post as independently applicable
+  comments, which is the atomicity rule's other half and is refused here as
+  well as at cardinality (ADR-0009's addendum C);
 - every fix step is `patch` and the write chain push_branch -> open_pr is
   present -> a stacked follow-up PR whose base is the reviewed PR's own head
   BRANCH, taken from the live PR context, never from the plan (`open_pr`
@@ -72,9 +75,11 @@ from typing import NamedTuple, cast
 
 from artifact import redact_line
 from diff_map import anchor_signatures
-from github_api import api_json, fail, pr_moved
+from github_api import api_json, fail, is_fork, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
-from plan_loop import read_commanded_findings
+from decline import emit as emit_decline
+from decline import ordinals_of
+from plan_loop import read_commanded_findings, read_commanded_indices
 from plan_verify import apply_patch_steps, tree_content_source, verify_plan
 from post import read_model_stamp, resolve_bot_login
 from prepare_context import fetch_anchored_pair
@@ -166,7 +171,8 @@ def decide_delivery(steps: list[dict]) -> Delivery:
     if fix_kinds == {"suggest"}:
         if pushes or opens:
             raise Refusal("a write chain (push_branch/open_pr) with no patch steps has nothing to push")
-        paths = {step["args"]["path"] for step in steps if step["kind"] == "suggest"}
+        suggestions = [step for step in steps if step["kind"] == "suggest"]
+        paths = {step["args"]["path"] for step in suggestions}
         if len(paths) > 1:
             # ADR-0009's atomicity rule: per-file suggestions of a multi-file
             # fix can be HALF-applied, leaving the branch broken in a way
@@ -175,6 +181,27 @@ def decide_delivery(steps: list[dict]) -> Delivery:
             raise Refusal(
                 f"suggestions span {len(paths)} files; a multi-file fix must be a stacked PR "
                 "(patch steps), never independently applicable pieces"
+            )
+        # The same rule counted over REGIONS rather than paths, which is the half
+        # ADR-0009 claimed was "checkable from the verified plan's step list" while
+        # nothing checked it: this decision routed on distinct paths and never
+        # counted steps, so two `suggest` steps on ONE path returned suggestions and
+        # posted both as independently applicable comments — the precise harm the
+        # atomicity rule exists to prevent.
+        #
+        # check_plan_cardinality refuses the same shape, and this is deliberately not
+        # a second READER of that property but the same re-decision every other arm
+        # here already is: "should be unreachable" is not a delivery mechanism, and
+        # the module's posture is that the process holding the write token decides
+        # for itself rather than trusting that a gate ran. The two refusals also
+        # serve different purposes — a Rejection at the gate is feedback a session can
+        # retry against, while a Refusal here is the last thing between a verified
+        # plan and a write.
+        if len(suggestions) > 1:
+            raise Refusal(
+                f"{len(suggestions)} suggest steps on {next(iter(paths))!r}; a suggestion is "
+                "applied on its own, so two on one file can be half-applied — coordinated "
+                "regions go to the stacked PR as patch steps"
             )
         return Delivery("suggestions", paths.pop())
 
@@ -279,14 +306,6 @@ def pr_snapshot(repo: str, pr_number: int, reviewed_head: str, reviewed_base_ref
     if moved := pr_moved(pr, reviewed_head, reviewed_base_ref):
         fail(f"{moved}; nothing executed")
     return pr
-
-
-def is_fork(pr: dict) -> bool:
-    """Head repo differs from base repo — or is gone entirely (a deleted
-    fork's head.repo is null), which gets the same treatment: no branch in
-    the base repository for a stacked PR to base on."""
-    head_repo = (pr["head"].get("repo") or {}).get("full_name")
-    return head_repo != pr["base"]["repo"]["full_name"]
 
 
 def main() -> None:
@@ -497,6 +516,25 @@ def main() -> None:
                 bot_login=bot_login,
             )
         except AlreadyDelivered as exc:
+            # The decline channel's second producer (ADR-0014). This refusal is
+            # knowable only here: fix_key needs anchor_signatures over the
+            # quarantine tree, which `command` never fetches, and find_existing_fix
+            # needs a live pull-request listing. Deliberately included — it is the
+            # refusal a maintainer is most likely to want an answer to, and the
+            # message already names and links the pull request that answers it.
+            #
+            # `stack` emits an OUTPUT rather than posting: it holds this lane's
+            # broadest credential, and making that job the one that talks to humans
+            # would split the decline into two implementations that must agree on
+            # their text. One posting job, one reason format, two producers.
+            emit_decline(
+                f"This command has already been delivered. {exc}",
+                head_sha=reviewed_sha,
+                # The ordinals come from the bundle's commanded_index.json, which is
+                # already a gate input here — the commanded findings are DERIVED from
+                # it — so the decline names the same command the scope gate checked.
+                ordinals=ordinals_of(read_commanded_indices(args.artifact_dir)),
+            )
             fail(f"command already delivered: {exc}")
         except StackRefusal as exc:
             fail(f"plan verified but refused at delivery: {exc}")

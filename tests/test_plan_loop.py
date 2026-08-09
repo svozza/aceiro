@@ -869,9 +869,15 @@ class TestThePromptAgreesWithTheDeliveryDecision:
         # fails if EITHER the prompt's boundary or the executor's moves.
         from execute_plan import Refusal, decide_delivery
 
-        # one file, any number of hunks -> the gate refuses two suggestions on one
-        # file at cardinality, so the deliverable suggestion plan is exactly one step
+        # one file, ONE region -> the deliverable suggestion plan, which the prompt
+        # states as "exactly ONE `suggest` step"
         assert decide_delivery(self.suggest_steps("src/a.py")).mode == "suggestions"
+        # two regions in one file -> never suggestions either, and refused HERE and
+        # not only at cardinality (ADR-0009 addendum C's defensive hardening, given
+        # its trigger by ADR-0013): two independently applicable comments for a fix
+        # that may only be correct as a whole is the harm the rule exists to prevent.
+        with pytest.raises(Refusal):
+            decide_delivery(self.suggest_steps("src/a.py", "src/a.py"))
         # more than one file -> never suggestions
         for paths in (("a.py", "b.py"), ("a.py", "b.py", "c.py")):
             with pytest.raises(Refusal):

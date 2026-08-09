@@ -308,6 +308,223 @@ class TestTheCommandNamesASet:
         assert self.indices(lane) == [0]
 
 
+class TestTheDeclineChannelRepliesToExactlyTwoRefusals:
+    """ADR-0014: a decline is a reply the command channel makes, and WHICH refusals
+    get one is a security property rather than a preference.
+
+    This module derives ONE of the two: the undeliverable-by-construction case, a
+    multi-path command on a fork pull request. `stack` derives the other
+    (AlreadyDelivered), because fix_key needs anchor signatures over a quarantine
+    tree this job never fetches.
+
+    **The untrusted-commander refusal must NEVER be replied to.** It is reached
+    before trust is resolved, so a reply there would let any passer-by make the
+    harness post a comment naming them — unauthenticated write amplification, and the
+    shape parse_fix_command already refuses when it declines to report malformed
+    commands.
+    """
+
+    TWO_FILES = [
+        REVIEW["findings"][0],
+        {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
+         "title": "check() is unreachable", "body": "the other body"},
+    ]
+
+    def fork(self, lane):
+        """The same pull request, from a fork: head repo differs from base repo."""
+        lane["pr"] = {**pr_payload(),
+                      "head": {"sha": "reviewed-sha", "ref": "feature/x",
+                               "repo": {"full_name": "contributor/r"}}}
+        return lane
+
+    def two_file_command(self, lane):
+        lane["review"] = {**REVIEW, "findings": self.TWO_FILES}
+        return lane
+
+    def test_a_multi_path_command_on_a_fork_is_undeliverable(self, lane):
+        # Two commanded findings on DISTINCT paths mean the fix must touch both
+        # (check_commanded_scope, ⊆); a review comment carries exactly one `path`, so
+        # the only delivery is a stacked pull request; and a fork's head branch does
+        # not exist in this repository for one to be based on. No delivery exists.
+        self.fork(self.two_file_command(lane))
+        with pytest.raises(pfc.Undeliverable, match="fork"):
+            run(lane, body="/fix 1,2")
+
+    def test_it_is_refused_before_any_context_is_written(self, lane):
+        # The whole point of hoisting it here: the commander would otherwise spend
+        # the approval gate, a model session, both gates, the prover and a
+        # contents: write job to receive a red run in a log they must click into.
+        self.fork(self.two_file_command(lane))
+        with pytest.raises(pfc.Undeliverable):
+            run(lane, body="/fix 1,2")
+        assert not lane["output"].exists(), (
+            "a context the plan session could read was composed for a command that has no "
+            "delivery, so the model session runs anyway"
+        )
+
+    def test_a_multi_path_command_on_a_same_repo_pull_request_is_honoured(self, lane):
+        # The calibration case, and it must stay legal: this is exactly the command
+        # ADR-0013 exists to enable, and it is stacked delivery's first reachable
+        # trigger. Declining it would make the decline channel a refusal of the
+        # feature it was built alongside.
+        self.two_file_command(lane)
+        assert run(lane, body="/fix 1,2")["indices"] == [0, 1]
+
+    def test_a_single_path_command_on_a_fork_is_honoured(self, lane):
+        # One path is one suggestion comment, which works on a fork — that is why
+        # suggestions were built first. Before ADR-0013 this whole path was
+        # unreachable, and it must stay reachable now.
+        self.fork(lane)
+        assert run(lane, body="/fix 1")["indices"] == [0]
+
+    def test_two_findings_sharing_a_file_on_a_fork_are_honoured(self, lane):
+        # The distinction is PATHS, not ordinals. Two findings in one file are one
+        # contiguous suggestion, which a fork can carry, so a check counting
+        # commanded findings rather than their paths would decline a deliverable
+        # command.
+        lane["review"] = {**REVIEW, "findings": [
+            REVIEW["findings"][0],
+            {**REVIEW["findings"][0], "line": 4, "title": "also here"},
+        ]}
+        self.fork(lane)
+        assert run(lane, body="/fix 1,2")["indices"] == [0, 1]
+
+    def test_the_reason_names_both_files_and_the_fork(self, lane):
+        # The commander has to be able to act on it: which files, and why there is no
+        # delivery. Without the paths they cannot tell which half of their command
+        # made it undeliverable.
+        self.fork(self.two_file_command(lane))
+        with pytest.raises(pfc.Undeliverable) as exc:
+            run(lane, body="/fix 1,2")
+        assert "src/app.py" in str(exc.value) and "src/util.py" in str(exc.value)
+        assert "fork" in str(exc.value)
+
+    def test_the_refusal_carries_the_head_and_ordinals_the_comment_must_date_itself_with(
+            self, lane):
+        # ADR-0009 addendum B's self-dating rule. They travel on the exception because
+        # only the raising site knows them, and re-deriving in main() would be a
+        # second reader of what the command said.
+        self.fork(self.two_file_command(lane))
+        with pytest.raises(pfc.Undeliverable) as exc:
+            run(lane, body="/fix 2,1")
+        assert exc.value.head_sha == "reviewed-sha"
+        # 1-BASED and sorted: the comment is addressed to the human who typed them.
+        assert exc.value.ordinals == "1,2"
+
+    def test_an_untrusted_commander_is_NEVER_replied_to(self, lane):
+        # THE security property. Trust is prepare()'s SECOND step, so everything
+        # before it runs for an untrusted commenter — a reply here is one any
+        # passer-by can trigger, naming themselves, under the harness's authenticated
+        # identity. Asserted on the TYPE, because that is what main() branches on.
+        lane["trusted"] = False
+        self.fork(self.two_file_command(lane))
+        with pytest.raises(pfc.Refused) as exc:
+            run(lane, body="/fix 1,2")
+        assert not isinstance(exc.value, pfc.Undeliverable), (
+            "the untrusted-commander refusal is an Undeliverable, so the harness would post a "
+            "comment naming anybody who types a /fix on a fork pull request"
+        )
+
+    @pytest.mark.parametrize("break_it,body", [
+        ("not_a_pr", "/fix 1,2"),
+        ("no_witness", "/fix 1,2"),
+        ("no_run_link", "/fix 1,2"),
+        ("bad_ordinal", "/fix 1,9"),
+    ])
+    def test_no_other_refusal_replies(self, lane, break_it, body):
+        # Everything else stays a red run. Two named refusals keep the decline
+        # DERIVABLE from the command's own shape — a command the channel cannot
+        # express gets a reply, a run that failed gets a failed run — rather than
+        # needing a hand-maintained exemption list, which is the shape §2's silently
+        # unasserted gate-lane list already cost.
+        self.fork(self.two_file_command(lane))
+        if break_it == "not_a_pr":
+            lane["issue"] = {"number": 7}
+        elif break_it == "no_witness":
+            lane["witness"] = None
+        elif break_it == "no_run_link":
+            lane["posting_run"] = None
+        with pytest.raises(pfc.Refused) as exc:
+            run(lane, body=body)
+        assert not isinstance(exc.value, pfc.Undeliverable), (
+            f"the {break_it!r} refusal replies; only a command the channel cannot express "
+            "and one already delivered get a comment"
+        )
+
+
+class TestTheEmittedDecline:
+    """main() is what writes the decline job's inputs, so the write is tested apart
+    from the derivation — the production defect this lane already had was an
+    ABSENT output rather than a wrong value.
+    """
+
+    def emit(self, lane, monkeypatch, tmp_path, body="/fix 1,2"):
+        lane["review"] = {**REVIEW, "findings": TestTheDeclineChannelRepliesToExactlyTwoRefusals.TWO_FILES}
+        lane["pr"] = {**pr_payload(),
+                      "head": {"sha": "reviewed-sha", "ref": "feature/x",
+                               "repo": {"full_name": "contributor/r"}}}
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+        monkeypatch.setenv("ISSUE_NUMBER", "7")
+        monkeypatch.setenv("COMMENT_BODY", body)
+        monkeypatch.setenv("COMMENT_AUTHOR", "maintainer")
+        monkeypatch.setattr(
+            "sys.argv", ["prepare_fix_context.py", "--output-dir", str(lane["output"])])
+        code = pfc.main()
+        return code, output.read_text()
+
+    def test_the_run_still_fails(self, lane, monkeypatch, tmp_path):
+        # The command was not performed. A green run claiming otherwise would be the
+        # artefact whose text over-claims that ADR-0009's addendum B was written
+        # about — and the reply is what makes failing cheaply sufficient, not a
+        # substitute for it.
+        code, _ = self.emit(lane, monkeypatch, tmp_path)
+        assert code == 1
+
+    def test_every_output_the_decline_job_reads_is_written(self, lane, monkeypatch, tmp_path):
+        import decline
+
+        _, written = self.emit(lane, monkeypatch, tmp_path)
+        assert "declined=true" in written
+        for name in decline.OUTPUTS:
+            assert name in written, f"{name} is absent; the decline job reads it as empty"
+
+    def test_the_emitted_reason_is_the_one_raised(self, lane, monkeypatch, tmp_path):
+        _, written = self.emit(lane, monkeypatch, tmp_path)
+        assert "fork" in written and "src/util.py" in written
+
+    def test_nothing_is_emitted_for_a_refusal_that_does_not_reply(self, lane, monkeypatch,
+                                                                  tmp_path):
+        # The security property again, through main() rather than the exception type:
+        # an untrusted commenter must leave GITHUB_OUTPUT with no decline in it, or
+        # the posting job fires.
+        lane["trusted"] = False
+        code, written = self.emit(lane, monkeypatch, tmp_path)
+        assert code == 1
+        assert "declined" not in written, (
+            "an untrusted commenter's refusal emitted a decline, so the harness posts a comment "
+            "naming them"
+        )
+
+    def test_an_honoured_command_emits_no_decline(self, lane, monkeypatch, tmp_path):
+        # The other direction: the ordinary path must not set the flag, or every
+        # successful command would also post a decline.
+        lane["review"] = dict(REVIEW)
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
+        monkeypatch.setenv("ISSUE_NUMBER", "7")
+        monkeypatch.setenv("COMMENT_BODY", "/fix 1")
+        monkeypatch.setenv("COMMENT_AUTHOR", "maintainer")
+        monkeypatch.setattr(
+            "sys.argv", ["prepare_fix_context.py", "--output-dir", str(lane["output"])])
+        assert pfc.main() == 0
+        assert "declined" not in output.read_text()
+
+
 class TestDrift:
     def test_a_head_that_moved_since_the_review_is_refused(self, lane):
         # ADR-0007: issue_comment carries an issue number and no SHAs, so the head

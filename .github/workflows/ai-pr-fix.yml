@@ -27,7 +27,11 @@
 #               same reason the review lane has one: the PLAN session reads the
 #               contributor-authored head with a model credential in scope.
 #   plan     -> asserts the gate was real (ADR-0006), then read-only generation.
-#   execute  -> re-verifies, re-proves, delivers. The only pull-requests:write.
+#   execute  -> re-verifies, re-proves, delivers suggestions.
+#   stack    -> the same gate for the stacked pull request; the only contents:write.
+#   decline  -> posts the harness's reply to a command it will not perform
+#               (ADR-0014). Holds pull-requests:write; `command` holds none, and
+#               that is the property the ADR turns on.
 #
 # TWO TRUST QUESTIONS, deliberately answered from two people. The COMMANDER's
 # permission authorises the fix (ADR-0007: the author's tells you nothing about
@@ -127,6 +131,14 @@ jobs:
       base_ref: ${{ steps.compose.outputs.base_ref }}
       head_ref: ${{ steps.compose.outputs.head_ref }}
       author_trusted: ${{ steps.author.outputs.trusted }}
+      # ADR-0014: this job DERIVES the undeliverable-by-construction refusal (it
+      # already fetches the pull request, and two commanded findings on distinct
+      # paths guarantee the stacked route) and emits it. It does NOT post it — see
+      # the `decline` job, and note this job's stated property above.
+      declined: ${{ steps.compose.outputs.declined }}
+      decline_reason: ${{ steps.compose.outputs.decline_reason }}
+      decline_head_sha: ${{ steps.compose.outputs.decline_head_sha }}
+      decline_ordinals: ${{ steps.compose.outputs.decline_ordinals }}
     steps:
       - name: Refuse to run unpinned
         # job.workflow_sha is the SHA the caller's `uses:` pin resolved to.
@@ -555,6 +567,18 @@ jobs:
       # records, kept by putting the scope here instead of on every fix run.
       contents: write
       pull-requests: write
+    outputs:
+      # ADR-0014's second producer. AlreadyDelivered is knowable only HERE: fix_key
+      # needs anchor_signatures over the quarantine tree, which `command` never
+      # fetches, and find_existing_fix needs a live pull-request listing. This job
+      # emits and does not post -- it holds the lane's broadest credential, and
+      # making it the one that talks to humans would split the decline into two
+      # implementations that must agree on their text. It gains an output and NO new
+      # scope, so the credential story is unchanged.
+      declined: ${{ steps.deliver.outputs.declined }}
+      decline_reason: ${{ steps.deliver.outputs.decline_reason }}
+      decline_head_sha: ${{ steps.deliver.outputs.decline_head_sha }}
+      decline_ordinals: ${{ steps.deliver.outputs.decline_ordinals }}
     env:
       HEAD_SHA: ${{ needs.command.outputs.head_sha }}
       BASE_SHA: ${{ needs.command.outputs.base_sha }}
@@ -625,6 +649,7 @@ jobs:
           fi
 
       - name: Verify, re-prove and deliver the stacked PR (fail-closed)
+        id: deliver
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
@@ -636,3 +661,88 @@ jobs:
             --policy src/smtithy/policy.json \
             --prover dist/plan/prove-cli.js \
             --allow stacked_pr
+
+  # ADR-0014: the honest reply to a command the channel will not perform. The
+  # credential-free job DECIDES and this scoped job ACTS -- the same shape as
+  # route -> execute/stack -- so `pull-requests: write` is minted only once a
+  # refusal was genuinely derived, downstream of the trust check.
+  #
+  # WHY NOT ON `command`: prepare_fix_context resolves the commander's trust as its
+  # SECOND step, so everything before it runs for an untrusted commenter. A write
+  # scope on the job reached directly from `issue_comment` is one minted for anybody
+  # who types `/fix 1`, whatever it is used for -- and it would break that job's
+  # stated property ("holds NO credential and no write scope") in the one place the
+  # property matters most.
+  #
+  # TWO PRODUCERS, because the two refusals are knowable in different places:
+  # `command` for undeliverable-by-construction (the pull request object it already
+  # fetches), `stack` for AlreadyDelivered (the quarantine tree plus a live PR
+  # listing). One posting job, one reason format.
+  #
+  # EXACTLY TWO REFUSALS REPLY. Everything else stays a red run, and that is a
+  # security property rather than a preference: the untrusted-commander refusal is
+  # reached BEFORE trust is resolved, so replying to it would let any passer-by make
+  # the harness post a comment naming them. prepare_fix_context raises a distinct
+  # `Undeliverable` for the cases that reply, so a new refusal is silent unless
+  # someone chooses that class deliberately -- rather than a hand-maintained
+  # security exemption list, which is the shape the silently unasserted gate-lane
+  # list already cost.
+  decline:
+    needs: [command, stack]
+    # always(), because BOTH producers fail their own job: `command` exits non-zero
+    # on the refusal it derived, and `stack` fails after emitting. A decline whose
+    # posting job was skipped because the producer went red would be the invisible
+    # refusal ADR-0007's third addendum forbids.
+    if: >-
+      always()
+      && (
+        needs.command.outputs.declined == 'true'
+        || needs.stack.outputs.declined == 'true'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # The only scope this job needs, and the only one it has. It posts one comment
+      # and reads nothing else.
+      pull-requests: write
+    steps:
+      - name: Refuse to run unpinned
+        env:
+          PINNED_SHA: ${{ job.workflow_sha }}
+        run: |
+          if [ -z "$PINNED_SHA" ]; then
+            echo "::error::job.workflow_sha is empty; cannot pin the harness checkout" >&2
+            exit 1
+          fi
+      - name: Checkout harness (pinned to this workflow's own SHA)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install harness dependencies (hash-pinned)
+        run: pip install --require-hashes -r requirements.txt
+
+      - name: Post the decline
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          # Whichever producer derived it. `command` fires first, so its value wins
+          # when both are somehow set -- it is the cheaper refusal and the one
+          # reached before a model session, so it is the earlier fact about the
+          # channel. Every value arrives via env, never inline interpolation: it is
+          # harness prose today, and a `run:` block would shell-expand it.
+          REASON: ${{ needs.command.outputs.decline_reason || needs.stack.outputs.decline_reason }}
+          HEAD_SHA: ${{ needs.command.outputs.decline_head_sha || needs.stack.outputs.decline_head_sha }}
+          ORDINALS: ${{ needs.command.outputs.decline_ordinals || needs.stack.outputs.decline_ordinals }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python src/smtithy/decline.py

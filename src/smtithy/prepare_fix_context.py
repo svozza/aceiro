@@ -47,8 +47,10 @@ from typing import cast
 from artifact import POLICY_PATH
 from author_trust import is_trusted
 from canonicalize import read_harness_text
+from decline import emit as emit_decline
+from decline import ordinals_of
 from fix_command import parse_fix_command
-from github_api import api_json
+from github_api import api_json, is_fork
 from post import posted_review_witness, posting_run_id, resolve_bot_login
 from prepare_context import fetch_anchored_pair
 from verify import Rejection, verify
@@ -72,6 +74,37 @@ class Refused(Exception):
     refusal, because there is nobody to tell. Every Refused here is a case where
     someone DID command a fix and the harness will not perform it.
     """
+
+
+class Undeliverable(Refused):
+    """A Refused the harness REPLIES to (ADR-0014's decline channel).
+
+    A subclass rather than a flag, because which refusals get a comment is a
+    security property and not a preference. Everything else here stays a red run,
+    and the untrusted-commander refusal in particular MUST NOT be replied to: trust
+    is resolved as prepare()'s second step, so everything before it runs for an
+    untrusted commenter and a reply there would let any passer-by make the harness
+    post a comment naming them.
+
+    Replying to every Refused would need a hand-maintained exemption for that one
+    case, and a hand-maintained security exemption list is what §2's silently
+    unasserted gate-lane list already cost. Raising a distinct type instead means a
+    new refusal is silent unless someone chooses this class deliberately — the
+    fail-closed direction.
+
+    Carries the head SHA and the ordinals the command named, because the decline
+    comment must date itself with both (ADR-0009's addendum B). They travel on the
+    exception rather than being re-derived in main(): only the raising site knows
+    them, and re-deriving would be a second reader of what the command said.
+    """
+
+    def __init__(self, reason: str, *, head_sha: str, ordinals: list[int]):
+        super().__init__(reason)
+        self.reason = reason
+        self.head_sha = head_sha
+        # 1-BASED and sorted, through the one helper that converts back, because the
+        # comment is addressed to the human who typed those numbers.
+        self.ordinals = ordinals_of(ordinals)
 
 
 def fetch_reviewed_artifact(repo: str, pr_number: int, head_sha: str, output_dir: Path,
@@ -218,6 +251,35 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
             f"{len(findings)}; no fix"
         )
 
+    # Undeliverable by construction, checked HERE where it costs seconds (ADR-0014).
+    # Two commanded findings on DISTINCT paths mean the fix must touch both paths
+    # (check_commanded_scope, ⊆), a review comment carries exactly one `path`, so
+    # decide_delivery routes stacked_pr — and a fork's head branch does not exist in
+    # the base repository for a pull request to be based on (ADR-0009's addendum).
+    # Nothing about that can change between here and the delivery, so it is knowable
+    # at command time and the commander would otherwise spend the approval gate, a
+    # model session, both gates, the prover and a contents: write job to receive a
+    # red run with an ::error:: line in a log they must click into.
+    #
+    # Before the artifact is composed, so no context the plan session could read is
+    # written. The paths come from the DERIVED findings — resolved above through the
+    # accepted artifact — so nothing forgeable decides whether this fires.
+    commanded_paths = {findings[index]["path"] for index in indices}
+    if len(commanded_paths) > 1 and is_fork(pr):
+        raise Undeliverable(
+            f"The command names findings on {len(commanded_paths)} files "
+            f"({', '.join(f'`{path}`' for path in sorted(commanded_paths))}), so the fix must "
+            "touch every one of them. A suggestion comment carries exactly one file, so a "
+            "multi-file fix can only be delivered as a stacked follow-up pull request — and this "
+            "pull request comes from a **fork**, whose head branch does not exist in this "
+            "repository for a pull request to be based on (ADR-0009). There is no delivery for "
+            "this command on this pull request. Commanding each finding on its own will deliver "
+            "each half as a suggestion, which is a partial fix; the review comment's "
+            "cross-reference says what they are halves of.",
+            head_sha=head_sha,
+            ordinals=sorted(indices),
+        )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "pr.json").write_text(json.dumps({
         "number": issue_number,
@@ -256,9 +318,21 @@ def main() -> int:
             output_dir=args.output_dir,
             policy=policy,
         )
+    except Undeliverable as exc:
+        # ADR-0014: a refusal the harness REPLIES to. The reason and the facts the
+        # comment must date itself with are emitted for the `decline` job, which
+        # holds pull-requests: write; this job holds none, being reached directly
+        # from issue_comment. The run still FAILS — the command was not performed,
+        # and a green run claiming otherwise would be the artefact whose text
+        # over-claims that ADR-0009's addendum B was written about.
+        print(f"::error::{exc}", file=sys.stderr)
+        emit_decline(exc.reason, head_sha=exc.head_sha, ordinals=exc.ordinals)
+        return 1
     except Refused as exc:
         # A refusal is the run's outcome, not a crash: it exits non-zero so the
         # check is red where the commander is looking, with the reason in the log.
+        # NO reply: see Undeliverable's docstring — the untrusted-commander refusal
+        # arrives here, and it is reached before trust is resolved.
         print(f"::error::{exc}", file=sys.stderr)
         return 1
 

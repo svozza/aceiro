@@ -69,10 +69,26 @@ def label(step_id="s7"):
 
 
 class TestDecideDelivery:
-    def test_single_file_suggestions_deliver_as_suggestions(self):
-        delivery = decide_delivery([suggest("s0"), suggest("s1", line=3)])
+    def test_a_single_file_single_region_suggestion_delivers_as_suggestions(self):
+        delivery = decide_delivery([suggest("s0")])
         assert delivery.mode == "suggestions"
         assert delivery.path == "src/app.py"
+
+    def test_two_suggestions_on_ONE_file_are_refused(self):
+        # ADR-0009's atomicity rule counted over REGIONS, which is the half the ADR
+        # claimed was "checkable from the verified plan's step list" while nothing
+        # checked it: this decision routed on distinct PATHS and never counted steps,
+        # so this shape returned suggestions and posted BOTH as independently
+        # applicable comments — the precise harm the rule exists to prevent, for a
+        # fix that may only be correct as a whole.
+        #
+        # check_plan_cardinality refuses it too. That is the same re-decision every
+        # other arm here already is, and the module's posture is that the process
+        # holding the write token decides for itself: "the verifier must have caught
+        # it" is not a delivery mechanism (see the mixed-kinds arm, refused on
+        # exactly that ground).
+        with pytest.raises(Refusal, match="2 suggest steps"):
+            decide_delivery([suggest("s0"), suggest("s1", line=3)])
 
     def test_label_alongside_suggestions_is_fine(self):
         # label is a side effect, not a fix step; it must not confuse the
@@ -1167,6 +1183,92 @@ class TestStackedPrDelivery:
         with pytest.raises(SystemExit):
             execute_plan.main()
         assert "already" in capsys.readouterr().err
+
+    def test_an_already_delivered_command_emits_a_decline(
+            self, stacked_env, stacked, monkeypatch, tmp_path, capsys):
+        # ADR-0014's SECOND producer. This refusal is knowable only here: fix_key
+        # needs anchor_signatures over the quarantine tree, which `command` never
+        # fetches, and find_existing_fix needs a live pull-request listing.
+        #
+        # It is deliberately one of the two that reply — the refusal a maintainer is
+        # most likely to want an answer to, and the message already names and links
+        # the pull request that answers it.
+        import decline
+
+        def already(*args, **kwargs):
+            raise execute_plan.AlreadyDelivered("already delivered at #12")
+
+        monkeypatch.setattr(execute_plan, "deliver_stacked_pr", already)
+        stub_pr(monkeypatch, pr_payload())
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        written = output.read_text()
+        assert "declined=true" in written, (
+            "an already-delivered command emitted no decline, so the commander's only receipt "
+            "is a red run in a log they must click into"
+        )
+        for name in decline.OUTPUTS:
+            assert name in written, f"{name} is absent; the decline job reads it as empty"
+        # The existing pull request is what answers the commander's question, so it
+        # has to reach the comment rather than only the log.
+        assert "#12" in written
+
+    def test_the_emitted_decline_names_the_head_and_the_ordinals(
+            self, stacked_env, stacked, monkeypatch, tmp_path):
+        # ADR-0009 addendum B's self-dating rule, at this producer. The ordinals come
+        # from the bundle's commanded_index.json — already a gate input here, since
+        # the commanded findings are derived from it — so the decline names the same
+        # command the scope gate checked.
+        def already(*args, **kwargs):
+            raise execute_plan.AlreadyDelivered("already delivered at #12")
+
+        monkeypatch.setattr(execute_plan, "deliver_stacked_pr", already)
+        stub_pr(monkeypatch, pr_payload())
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        written = output.read_text()
+        assert "reviewed-sha" in written
+        # 1-BASED: the comment is addressed to the human who typed the ordinal.
+        assert "decline_ordinals" in written
+        ordinals = written.split("decline_ordinals<<")[1].splitlines()[1]
+        assert ordinals == "1"
+
+    def test_a_refused_shape_emits_NO_decline(self, stacked_env, stacked, monkeypatch,
+                                              tmp_path, capsys):
+        # Exactly two refusals reply. A StackRefusal is a plan that verified and
+        # cannot be delivered for a reason the harness could not know at command time
+        # — a run that failed, which gets a failed run. Replying to every refusal
+        # would need a hand-maintained exemption for the untrusted-commander case,
+        # which is the shape the silently unasserted gate-lane list already cost.
+        def refuse(*args, **kwargs):
+            raise execute_plan.StackRefusal("no patched content to commit")
+
+        monkeypatch.setattr(execute_plan, "deliver_stacked_pr", refuse)
+        stub_pr(monkeypatch, pr_payload())
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert "declined" not in output.read_text()
+
+    def test_a_successful_delivery_emits_no_decline(self, stacked_env, stacked, monkeypatch,
+                                                    tmp_path):
+        # The other direction: a delivered fix must not also post a decline, or every
+        # stacked delivery would tell the commander it was declined.
+        stub_pr(monkeypatch, pr_payload())
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        execute_plan.main()
+        assert stacked, "nothing was delivered, so this asserts the wrong thing"
+        assert "declined" not in output.read_text()
 
     def test_a_refused_shape_fails_the_run(self, stacked_env, stacked, monkeypatch, capsys):
         def refuse(*args, **kwargs):
