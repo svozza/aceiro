@@ -287,7 +287,8 @@ def make_review(**overrides):
             {
                 "path": "aws_lambda_powertools/shared/functions.py",
                 "line": 34,
-                "severity": "critical",
+                "severity": "critical", "group": 1,
+                "group": 1,
                 "title": "false branch returns True",
                 "body": "The branch was changed to return True for falsey inputs.",
             }
@@ -827,7 +828,8 @@ class TestPlantedBugScenariosDemandADiagnosis:
             vague = {
                 "path": wanted["path"],
                 "line": wanted["line_in"][0],
-                "severity": "critical",
+                "severity": "critical", "group": 1,
+                "group": 1,
                 "title": "This change needs more tests",
                 "body": "The refactor here is not covered by tests; please add some.",
             }

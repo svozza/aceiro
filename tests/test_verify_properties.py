@@ -180,7 +180,7 @@ def test_any_extra_finding_key_is_rejected(key, value):
     artifact = {
         "summary": "s",
         "findings": [
-            {"path": "tests/unit/test_logger.py", "line": 1, "severity": "low", "title": "t", "body": "b", key: value}
+            {"path": "tests/unit/test_logger.py", "line": 1, "severity": "low", "group": 1, "title": "t", "body": "b", key: value}
         ],
         "residual_risk": "",
     }
@@ -216,7 +216,7 @@ def test_normalize_host_never_returns_non_ascii(url):
 def test_provenance_only_accepts_hunk_lines(line, path):
     artifact = {
         "summary": "s",
-        "findings": [{"path": path, "line": line, "severity": "low", "title": "t", "body": "b"}],
+        "findings": [{"path": path, "line": line, "severity": "low", "group": 1, "title": "t", "body": "b"}],
         "residual_risk": "",
     }
     hunks = parse_diff_hunks(SAMPLE_DIFF)
@@ -274,7 +274,7 @@ def test_provenance_accepts_iff_path_changed_and_line_in_hunk(data, path, line):
 
     artifact = {
         "summary": "s",
-        "findings": [{"path": path, "line": line, "severity": "low", "title": "t", "body": "b"}],
+        "findings": [{"path": path, "line": line, "severity": "low", "group": 1, "title": "t", "body": "b"}],
         "residual_risk": "",
     }
     expected_ok = path in changed_files and line in expected.get(path, set())

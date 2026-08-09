@@ -37,7 +37,7 @@ ARTIFACT = {
     # Anchored to SAMPLE_DIFF's actual hunk (conftest.py) so it passes the
     # in-loop verifier pre-check now that submit_review is validated.
     "findings": [
-        {"path": "aws_lambda_powertools/logging/logger.py", "line": 13, "severity": "low", "title": "t", "body": "b"}
+        {"path": "aws_lambda_powertools/logging/logger.py", "line": 13, "severity": "low", "group": 1, "title": "t", "body": "b"}
     ],
     "residual_risk": "",
 }
@@ -147,7 +147,7 @@ class TestFencing:
         (context / "review.json").write_text(json.dumps({
             "summary": "the real summary",
             "findings": [{
-                "path": "src/a.py", "line": 1, "severity": "high",
+                "path": "src/a.py", "line": 1, "severity": "high", "group": 1,
                 "title": "real", "body": "the real one",
             }],
             "residual_risk": "",

@@ -103,7 +103,13 @@ SCALAR_KEYS = {
 # The same rule as SCALAR_KEYS and for the same reason: `min_items` reads as a
 # floor on the array and no reader consults it, so a policy appearing to require a
 # finding admitted an artifact with none.
-ARRAY_KEYS = frozenset({"type", "max_items", "item_fields"})
+ARRAY_KEYS = frozenset({"type", "max_items", "item_fields", "max_distinct_groups"})
+
+# The item field a `max_distinct_groups` cap counts, named once so the cap and the
+# field cannot come apart. A policy declaring the cap without the field would be a
+# bound over nothing; check_group_cardinality refuses that rather than passing
+# vacuously.
+GROUP_FIELD = "group"
 
 
 def check_scalar_spec(spec: dict, where: str) -> None:
@@ -267,6 +273,49 @@ def check_schema(artifact: dict, policy: dict) -> None:
             raise Rejection(f"{where}: missing keys {sorted(missing)}")
         for field, spec in item_fields.items():
             check_scalar(finding[field], spec, f"{where}.{field}")
+
+    check_group_cardinality(findings, findings_spec)
+
+
+def check_group_cardinality(findings: list[dict], findings_spec: dict) -> None:
+    """ADR-0013: a cap on how many DISTINCT groups one artifact may claim.
+
+    The per-field range bounds each value; this bounds the partition. Without it a
+    review of ten findings could claim ten groups, which says nothing a reader can
+    act on and renders ten cross-references to nowhere — while `group` occupying
+    only its declared range would still hold. The two bounds are about different
+    things, which is why both exist.
+
+    A cap declared over a field the schema does not have is refused rather than
+    passing vacuously: it would read as a bound on grouping in a policy where
+    nothing is grouped. That is SCALAR_KEYS' rule for a key with no reader, applied
+    to a reader with no key.
+
+    Whether the claim is TRUE is never asked. That is ADR-0005's content question,
+    and it is exactly why a group can never be the source of a write's scope.
+    """
+    cap = findings_spec.get("max_distinct_groups")
+    if cap is None:
+        return
+    # Type before use, like check_scalar_spec's rule: `len(...) > "bogus"` raises
+    # TypeError from the middle of a check, which is a crash where the caller
+    # expects a verdict.
+    if not isinstance(cap, int) or isinstance(cap, bool):
+        raise Rejection(
+            f"policy error: artifact_schema.findings declares max_distinct_groups={cap!r}, "
+            "which is not an integer bound"
+        )
+    if GROUP_FIELD not in findings_spec["item_fields"]:
+        raise Rejection(
+            f"policy error: artifact_schema.findings declares max_distinct_groups={cap} but its "
+            f"item_fields carry no {GROUP_FIELD!r} field, so the cap bounds nothing"
+        )
+    distinct = {finding[GROUP_FIELD] for finding in findings}
+    if len(distinct) > cap:
+        raise Rejection(
+            f"findings: {len(distinct)} distinct {GROUP_FIELD} values exceeds "
+            f"max_distinct_groups {cap}"
+        )
 
 
 # ------------------------------------------------------------ provenance ---

@@ -344,7 +344,7 @@ class TestPlanUserMessage:
         # is through review.json, which the artifact verifier gates.
         context = self.write_context(tmp_path)
         forged = {
-            "path": "src/util.py", "line": 1, "severity": "critical",
+            "path": "src/util.py", "line": 1, "severity": "critical", "group": 1,
             "title": "no reviewer found this", "body": "but the fix would be real",
         }
         (context / "finding.json").write_text(json.dumps(forged))
@@ -368,9 +368,9 @@ class TestPlanUserMessage:
         # rendered order DISAGREE: indexing review.json directly would return the
         # low finding for `/fix 1`, which is a real defect on the wrong file.
         context = self.write_context(tmp_path, findings=[
-            {"path": "src/util.py", "line": 2, "severity": "low",
+            {"path": "src/util.py", "line": 2, "severity": "low", "group": 1,
              "title": "minor", "body": "b"},
-            {"path": "src/app.py", "line": 2, "severity": "critical",
+            {"path": "src/app.py", "line": 2, "severity": "critical", "group": 1,
              "title": "load() breaks callers", "body": "the body"},
         ])
         self.command(context, 0)
@@ -399,9 +399,9 @@ class TestPlanUserMessage:
         # only would pass this, and -1 resolves to a REAL finding — so the fix would
         # be scoped partly by a value the command channel never produced.
         context = self.write_context(tmp_path, findings=[
-            {"path": "src/app.py", "line": 2, "severity": "high",
+            {"path": "src/app.py", "line": 2, "severity": "high", "group": 1,
              "title": "load() breaks callers", "body": "the body"},
-            {"path": "src/util.py", "line": 1, "severity": "low",
+            {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
              "title": "a second finding", "body": "the body"},
         ])
         self.command(context, 0, -1)
@@ -419,9 +419,9 @@ class TestPlanUserMessage:
         # element, which is the case that bites: a fix delivered for a finding
         # nobody commanded.
         context = self.write_context(tmp_path, findings=[
-            {"path": "src/app.py", "line": 2, "severity": "high",
+            {"path": "src/app.py", "line": 2, "severity": "high", "group": 1,
              "title": "load() breaks callers", "body": "the body"},
-            {"path": "src/util.py", "line": 1, "severity": "low",
+            {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
              "title": "a second finding", "body": "the body"},
         ])
         for value in ("1", 1.0, True, False, None, [1]):
@@ -434,9 +434,9 @@ class TestPlanUserMessage:
         # in second position resolves findings[1], a real finding on a file nobody
         # commanded, and a guard reading only the first element admits it.
         context = self.write_context(tmp_path, findings=[
-            {"path": "src/app.py", "line": 2, "severity": "high",
+            {"path": "src/app.py", "line": 2, "severity": "high", "group": 1,
              "title": "load() breaks callers", "body": "the body"},
-            {"path": "src/util.py", "line": 1, "severity": "low",
+            {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
              "title": "a second finding", "body": "the body"},
         ])
         for value in ("1", 1.0, True, None, [1]):
@@ -512,7 +512,7 @@ class TestPlanUserMessage:
         (context / "review.json").write_text(json.dumps({
             "summary": "`load` gained a check its callers do not expect.",
             "findings": findings or [{
-                "path": "src/app.py", "line": 2, "severity": "high",
+                "path": "src/app.py", "line": 2, "severity": "high", "group": 1,
                 "title": "load() breaks callers", "body": "the body",
             }],
             "residual_risk": "",
@@ -539,9 +539,9 @@ class TestTheCommandNamesASetOfFindings:
     """
 
     TWO_FINDINGS = [
-        {"path": "src/app.py", "line": 2, "severity": "high",
+        {"path": "src/app.py", "line": 2, "severity": "high", "group": 1,
          "title": "load() breaks callers", "body": "the body"},
-        {"path": "src/util.py", "line": 1, "severity": "low",
+        {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
          "title": "check() is unreachable", "body": "the other body"},
     ]
 

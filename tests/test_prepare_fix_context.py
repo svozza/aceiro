@@ -31,7 +31,7 @@ pfc_real_fetch = pfc.fetch_reviewed_artifact
 REVIEW = {
     "summary": "`load` gained a check its callers do not expect.",
     "findings": [
-        {"path": "src/app.py", "line": 2, "severity": "high",
+        {"path": "src/app.py", "line": 2, "severity": "high", "group": 1,
          "title": "load() breaks callers", "body": "the body"},
     ],
     "residual_risk": "",
@@ -263,7 +263,7 @@ class TestTheCommandNamesASet:
 
     TWO_FINDINGS = [
         REVIEW["findings"][0],
-        {"path": "src/util.py", "line": 1, "severity": "low",
+        {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
          "title": "check() is unreachable", "body": "the other body"},
     ]
 

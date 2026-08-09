@@ -347,7 +347,7 @@ def artifact_dir(tmp_path):
     (artifact / "review.json").write_text(json.dumps({
         "summary": "`load` gained a check its callers do not expect.",
         "findings": [{
-            "path": "src/app.py", "line": 2, "severity": "high",
+            "path": "src/app.py", "line": 2, "severity": "high", "group": 1,
             "title": "load() breaks callers", "body": "the body",
         }],
         "residual_risk": "",
@@ -589,7 +589,7 @@ class TestMain:
         # at all: the finding comes from review.json, whose own finding is on
         # src/app.py, and the plan below touches only src/util.py.
         (main_env / "finding.json").write_text(json.dumps(
-            {"path": "src/util.py", "line": 1, "severity": "critical",
+            {"path": "src/util.py", "line": 1, "severity": "critical", "group": 1,
              "title": "no reviewer found this", "body": "but the fix would be real"}
         ))
         (main_env / "plan.json").write_text(json.dumps({"steps": [{
@@ -626,9 +626,9 @@ class TestMain:
         (main_env / "review.json").write_text(json.dumps({
             "summary": "two findings, least severe first",
             "findings": [
-                {"path": "src/util.py", "line": 1, "severity": "low",
+                {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
                  "title": "minor", "body": "b"},
-                {"path": "src/app.py", "line": 2, "severity": "critical",
+                {"path": "src/app.py", "line": 2, "severity": "critical", "group": 1,
                  "title": "load() breaks callers", "body": "the body"},
             ],
             "residual_risk": "",

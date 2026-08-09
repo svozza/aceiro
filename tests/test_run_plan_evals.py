@@ -72,7 +72,7 @@ class TestMakeInjectedVerifyPlan:
         # production's. Checked on commanded_findings, whose whole point is to
         # reject a plan every other phase admits.
         verify_fn = run_plan_evals.make_injected_verify_plan(0)
-        finding = {"path": "src/util.py", "line": 1, "severity": "high", "title": "t", "body": "b"}
+        finding = {"path": "src/util.py", "line": 1, "severity": "high", "group": 1, "title": "t", "body": "b"}
         with pytest.raises(Rejection, match="commanded finding"):
             verify_fn(
                 suggest_plan(), PLAN_DIFF, PLAN_CHANGED_FILES, POLICY, tree_source(),

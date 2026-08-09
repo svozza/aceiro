@@ -43,7 +43,7 @@ METADATA = {
     "run_url": "https://github.com/o/r/actions/runs/1",
 }
 
-FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "title": "t", "body": "b"}
+FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "group": 1, "title": "t", "body": "b"}
 
 
 def key(pr_number=7, head_sha="reviewed-sha", finding=None, findings=None, signatures=None):

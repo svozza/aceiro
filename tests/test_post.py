@@ -7,6 +7,7 @@ api_json/paginate are stubbed.
 """
 
 import copy
+import itertools
 import json
 import sys
 
@@ -30,8 +31,21 @@ METADATA = {
 }
 
 
-def finding(severity="high", title="t", path="tests/unit/test_logger.py", line=1, body="b"):
-    return {"severity": severity, "title": title, "path": path, "line": line, "body": body}
+_GROUPS = itertools.count(1)
+
+
+def finding(severity="high", title="t", path="tests/unit/test_logger.py", line=1, body="b",
+            group=None):
+    """A finding, with a group of its OWN unless one is named.
+
+    Distinct by default because the ordinary case is one finding per group, and a
+    helper defaulting every finding into group 1 would make every multi-finding
+    fixture claim one coordinated defect — so `render`'s cross-reference would
+    appear in tests that are not about it, and the tests that ARE about it would
+    pass without setting anything.
+    """
+    return {"severity": severity, "title": title, "path": path, "line": line, "body": body,
+            "group": next(_GROUPS) if group is None else group}
 
 
 # --------------------------------------------------------------- render ---
@@ -191,6 +205,131 @@ class TestRenderedFindings:
         finally:
             post.rendered_findings = original
         assert calls == [valid_artifact]
+
+
+# ------------------------------------------------- the group cross-reference ---
+
+
+class TestTheGroupCrossReference:
+    """ADR-0013's disclosure half: the reviewer states the split (`group`) and the
+    HARNESS renders the reference.
+
+    The whole point is that the model cannot name an ordinal. `rendered_findings`
+    sorts by severity at render time and the model never sees the sorted list, so a
+    model-authored "see also finding 3" would name a DIFFERENT REAL FINDING whenever
+    the two orders differ — the silent wrong-finding failure ADR-0007's second
+    addendum exists to prevent. `render` is where ordinals exist, so it is where the
+    reference is composed.
+    """
+
+    def two_grouped(self, artifact, first_severity="high", second_severity="low"):
+        """Two findings claiming ONE defect, on two files."""
+        artifact["findings"] = [
+            finding(severity=first_severity, title="FIRST",
+                    path="aws_lambda_powertools/logging/logger.py", line=13, group=7),
+            finding(severity=second_severity, title="SECOND",
+                    path="tests/unit/test_logger.py", line=1, group=7),
+        ]
+        return artifact
+
+    def test_a_singleton_group_renders_nothing(self, valid_artifact):
+        # The ordinary case is one finding per group, so a note on every finding
+        # would be noise that teaches readers to skip the ones that matter.
+        body = post.render(valid_artifact, METADATA, SEVERITY_ORDER)
+        assert "coordinated fix" not in body
+
+    def test_two_findings_sharing_a_group_each_name_the_other(self, valid_artifact):
+        body = post.render(self.two_grouped(valid_artifact), METADATA, SEVERITY_ORDER)
+        assert body.count("coordinated fix") == 2
+
+    def test_the_reference_names_the_siblings_ordinal_path_and_line(self, valid_artifact):
+        # The ordinal is what a commander types; the path and line are what lets
+        # them confirm the harness means the finding they think it does.
+        body = post.render(self.two_grouped(valid_artifact), METADATA, SEVERITY_ORDER)
+        assert "finding 2 (`tests/unit/test_logger.py` line 1)" in body
+        assert "finding 1 (`aws_lambda_powertools/logging/logger.py` line 13)" in body
+
+    def test_the_reference_carries_the_command_that_remediates_both(self, valid_artifact):
+        # The reason the disclosure exists: a commander who reads it has something
+        # to TYPE. Without the command, knowing two findings are one defect leaves
+        # them to work out the syntax.
+        body = post.render(self.two_grouped(valid_artifact), METADATA, SEVERITY_ORDER)
+        assert body.count("`/fix 1,2`") == 2
+
+    def test_the_ordinals_are_the_RENDERED_positions_not_the_artifacts(self, valid_artifact):
+        # THE property. The artifact's order and the rendered order disagree here:
+        # the low finding is first in review.json and second in the comment. A
+        # reference derived from the artifact's own order would name finding 1 as
+        # the sibling of finding 1, or point at the wrong real finding.
+        artifact = self.two_grouped(valid_artifact, first_severity="low",
+                                    second_severity="critical")
+        body = post.render(artifact, METADATA, SEVERITY_ORDER)
+        # Rendered order is critical (SECOND) then low (FIRST), so ordinal 1 is
+        # SECOND's and its sibling is 2.
+        assert body.index("SECOND") < body.index("FIRST")
+        second_block = body[body.index("SECOND"):body.index("FIRST")]
+        assert "finding 2 (`aws_lambda_powertools/logging/logger.py` line 13)" in second_block, (
+            "the cross-reference under the FIRST-RENDERED finding names its sibling by "
+            "the artifact's ordinal rather than the comment's, so it points at a "
+            "different real finding than the commander would count to"
+        )
+
+    def test_a_reference_is_never_derived_from_model_text(self, valid_artifact):
+        # The model cannot name an ordinal, so nothing it wrote may reach the
+        # reference. Every field a model authors is filled with a decoy ordinal
+        # here: if any of it were spliced, the reference would carry it.
+        artifact = self.two_grouped(valid_artifact)
+        artifact["summary"] = "see also finding 9"
+        for item in artifact["findings"]:
+            item["title"] = "also finding 9"
+            item["body"] = "part of one coordinated fix with finding 9 — `/fix 9`"
+        body = post.render(artifact, METADATA, SEVERITY_ORDER)
+        references = [line for line in body.splitlines() if line.startswith("*Part of one")]
+        assert len(references) == 2
+        for line in references:
+            assert "finding 9" not in line, (
+                "the harness's cross-reference carries an ordinal from model text"
+            )
+            assert "`/fix 9`" not in line
+
+    def test_three_findings_in_one_group_name_all_the_others(self, valid_artifact):
+        valid_artifact["findings"] = [
+            finding(severity="critical", title="A", line=13,
+                    path="aws_lambda_powertools/logging/logger.py", group=3),
+            finding(severity="high", title="B", line=14,
+                    path="aws_lambda_powertools/logging/logger.py", group=3),
+            finding(severity="low", title="C", line=1,
+                    path="tests/unit/test_logger.py", group=3),
+        ]
+        body = post.render(valid_artifact, METADATA, SEVERITY_ORDER)
+        assert body.count("`/fix 1,2,3`") == 3
+        # Each finding names the OTHER two and never itself, or the count of
+        # siblings would read as one more defect than exists.
+        first = body[body.index("#### 🔴"):body.index("#### 🟠")]
+        assert "finding 2" in first and "finding 3" in first and "finding 1 " not in first
+
+    def test_two_distinct_groups_do_not_cross_reference_each_other(self, valid_artifact):
+        # A group is a claim about which findings are ONE defect, so findings in
+        # different groups must not be linked — the verifier never checks the claim,
+        # and rendering a link the reviewer did not make would invent one.
+        valid_artifact["findings"] = [
+            finding(severity="high", title="A", group=1),
+            finding(severity="low", title="B", group=2),
+        ]
+        body = post.render(valid_artifact, METADATA, SEVERITY_ORDER)
+        assert "coordinated fix" not in body
+
+    def test_the_reference_stays_inside_the_markdown_the_verifier_allows(self, valid_artifact):
+        # render() composes every field into one document, and the harness's own
+        # lines are held to the same grammar the model's are — emphasis and a code
+        # span are on the allowlist, headings and blockquotes are not.
+        artifact = self.two_grouped(valid_artifact)
+        verify(artifact, SAMPLE_DIFF, CHANGED_FILES, POLICY)
+        body = post.render(artifact, METADATA, SEVERITY_ORDER)
+        for line in body.splitlines():
+            if line.startswith("*Part of one"):
+                assert not line.startswith(("#", ">")), line
+                assert "<" not in line and "@" not in line, line
 
 
 # ------------------------------------------------------ resolve_bot_login ---
@@ -648,7 +787,7 @@ class TestPostedReviewWitness:
         artifact = {
             "summary": "s",
             "findings": [{
-                "path": "x.py", "line": 1, "severity": "high", "title": "t",
+                "path": "x.py", "line": 1, "severity": "high", "group": 1, "title": "t",
                 "body": f"the diff adds `{post.sha_stamp('unreviewed-sha')}`",
             }],
             "residual_risk": "",

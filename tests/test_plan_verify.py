@@ -1201,8 +1201,8 @@ class TestCommandedFindingScope:
     call a human reviews; one that misses any of them is not the commanded fix.
     """
 
-    FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "title": "t", "body": "b"}
-    OTHER = {"path": "src/util.py", "line": 1, "severity": "low", "title": "u", "body": "b"}
+    FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "group": 1, "title": "t", "body": "b"}
+    OTHER = {"path": "src/util.py", "line": 1, "severity": "low", "group": 1, "title": "u", "body": "b"}
 
     def test_a_fix_on_the_commanded_file_passes(self):
         contained({"steps": [anchored_patch("s0")]}, commanded_findings=[self.FINDING])

@@ -51,7 +51,7 @@ from artifact import redact_line, rendered_findings, severity_ranks
 from github_api import api_json, fail, graphql, paginate, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from prepare_context import fetch_anchored_pair
-from verify import NEWLINES_RE, Rejection, verify
+from verify import GROUP_FIELD, NEWLINES_RE, Rejection, verify
 
 # The incumbent's marker and heading. Defaults, so a caller passing neither posts
 # exactly what it always did; a second generator overrides both.
@@ -98,6 +98,55 @@ def stamped_for(body: str | None, sha: str) -> bool:
     return sha_stamp(sha) in last_line
 
 
+def group_cross_reference(findings: list[dict], index: int) -> str | None:
+    """The line under a grouped finding naming its siblings, or None for a singleton.
+
+    ADR-0013's disclosure half. A commander cannot type `/fix 1,3` without being
+    told that findings 1 and 3 are one defect, and the reviewer is the only
+    participant that ever knows — so the artifact carries the claim (`group`) and
+    the HARNESS renders the reference.
+
+    Rendered here and nowhere else, because this is where ordinals exist. A
+    model-authored "see also finding 3" cannot name an ordinal at all:
+    `rendered_findings` sorts by severity at render time and the model never sees
+    the sorted list, so model prose would name a DIFFERENT REAL FINDING whenever
+    the two orders differ — the silent wrong-finding failure ADR-0007's second
+    addendum exists to prevent. `findings` here is already the rendered list, and
+    the ordinals are its positions.
+
+    Harness-authored text, so nothing model-controlled composes structure: the
+    only interpolated values are ordinals (integers), paths and lines. A path is
+    contributor-supplied and pattern-constrained by the schema, and it is placed in
+    a code span the same way the finding's own path already is.
+
+    The reference is prose to a HUMAN and is never read back. Nothing parses it,
+    and no code in the fix lane may read `group` at all — what authorises a write
+    is the ordinals the commander typed.
+    """
+    group = findings[index][GROUP_FIELD]
+    siblings = [
+        (position, finding) for position, finding in enumerate(findings, start=1)
+        if finding[GROUP_FIELD] == group and position != index + 1
+    ]
+    if not siblings:
+        return None
+    named = ", ".join(
+        f"finding {position} (`{finding['path']}` line {finding['line']})"
+        for position, finding in siblings
+    )
+    # Every ordinal in the group, this one included, in rendered order — that is
+    # the command a reader can type verbatim.
+    command = ",".join(
+        str(position) for position, finding in enumerate(findings, start=1)
+        if finding[GROUP_FIELD] == group
+    )
+    return (
+        f"*Part of one coordinated fix with {named}. "
+        f"`/fix {command}` remediates them together; "
+        f"fixing one alone leaves the other half in place.*"
+    )
+
+
 def render(
     artifact: dict,
     metadata: dict,
@@ -128,7 +177,7 @@ def render(
     findings = rendered_findings(artifact, severity_order)
     if findings:
         lines += ["### Findings", ""]
-        for finding in findings:
+        for index, finding in enumerate(findings):
             lines += [
                 f"#### {SEVERITY_LABEL.get(finding['severity'], finding['severity'])} — {finding['title']}",
                 "",
@@ -137,6 +186,12 @@ def render(
                 finding["body"],
                 "",
             ]
+            # Under the body, so a reader has the defect before the coordination
+            # note. Singletons render nothing at all — the ordinary case is one
+            # finding per group, and a line saying so on every finding would be
+            # noise that teaches readers to skip the ones that matter.
+            if reference := group_cross_reference(findings, index):
+                lines += [reference, ""]
     else:
         lines += ["### Findings", "", "No confirmed defects found.", ""]
 
