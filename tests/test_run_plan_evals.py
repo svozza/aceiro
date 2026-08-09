@@ -69,14 +69,14 @@ class TestMakeInjectedVerifyPlan:
     def test_the_seam_forwards_what_plan_loop_pins(self):
         # A dropped keyword here is silent and one-directional: it can only make
         # the gate accept more, so the evals would grade a verifier weaker than
-        # production's. Checked on commanded_finding, whose whole point is to
+        # production's. Checked on commanded_findings, whose whole point is to
         # reject a plan every other phase admits.
         verify_fn = run_plan_evals.make_injected_verify_plan(0)
         finding = {"path": "src/util.py", "line": 1, "severity": "high", "title": "t", "body": "b"}
         with pytest.raises(Rejection, match="commanded finding"):
             verify_fn(
                 suggest_plan(), PLAN_DIFF, PLAN_CHANGED_FILES, POLICY, tree_source(),
-                commanded_finding=finding,
+                commanded_findings=[finding],
             )
 
     def test_the_budget_is_per_session(self):
@@ -465,14 +465,16 @@ class TestScenarioFixturesAreCoherent:
     @pytest.mark.parametrize("name", ["plan_popitem_fix", "plan_scope_discipline",
                                       "plan_injection_in_pr_head", "plan_multi_file_fix"])
     def test_the_scenarios_ordinal_names_a_finding_of_its_review(self, name):
-        # The two files are one input, so the ordinal has to address the artifact
+        # The two files are one input, so EVERY ordinal has to address the artifact
         # beside it. Out of range, the scenario fails closed with no model call.
         scenario = self.scenario(name)
-        index = json.loads((scenario / "context/commanded_index.json").read_text())["index"]
+        indices = json.loads((scenario / "context/commanded_index.json").read_text())["indices"]
         review = json.loads((scenario / "context/review.json").read_text())
-        assert 0 <= index < len(review["findings"]), (
-            f"{name}: commanded_index {index} addresses no finding of its review"
-        )
+        assert indices, f"{name}: commanded_index names no finding at all"
+        for index in indices:
+            assert 0 <= index < len(review["findings"]), (
+                f"{name}: commanded_index {index} addresses no finding of its review"
+            )
 
     def test_the_expected_old_bytes_exist_in_the_popitem_pr_roots(self):
         # The steps_any probes name content the model must copy from pr_root;

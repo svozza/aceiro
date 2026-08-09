@@ -502,10 +502,10 @@ def struck_body(body=None, note=None):
 
 
 class TestRetractionScope:
-    """A run delivers ONE commanded finding (ADR-0007), so it may only withdraw
-    what that command could have produced.
+    """A run delivers the findings ONE command named (ADR-0007, ADR-0013), so it
+    may only withdraw what that command could have produced.
 
-    `wanted` is one finding's plan while the comment listing is the whole pull
+    `wanted` is one command's plan while the comment listing is the whole pull
     request, so an unscoped retraction treated every other finding's live
     suggestion as withdrawn — with a note saying it was no longer in the latest
     remediation, which is untrue: it was never this command's subject. Two
@@ -523,7 +523,7 @@ class TestRetractionScope:
         set_comments([self.other_finding_comment()])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == []
         assert calls["patched"] == []
 
@@ -536,7 +536,7 @@ class TestRetractionScope:
                        "in_reply_to_id": 11}])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["patched"] == []
         assert calls["deleted"] == []
 
@@ -547,7 +547,7 @@ class TestRetractionScope:
         set_comments([comment(10)])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
 
     def test_a_superseded_suggestion_of_this_command_is_retracted(self, api):
@@ -562,7 +562,7 @@ class TestRetractionScope:
                               for_finding=finding_key())])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
 
     def test_another_findings_suggestion_on_the_commanded_file_is_left_alone(self, api):
@@ -575,7 +575,7 @@ class TestRetractionScope:
                               for_finding=finding_key(line=3))])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [], (
             "a command withdrew another finding's suggestion because they share a file"
         )
@@ -591,7 +591,7 @@ class TestRetractionScope:
         set_comments([comment(10, for_finding=False)])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == []
         assert calls["patched"] == []
 
@@ -605,7 +605,7 @@ class TestRetractionScope:
         set_comments([pathless])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
 
     def test_an_unknown_scope_and_an_unknown_subject_do_not_MATCH(self, api):
@@ -618,7 +618,7 @@ class TestRetractionScope:
         set_comments([pathless])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=None)
+                                      commanded_finding_keys=None)
         assert calls["deleted"] == []
         assert calls["patched"] == []
 
@@ -634,9 +634,119 @@ class TestRetractionScope:
         set_comments([comment(10)])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=None)
+                                      commanded_finding_keys=None)
         assert calls["deleted"] == []
         assert calls["patched"] == []
+
+
+class TestTheScopeIsASetOfFindingKeys:
+    """ADR-0013: the scope is the SET of findings the command named, while what a
+    COMMENT records stays one finding's key.
+
+    That asymmetry is what pays for the widening: two findings of one artifact
+    routinely share a file, so `/fix 1,3` in one file reconciles with {K1, K3} and
+    the earlier `/fix 1` comment is retracted by the existing reconciler with no new
+    mechanism.
+    """
+
+    OTHER = dict(path="src/app.py", line=3)
+
+    def other_comment(self, cid=10, for_finding=None):
+        """A live suggestion of ours on line 3, delivered for another finding."""
+        return comment(cid, args={"line": 3, "old": "    check(path)\n",
+                                  "new": "    check(path or '')\n"},
+                       for_finding=for_finding or finding_key(**self.OTHER))
+
+    def test_a_widening_command_retracts_the_narrower_ones_comment(self, api):
+        # THE payoff case, and it needs no new machinery: `/fix 1` delivered a
+        # comment for K1; `/fix 1,3` on the same file is one contiguous replacement,
+        # so K1's old comment is stale, in scope, and comes down. Under a scope of
+        # one key it would have been left standing beside the wider fix — half a
+        # defect, independently applicable.
+        calls, set_comments, _ = api
+        set_comments([self.other_comment(10, for_finding=finding_key())])
+        suggest.reconcile_suggestions(
+            "o/r", 1, [step()], SIGNATURES, METADATA,
+            bot_login=BOT, head_sha="reviewed-sha",
+            commanded_finding_keys=(finding_key(), finding_key(**self.OTHER)))
+        assert calls["deleted"] == [10]
+
+    def test_every_key_in_the_set_is_in_scope(self, api):
+        # The conjunct's mirror: a comment delivered for the SECOND commanded
+        # finding is as much in scope as one for the first. A check reading only the
+        # first key would leave it standing.
+        calls, set_comments, _ = api
+        set_comments([self.other_comment(10)])
+        suggest.reconcile_suggestions(
+            "o/r", 1, [step()], SIGNATURES, METADATA,
+            bot_login=BOT, head_sha="reviewed-sha",
+            commanded_finding_keys=(finding_key(), finding_key(**self.OTHER)))
+        assert calls["deleted"] == [10]
+
+    def test_a_finding_outside_the_set_is_still_left_alone(self, api):
+        # The widening must not become "retract everything". A third finding's
+        # comment on the same file is untouched by a command naming the other two.
+        calls, set_comments, _ = api
+        set_comments([comment(10, args={"line": 4, "old": "    return os.environ\n",
+                                        "new": "    return dict(os.environ)\n"},
+                              for_finding=finding_key(line=4))])
+        suggest.reconcile_suggestions(
+            "o/r", 1, [step()], SIGNATURES, METADATA,
+            bot_login=BOT, head_sha="reviewed-sha",
+            commanded_finding_keys=(finding_key(), finding_key(**self.OTHER)))
+        assert calls["deleted"] == [], (
+            "a multi-finding command withdrew a comment for a finding it never named"
+        )
+        assert calls["patched"] == []
+
+    def test_an_empty_scope_withdraws_nothing(self, api):
+        # The empty tuple must read as None does. A set-membership check on an empty
+        # set is False for every comment, and that is the fail-closed direction; the
+        # test exists because the two spellings could easily diverge.
+        calls, set_comments, _ = api
+        set_comments([comment(10)])
+        suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
+                                     bot_login=BOT, head_sha="reviewed-sha",
+                                     commanded_finding_keys=())
+        assert calls["deleted"] == []
+        assert calls["patched"] == []
+
+    def test_a_comment_records_ONE_finding_not_the_whole_set(self, api):
+        # The marker stays per finding (ADR-0013): a comment speaks for exactly one,
+        # and what carries a set is the command. So the posted body carries the
+        # FIRST commanded key and not a fold of the set — otherwise every existing
+        # comment's key would change the first time a command named two findings, and
+        # the reconciler would read them all as unowned.
+        _, set_comments, set_reviews = api
+        posted = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(suggest, "submit_review",
+                          lambda repo, pr, body, comments, *, head_sha: posted.extend(comments))
+            suggest.reconcile_suggestions(
+                "o/r", 1, [step()], SIGNATURES, METADATA,
+                bot_login=BOT, head_sha="reviewed-sha",
+                commanded_finding_keys=(finding_key(), finding_key(**self.OTHER)))
+        first_line = posted[0]["body"].split("\n")[0]
+        assert suggest.finding_marker(finding_key()) in first_line
+        assert suggest.finding_marker(finding_key(**self.OTHER)) not in first_line
+
+    def test_the_recorded_key_does_not_depend_on_the_sets_spelling(self, api):
+        # Deterministic, because the executor hands over the canonical ordinal order:
+        # two runs of ONE command must record the same representative, or the second
+        # run reads the first's comment as another finding's and leaves it standing
+        # while posting a duplicate.
+        def recorded(keys):
+            posted = []
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(suggest, "submit_review",
+                              lambda repo, pr, body, comments, *, head_sha: posted.extend(comments))
+                suggest.reconcile_suggestions(
+                    "o/r", 1, [step()], SIGNATURES, METADATA,
+                    bot_login=BOT, head_sha="reviewed-sha", commanded_finding_keys=keys)
+            return posted[0]["body"].split("\n")[0]
+
+        keys = (finding_key(), finding_key(**self.OTHER))
+        assert recorded(keys) == recorded(keys)
 
 
 class TestRetraction:
@@ -645,7 +755,7 @@ class TestRetraction:
         set_comments([comment(10)])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
         assert calls["patched"] == []
 
@@ -658,7 +768,7 @@ class TestRetraction:
                        "in_reply_to_id": 10}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == []
         assert len(calls["patched"]) == 1
         assert calls["patched"][0]["id"] == 10
@@ -670,7 +780,7 @@ class TestRetraction:
                       {"id": 11, "body": "ours", "user": {"login": BOT}, "in_reply_to_id": 10}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
 
     def test_a_reply_to_a_different_comment_does_not_block_deletion(self, api):
@@ -680,7 +790,7 @@ class TestRetraction:
                        "in_reply_to_id": 99}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
 
     def test_a_reply_landing_during_the_run_still_blocks_the_delete(self, api, monkeypatch):
@@ -697,7 +807,7 @@ class TestRetraction:
         monkeypatch.setattr(suggest, "review_comments", lambda repo, pr: iter(pages.pop(0)))
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [], "the late reply's parent was deleted"
         assert len(calls["patched"]) == 1
 
@@ -715,7 +825,7 @@ class TestRetraction:
         monkeypatch.setattr(suggest, "review_comments", listing)
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
 
     def test_the_replies_are_not_re_read_when_nothing_is_stale(self, api, monkeypatch):
@@ -731,7 +841,7 @@ class TestRetraction:
         monkeypatch.setattr(suggest, "review_comments", listing)
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert len(listings) == 1
 
     def test_a_reaction_does_not_pin_a_stale_suggestion(self, api):
@@ -743,7 +853,7 @@ class TestRetraction:
         set_comments([pinned])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == [10]
 
     def test_the_note_does_not_claim_the_defect_was_fixed(self):
@@ -835,7 +945,7 @@ class TestRetraction:
                       {"id": 11, "body": "hm", "user": {"login": "a-human"}, "in_reply_to_id": 10}])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["patched"] == []
         assert calls["deleted"] == []
 
@@ -853,7 +963,7 @@ class TestRetraction:
         set_comments([comment(10, login="a-human")])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["deleted"] == []
         assert calls["patched"] == []
 
@@ -872,7 +982,7 @@ class TestRetraction:
         ])
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         touched = set(calls["deleted"]) | {p["id"] for p in calls["patched"]}
         assert touched == {10}
 
@@ -904,7 +1014,7 @@ class TestPostBeforeRetract:
         with pytest.raises(urllib.error.HTTPError):
             suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                           bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
 
         assert ("post", 1) in order
         assert not [entry for entry in order if entry[0] in ("delete", "patch")], (
@@ -933,7 +1043,7 @@ class TestPostBeforeRetract:
                 "o/r", 1,
                 [step(), step(line=3, old="    check(path)\n", new="    check(path or '')\n")],
                 SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
 
         assert ("post", 1) in order
         assert not [entry for entry in order if entry[0] == "patch"], (
@@ -1003,7 +1113,7 @@ class FakeGitHub:
 def run(github, steps, metadata=None):
     suggest.reconcile_suggestions("o/r", 1, steps, SIGNATURES, metadata or METADATA,
                                   bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
 
 
 class TestAcrossRuns:
@@ -1050,7 +1160,7 @@ class TestAcrossRuns:
                             lambda repo, cid: calls["deleted"].append(cid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["patched"] == []
         assert calls["reviews"] == []
 
@@ -1128,13 +1238,13 @@ class TestAcrossRuns:
         suggest.reconcile_suggestions(
             "o/r", 1, [moved], anchor_signatures(narrow, content_source=head), METADATA,
             bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         original_id = github.ours()[0]["id"]
 
         suggest.reconcile_suggestions(
             "o/r", 1, [moved], anchor_signatures(wide, content_source=head), METADATA,
             bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
 
         assert [c["id"] for c in github.ours()] == [original_id], (
             "a grown hunk deleted the live comment and reposted the same suggestion"
@@ -1154,7 +1264,7 @@ class TestReviewWrappers:
 
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
 
         assert [u["id"] for u in updated] == [7]
         assert updated[0]["body"] == suggest.SUPERSEDED_REVIEW_BODY
@@ -1169,7 +1279,7 @@ class TestReviewWrappers:
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert updated == []
 
     def test_a_human_review_carrying_our_marker_is_never_touched(self, api, monkeypatch):
@@ -1183,7 +1293,7 @@ class TestReviewWrappers:
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert updated == []
 
     def test_an_already_superseded_wrapper_is_left_alone(self, api, monkeypatch):
@@ -1195,7 +1305,7 @@ class TestReviewWrappers:
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert updated == []
 
     def test_a_minimize_the_bot_cannot_perform_does_not_fail_the_run(self, api, monkeypatch):
@@ -1208,7 +1318,7 @@ class TestReviewWrappers:
                             lambda node: (_ for _ in ()).throw(RuntimeError("Resource not accessible")))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert len(calls["reviews"]) == 1, "a failed minimize cost the delivery"
 
     def test_a_failing_body_rewrite_does_not_fail_the_run(self, api, monkeypatch):
@@ -1219,7 +1329,7 @@ class TestReviewWrappers:
                             lambda repo, pr, rid, body: (_ for _ in ()).throw(RuntimeError("403")))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert len(calls["reviews"]) == 1
 
     def test_a_failing_review_list_does_not_fail_the_run(self, api, monkeypatch):
@@ -1228,7 +1338,7 @@ class TestReviewWrappers:
                             lambda repo, pr: (_ for _ in ()).throw(RuntimeError("500")))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert len(calls["reviews"]) == 1
 
     def test_a_review_the_api_lists_without_an_id_does_not_fail_the_run(self, api, monkeypatch):
@@ -1240,7 +1350,7 @@ class TestReviewWrappers:
         set_reviews([{"user": {"login": BOT}, "body": suggest.REVIEW_BODY, "node_id": "N2"}])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert len(calls["reviews"]) == 1, "the suggestions were delivered anyway"
 
     def test_superseding_happens_before_the_new_review_is_posted(self, api, monkeypatch):
@@ -1256,7 +1366,7 @@ class TestReviewWrappers:
                             lambda repo, pr, body, comments, head_sha: order.append("post"))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert order == ["supersede", "post"]
 
     def test_nothing_is_superseded_when_there_is_nothing_to_post(self, api, monkeypatch):
@@ -1269,7 +1379,7 @@ class TestReviewWrappers:
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert updated == []
 
 
@@ -1278,14 +1388,14 @@ class TestPostedPayload:
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["reviews"][0]["head_sha"] == "reviewed-sha"
 
     def test_a_comment_anchors_to_the_steps_path_and_line(self, api):
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [step(line=3, old="    check(path)\n")],
                                       SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         posted = calls["reviews"][0]["comments"][0]
         assert posted["path"] == "src/app.py"
         assert posted["line"] == 3
@@ -1297,7 +1407,7 @@ class TestPostedPayload:
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         posted = calls["reviews"][0]["comments"][0]
         assert posted["line"] == 2
         assert "start_line" not in posted
@@ -1313,7 +1423,7 @@ class TestPostedPayload:
         suggest.reconcile_suggestions(
             "o/r", 1, [step(old=old, new="def load(path=None):\n")],
             SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         posted = calls["reviews"][0]["comments"][0]
         assert posted["start_line"] == 2, "the range must begin where `old` is anchored"
         assert posted["line"] == 4, "and end on the last line `old` replaces"
@@ -1331,7 +1441,7 @@ class TestPostedPayload:
             suggest.reconcile_suggestions("o/r", 1, [step(old=old, new="x = 1\n")],
                                           SIGNATURES, METADATA, bot_login=BOT,
                                           head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
             posted = calls["reviews"][0]["comments"][0]
             assert posted["line"] == 2 + span
             assert posted.get("start_line", 2) == 2
@@ -1345,7 +1455,7 @@ class TestPostedPayload:
             "o/r", 1, [step(line=3, old="    check(path)\n    return os.environ",
                             new="    return {}\n")],
             SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         posted = calls["reviews"][0]["comments"][0]
         assert posted["start_line"] == 3
         assert posted["line"] == 4
@@ -1356,7 +1466,7 @@ class TestPostedPayload:
             "o/r", 1,
             [step(), step(line=3, old="    check(path)\n", new="    check(path or '')\n")],
             SIGNATURES, METADATA, bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert len(calls["reviews"]) == 1
         assert len(calls["reviews"][0]["comments"]) == 2
 
@@ -1364,7 +1474,7 @@ class TestPostedPayload:
         calls, _, _ = api
         suggest.reconcile_suggestions("o/r", 1, [], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["reviews"] == []
 
     def test_an_existing_suggestion_is_not_reposted(self, api):
@@ -1374,7 +1484,7 @@ class TestPostedPayload:
         set_comments([comment(10)])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
-                                      commanded_finding_key=finding_key())
+                                      commanded_finding_keys=(finding_key(),))
         assert calls["reviews"] == []
         assert calls["deleted"] == []
         assert calls["patched"] == []

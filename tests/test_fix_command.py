@@ -1,13 +1,17 @@
-"""Tests for parsing the `/fix N` command out of a comment body.
+"""Tests for parsing the `/fix N[,M...]` command out of a comment body.
 
 The comment body is attacker-controlled on a public repository: anyone may
 comment, and trust is decided separately (author_trust, on the COMMENT author).
 So this module's whole job is to decide whether a body is a command at all, and
-which ordinal it names — before any credential-bearing step runs.
+which ordinals it names — before any credential-bearing step runs.
 
-The ordinal is where the two numbering systems meet. A commander types the
-position they READ, which is 1-based; commanded_index.json is 0-based, because it
-indexes a list. Every test here that names a number names both.
+The ordinals are where the two numbering systems meet. A commander types the
+positions they READ, which are 1-based; commanded_index.json is 0-based, because
+it indexes a list. Every test here that names a number names both.
+
+The command names a SET (ADR-0013), so three bounds are the set's own and not the
+ordinal's: the empty set is not a command, duplicates collapse rather than naming
+a finding twice, and the count is bounded by the same cap the ordinal is.
 """
 
 from pathlib import Path
@@ -15,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from conftest import POLICY
-from fix_command import MAX_ORDINAL, parse_fix_command
+from fix_command import MAX_ORDINAL, MAX_ORDINALS, parse_fix_command
 
 
 class TestTheCapIsThePolicys:
@@ -52,7 +56,13 @@ class TestTheCapIsThePolicys:
             )
             # And the pattern follows it too, or the top ordinal is refused a layer
             # earlier than the range check.
-            assert reloaded.parse_fix_command("/fix 4") == 3
+            assert reloaded.parse_fix_command("/fix 4") == {3}
+            # The COUNT bound follows as well. A pattern admitting more ordinals
+            # than the policy allows findings carries a list no artifact can
+            # resolve; one admitting fewer refuses a legal command.
+            assert reloaded.MAX_ORDINALS == 4
+            assert reloaded.parse_fix_command("/fix 1,2,3,4") == {0, 1, 2, 3}
+            assert reloaded.parse_fix_command("/fix 1,2,3,4,4") is None
         finally:
             monkeypatch.undo()
             importlib.reload(fix_command)
@@ -61,7 +71,14 @@ class TestTheCapIsThePolicys:
         # The digit bound and the cap are one decision. A pattern narrower than the
         # cap refuses the top ordinal before the range check ever sees it — the
         # same silent no-op, one layer earlier.
-        assert parse_fix_command(f"/fix {MAX_ORDINAL}") == MAX_ORDINAL - 1
+        assert parse_fix_command(f"/fix {MAX_ORDINAL}") == {MAX_ORDINAL - 1}
+
+    def test_the_count_bound_is_the_same_cap(self):
+        # A review has at most max_items findings, so a command naming more
+        # ordinals than that cannot name a distinct finding with each. Derived from
+        # the one ceiling that already exists rather than a second number to keep
+        # in step with it.
+        assert MAX_ORDINALS == POLICY["artifact_schema"]["findings"]["max_items"]
 
 
 class TestParseFixCommand:
@@ -70,9 +87,9 @@ class TestParseFixCommand:
         # finding, which is index 0. Off by one here means every command
         # remediates the neighbour of the finding the commander pointed at — a
         # real defect on the wrong file, with every gate passing.
-        assert parse_fix_command("/fix 1") == 0
-        assert parse_fix_command("/fix 2") == 1
-        assert parse_fix_command("/fix 10") == 9
+        assert parse_fix_command("/fix 1") == {0}
+        assert parse_fix_command("/fix 2") == {1}
+        assert parse_fix_command("/fix 10") == {9}
 
     def test_zero_is_not_a_command(self):
         # There is no zeroth finding in a comment a human read. Accepting it would
@@ -86,7 +103,7 @@ class TestParseFixCommand:
         # Bounded before it reaches the gate rather than by the gate's range
         # check: the policy caps findings at 10, and this is the parse refusing to
         # carry an unbounded integer from an untrusted body into an int().
-        assert parse_fix_command(f"/fix {MAX_ORDINAL}") == MAX_ORDINAL - 1
+        assert parse_fix_command(f"/fix {MAX_ORDINAL}") == {MAX_ORDINAL - 1}
         assert parse_fix_command(f"/fix {MAX_ORDINAL + 1}") is None
         assert parse_fix_command("/fix 999999999999999999999999") is None
 
@@ -97,8 +114,8 @@ class TestParseFixCommand:
 
     def test_the_command_may_be_the_whole_comment_with_surrounding_space(self):
         # GitHub bodies arrive with CRLF and trailing whitespace.
-        assert parse_fix_command("  /fix 3  ") == 2
-        assert parse_fix_command("/fix 3\r\n") == 2
+        assert parse_fix_command("  /fix 3  ") == {2}
+        assert parse_fix_command("/fix 3\r\n") == {2}
 
     def test_the_command_must_be_the_comments_only_content(self):
         # The strict reading, and it is deliberate. A body that MENTIONS the
@@ -137,3 +154,68 @@ class TestParseFixCommand:
         # which would mean accepting a body that is not the one displayed.
         assert parse_fix_command("/fix​ 1") is None
         assert parse_fix_command("/fix 1​") is None
+
+
+class TestTheCommandNamesASet:
+    """ADR-0013: `/fix N,M` names several findings, and naming them asserts they
+    take ONE remediation. The assertion is the commander's; what this module owes
+    is a bounded, unambiguous reading of the SHAPE they typed.
+    """
+
+    def test_several_ordinals_are_one_command(self):
+        assert parse_fix_command("/fix 1,3") == {0, 2}
+        assert parse_fix_command("/fix 2,4,6") == {1, 3, 5}
+
+    def test_order_is_not_part_of_the_command(self):
+        # A set, because `/fix 3,1` and `/fix 1,3` name the same findings. The
+        # ordering is the commander's typing; stack.fix_key rests on this, so two
+        # spellings of one command cannot open two follow-up pull requests.
+        assert parse_fix_command("/fix 3,1") == parse_fix_command("/fix 1,3")
+
+    def test_a_repeated_ordinal_collapses_rather_than_naming_a_finding_twice(self):
+        # `/fix 1,1` names ONE finding. Read as two, the same finding would be
+        # remediated twice inside one plan's caps, and the scope check would be
+        # satisfied twice by one path.
+        assert parse_fix_command("/fix 1,1") == {0}
+        assert parse_fix_command("/fix 2,1,2") == {0, 1}
+
+    def test_the_empty_set_is_not_a_command(self):
+        # There is no command naming no finding. `/fix` and `/fix ,` have no honest
+        # reading as "all of them" — that is `/fix all`, refused — and the empty set
+        # would reach a plan session with nothing to fix.
+        for body in ["/fix", "/fix ", "/fix ,", "/fix ,1", "/fix 1,", "/fix 1,,2"]:
+            assert parse_fix_command(body) is None, body
+
+    def test_more_ordinals_than_the_policy_allows_findings_is_not_a_command(self):
+        # The count is bounded by the same cap the ordinal is, so an untrusted body
+        # cannot make the parse walk an arbitrarily long list. At the cap it is a
+        # command; one past it is not.
+        at_cap = ",".join(str(n) for n in range(1, MAX_ORDINALS + 1))
+        assert parse_fix_command(f"/fix {at_cap}") == set(range(MAX_ORDINALS))
+        over_cap = ",".join(str(n) for n in range(1, MAX_ORDINALS + 2))
+        assert parse_fix_command(f"/fix {over_cap}") is None
+
+    def test_the_count_bound_is_on_the_ordinals_typed_not_the_set_they_collapse_to(self):
+        # A repeated ordinal collapses to a smaller SET, and the bound is still on
+        # the list. Otherwise `/fix 1,1,1,...` past the cap would parse: the count
+        # exists to bound the untrusted body's length, and a set of one says nothing
+        # about how long the body was.
+        over_cap = ",".join(["1"] * (MAX_ORDINALS + 1))
+        assert parse_fix_command(f"/fix {over_cap}") is None
+
+    def test_one_out_of_range_ordinal_refuses_the_whole_command(self):
+        # NOT the subset it could resolve. A commander who typed `/fix 1,0` asked
+        # for two findings; delivering one of them would be a scope the harness
+        # chose, which is the one thing ADR-0013 refuses to let anything but the
+        # commander do.
+        for body in ["/fix 1,0", "/fix 0,1", f"/fix 1,{MAX_ORDINAL + 1}"]:
+            assert parse_fix_command(body) is None, body
+
+    def test_the_separator_is_exactly_one_ascii_comma(self):
+        # Decided as narrowly as the verb's own separator: every spelling admitted
+        # here is a spelling an untrusted body may use. A space-separated list is
+        # additionally indistinguishable from the trailing prose the
+        # whole-comment rule refuses.
+        for body in ["/fix 1, 3", "/fix 1 ,3", "/fix 1 3", "/fix 1;3", "/fix 1/3",
+                     "/fix 1+3", "/fix 1，3", "/fix 1&3", "/fix 1\t3", "/fix 1\n3"]:
+            assert parse_fix_command(body) is None, body

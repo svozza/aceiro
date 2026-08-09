@@ -1185,8 +1185,8 @@ class TestWriteClassTargets:
 
 
 class TestCommandedFindingScope:
-    """ADR-0007: the command names ONE finding, and that scope was enforced by
-    the prompt alone — verify_plan never saw the finding.
+    """ADR-0007: the command names findings, and that scope was enforced by
+    the prompt alone — verify_plan never saw them.
 
     So a generator steered by text in the head tree (or plain model error) into
     patching the two OTHER files a PR changed, and none of the finding's own,
@@ -1194,24 +1194,25 @@ class TestCommandedFindingScope:
     denylisted, the write chain is ordered. The commander asked for auth.py and
     got settings.py and ci_helper.py.
 
-    The property is that the finding's file is AMONG the fix's paths, not that it
-    is the only one: ADR-0009 explicitly supports a multi-file fix delivered as a
-    stacked PR, so requiring equality would refuse the case the ADR exists for.
-    A fix that touches the commanded file plus others is a judgement call a human
-    reviews; one that never touches it is not the commanded fix at all.
+    The property is that every commanded finding's file is AMONG the fix's paths,
+    not that they are the only ones: ADR-0009 explicitly supports a multi-file fix
+    delivered as a stacked PR, so requiring equality would refuse the case the ADR
+    exists for. A fix that touches the commanded files plus others is a judgement
+    call a human reviews; one that misses any of them is not the commanded fix.
     """
 
     FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "title": "t", "body": "b"}
+    OTHER = {"path": "src/util.py", "line": 1, "severity": "low", "title": "u", "body": "b"}
 
     def test_a_fix_on_the_commanded_file_passes(self):
-        contained({"steps": [anchored_patch("s0")]}, commanded_finding=self.FINDING)
+        contained({"steps": [anchored_patch("s0")]}, commanded_findings=[self.FINDING])
 
     def test_a_fix_that_never_touches_the_commanded_file_rejects(self):
         with pytest.raises(Rejection, match="commanded finding"):
             contained(
                 {"steps": [anchored_patch("s0", path="src/util.py", old="def check(path):\n",
                                           new="def check(path=None):\n")]},
-                commanded_finding=self.FINDING,
+                commanded_findings=[self.FINDING],
             )
 
     def test_a_multi_file_fix_including_the_commanded_file_passes(self):
@@ -1223,7 +1224,7 @@ class TestCommandedFindingScope:
                 anchored_patch("s1", path="src/util.py", old="def check(path):\n",
                                new="def check(path=None):\n"),
             ]},
-            commanded_finding=self.FINDING,
+            commanded_findings=[self.FINDING],
         )
 
     def test_no_commanded_finding_refuses_nothing_extra(self):
@@ -1236,7 +1237,93 @@ class TestCommandedFindingScope:
         # set. What refuses it is cardinality — see
         # TestWriteChainCardinality.test_a_plan_with_no_fix_step_rejects, which is
         # the check this docstring used to claim without it existing.
-        contained({"steps": [push_step("s0")]}, commanded_finding=self.FINDING)
+        contained({"steps": [push_step("s0")]}, commanded_findings=[self.FINDING])
+
+
+class TestTheScopeIsASubsetCheck:
+    """ADR-0013 widens the scope check from ∈ to ⊆: EVERY commanded finding's path
+    must be among the fix's paths.
+
+    The first property here is the one that proves the widening did not weaken the
+    existing gate — for ONE commanded finding the check must be byte-for-byte the ∈
+    test it replaces, since that is the only case in production today. The rest are
+    conjuncts the multi-finding case adds.
+    """
+
+    FINDING = TestCommandedFindingScope.FINDING
+    OTHER = TestCommandedFindingScope.OTHER
+
+    OTHER_PATCH = dict(path="src/util.py", old="def check(path):\n",
+                       new="def check(path=None):\n")
+
+    @pytest.mark.parametrize("paths,accepted", [
+        (["src/app.py"], True),                     # exactly the commanded file
+        (["src/app.py", "src/util.py"], True),      # the commanded file plus another
+        (["src/util.py"], False),                   # another file, never the commanded one
+    ])
+    def test_one_commanded_finding_behaves_exactly_as_the_membership_check_did(
+            self, paths, accepted):
+        # Driven over every shape the ∈ check could see, so the parametrization is
+        # the whole truth table for a single ordinal rather than one sample of it.
+        # If the subset check ever diverged here, every command in production today
+        # would be judged by a rule nobody wrote.
+        steps = [
+            anchored_patch("s0") if path == "src/app.py"
+            else anchored_patch(f"s{index}", **self.OTHER_PATCH)
+            for index, path in enumerate(paths)
+        ]
+        if accepted:
+            contained({"steps": steps}, commanded_findings=[self.FINDING])
+        else:
+            with pytest.raises(Rejection, match="commanded finding"):
+                contained({"steps": steps}, commanded_findings=[self.FINDING])
+
+    def test_a_fix_touching_every_commanded_path_passes(self):
+        # ADR-0013's motivating case, and stacked delivery's first reachable
+        # trigger: two commanded findings on distinct paths, and a fix touching both.
+        contained(
+            {"steps": [anchored_patch("s0"), anchored_patch("s1", **self.OTHER_PATCH)]},
+            commanded_findings=[self.FINDING, self.OTHER],
+        )
+
+    @pytest.mark.parametrize("missing", ["src/app.py", "src/util.py"])
+    def test_a_fix_missing_ANY_commanded_path_rejects(self, missing):
+        # The conjunct. Both directions, because a check reading only the FIRST
+        # commanded finding would pass one of these and is exactly the shape that
+        # reads as enforcement while enforcing less: half a coordinated fix, verified
+        # whole, for a command that named both halves.
+        touched = [
+            anchored_patch("s0") if path == "src/app.py"
+            else anchored_patch("s1", **self.OTHER_PATCH)
+            for path in ("src/app.py", "src/util.py") if path != missing
+        ]
+        with pytest.raises(Rejection, match="commanded finding"):
+            contained({"steps": touched},
+                      commanded_findings=[self.FINDING, self.OTHER])
+        assert len(touched) == 1, "the fixture stopped removing a path, so nothing is missing"
+
+    def test_the_refusal_names_the_paths_the_fix_missed(self):
+        # A count alone leaves the commander (and the model, on a retry) guessing
+        # which half of their command went unaddressed.
+        with pytest.raises(Rejection, match=r"src/util\.py"):
+            contained({"steps": [anchored_patch("s0")]},
+                      commanded_findings=[self.FINDING, self.OTHER])
+
+    def test_two_commanded_findings_sharing_a_file_need_only_that_file(self):
+        # The measured case (ADR-0009 addendum C: the reviewer split one defect into
+        # two findings, and two findings of one artifact routinely share a path). One
+        # contiguous suggestion covers both, so requiring two paths would refuse the
+        # same-file multi-finding command entirely.
+        sibling = self.FINDING | {"line": 3, "title": "also here"}
+        contained({"steps": [anchored_patch("s0")]},
+                  commanded_findings=[self.FINDING, sibling])
+
+    def test_an_empty_commanded_set_refuses_nothing_extra(self):
+        # The review lane's None has an empty-list twin, and both must mean "no
+        # command". An empty set read as a ∀-claim is vacuously true, so this asserts
+        # the same silence rather than a different one.
+        contained({"steps": [anchored_patch("s0", **self.OTHER_PATCH)]},
+                  commanded_findings=[])
 
 
 class TestWriteChainCardinality:

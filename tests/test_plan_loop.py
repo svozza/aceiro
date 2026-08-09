@@ -327,15 +327,15 @@ class TestPlanUserMessage:
         assert swapped in message
 
     def test_the_finding_is_an_element_of_the_verified_artifact(self, tmp_path):
-        # The whole point of the bundle change: the commanded finding is not
-        # supplied, it is DERIVED. read_commanded_finding verifies review.json
+        # The whole point of the bundle change: the commanded findings are not
+        # supplied, they are DERIVED. read_commanded_findings verifies review.json
         # with the artifact verifier and then indexes it, so "an element of an
         # accepted artifact" is structural — there is no separate finding for a
         # forger to shape correctly, and no copy for two readers to disagree on.
         context = self.write_context(tmp_path)
         review = json.loads((context / "review.json").read_text())
-        finding = plan_loop.read_commanded_finding(context, POLICY)
-        assert finding in review["findings"]
+        findings = plan_loop.read_commanded_findings(context, POLICY)
+        assert findings and all(finding in review["findings"] for finding in findings)
 
     def test_a_finding_no_accepted_artifact_contains_cannot_be_commanded(self, tmp_path):
         # The gap this closes, stated as the attack: a well-shaped finding on any
@@ -348,7 +348,7 @@ class TestPlanUserMessage:
             "title": "no reviewer found this", "body": "but the fix would be real",
         }
         (context / "finding.json").write_text(json.dumps(forged))
-        assert plan_loop.read_commanded_finding(context, POLICY) != forged
+        assert forged not in plan_loop.read_commanded_findings(context, POLICY)
 
     def test_an_artifact_the_verifier_rejects_commands_nothing(self, tmp_path):
         # review.json goes through verify(), not a shape check of its own: an
@@ -360,7 +360,7 @@ class TestPlanUserMessage:
         review["findings"][0]["path"] = "src/never_touched_by_this_pr.py"
         (context / "review.json").write_text(json.dumps(review))
         with pytest.raises(Rejection, match="not a changed file"):
-            plan_loop.read_commanded_finding(context, POLICY)
+            plan_loop.read_commanded_findings(context, POLICY)
 
     def test_the_ordinal_is_the_rendered_position(self, tmp_path):
         # The ordinal means the comment's Nth finding, so it resolves through
@@ -373,26 +373,40 @@ class TestPlanUserMessage:
             {"path": "src/app.py", "line": 2, "severity": "critical",
              "title": "load() breaks callers", "body": "the body"},
         ])
-        (context / "commanded_index.json").write_text(json.dumps({"index": 0}))
-        assert plan_loop.read_commanded_finding(context, POLICY)["severity"] == "critical"
-        (context / "commanded_index.json").write_text(json.dumps({"index": 1}))
-        assert plan_loop.read_commanded_finding(context, POLICY)["severity"] == "low"
+        self.command(context, 0)
+        assert plan_loop.read_commanded_findings(context, POLICY)[0]["severity"] == "critical"
+        self.command(context, 1)
+        assert plan_loop.read_commanded_findings(context, POLICY)[0]["severity"] == "low"
 
     def test_an_ordinal_past_the_end_is_refused(self, tmp_path):
         # Fail closed rather than IndexError, and rather than clamping: a command
         # naming a finding the review does not have is a command with no referent.
         context = self.write_context(tmp_path)
-        (context / "commanded_index.json").write_text(json.dumps({"index": 7}))
+        self.command(context, 7)
         with pytest.raises(Rejection, match="7"):
-            plan_loop.read_commanded_finding(context, POLICY)
+            plan_loop.read_commanded_findings(context, POLICY)
 
     def test_a_negative_ordinal_is_refused(self, tmp_path):
         # Python would index from the end, so this is the one out-of-range value
         # that silently resolves to a real finding — the LAST one.
         context = self.write_context(tmp_path)
-        (context / "commanded_index.json").write_text(json.dumps({"index": -1}))
+        self.command(context, -1)
         with pytest.raises(Rejection, match="-1"):
-            plan_loop.read_commanded_finding(context, POLICY)
+            plan_loop.read_commanded_findings(context, POLICY)
+
+    def test_a_negative_ordinal_beside_a_valid_one_is_still_refused(self, tmp_path):
+        # The per-element bound, under a SET. A check applied to the first ordinal
+        # only would pass this, and -1 resolves to a REAL finding — so the fix would
+        # be scoped partly by a value the command channel never produced.
+        context = self.write_context(tmp_path, findings=[
+            {"path": "src/app.py", "line": 2, "severity": "high",
+             "title": "load() breaks callers", "body": "the body"},
+            {"path": "src/util.py", "line": 1, "severity": "low",
+             "title": "a second finding", "body": "the body"},
+        ])
+        self.command(context, 0, -1)
+        with pytest.raises(Rejection, match="-1"):
+            plan_loop.read_commanded_findings(context, POLICY)
 
     def test_a_non_integer_ordinal_is_refused(self, tmp_path):
         # bool is an int in Python, so True would index findings[1]. A command's
@@ -411,9 +425,24 @@ class TestPlanUserMessage:
              "title": "a second finding", "body": "the body"},
         ])
         for value in ("1", 1.0, True, False, None, [1]):
-            (context / "commanded_index.json").write_text(json.dumps({"index": value}))
+            self.command(context, value)
             with pytest.raises(Rejection, match="must be an integer"):
-                plan_loop.read_commanded_finding(context, POLICY)
+                plan_loop.read_commanded_findings(context, POLICY)
+
+    def test_a_non_integer_ordinal_beside_a_valid_one_is_refused(self, tmp_path):
+        # Same per-element bound as the negative case, for the same reason: `True`
+        # in second position resolves findings[1], a real finding on a file nobody
+        # commanded, and a guard reading only the first element admits it.
+        context = self.write_context(tmp_path, findings=[
+            {"path": "src/app.py", "line": 2, "severity": "high",
+             "title": "load() breaks callers", "body": "the body"},
+            {"path": "src/util.py", "line": 1, "severity": "low",
+             "title": "a second finding", "body": "the body"},
+        ])
+        for value in ("1", 1.0, True, None, [1]):
+            self.command(context, 0, value)
+            with pytest.raises(Rejection, match="must be an integer"):
+                plan_loop.read_commanded_findings(context, POLICY)
 
     def mutate_finding(self, context, **fields):
         """Apply fields to the commanded finding inside review.json.
@@ -470,9 +499,9 @@ class TestPlanUserMessage:
         # actually produces, or it refuses every legitimate command.
         plan_loop.build_plan_user_message(self.write_context(tmp_path), POLICY)
 
-    def write_context(self, tmp_path, findings=None, index=0):
+    def write_context(self, tmp_path, findings=None, indices=(0,)):
         """The plan session's context directory under the post-chunk-C contract:
-        the ACCEPTED artifact plus the commanded ordinal, never a bare finding."""
+        the ACCEPTED artifact plus the commanded ordinals, never a bare finding."""
         context = tmp_path / "context"
         context.mkdir(exist_ok=True)
         (context / "pr.json").write_text(json.dumps(
@@ -488,8 +517,117 @@ class TestPlanUserMessage:
             }],
             "residual_risk": "",
         }))
-        (context / "commanded_index.json").write_text(json.dumps({"index": index}))
+        self.command(context, *indices)
         return context
+
+    def command(self, context, *indices):
+        """Overwrite the commanded ordinals, whatever they are.
+
+        Takes the raw values rather than a validated list, because every bound
+        read_commanded_indices carries is about a value the file could hold and this
+        harness's job is to put it there.
+        """
+        (context / "commanded_index.json").write_text(json.dumps({"indices": list(indices)}))
+
+
+class TestTheCommandNamesASetOfFindings:
+    """ADR-0013: the context carries the ordinals the commander typed, as a set.
+
+    Every per-element bound in TestPlanUserMessage still applies and is asserted
+    there; these are the three the SET adds, plus what the prompt does with several
+    findings.
+    """
+
+    TWO_FINDINGS = [
+        {"path": "src/app.py", "line": 2, "severity": "high",
+         "title": "load() breaks callers", "body": "the body"},
+        {"path": "src/util.py", "line": 1, "severity": "low",
+         "title": "check() is unreachable", "body": "the other body"},
+    ]
+
+    def context(self, tmp_path, *indices, findings=None):
+        return TestPlanUserMessage().write_context(
+            tmp_path, findings=findings or self.TWO_FINDINGS, indices=indices)
+
+    def raw(self, context, value):
+        (context / "commanded_index.json").write_text(json.dumps({"indices": value}))
+
+    def test_several_ordinals_resolve_to_several_findings(self, tmp_path):
+        findings = plan_loop.read_commanded_findings(self.context(tmp_path, 0, 1), POLICY)
+        assert [f["path"] for f in findings] == ["src/app.py", "src/util.py"]
+
+    def test_the_findings_are_resolved_in_ordinal_order(self, tmp_path):
+        # Canonical order, so nothing downstream can make the ORDER part of an
+        # identity: stack.fix_key sorts its components anyway, and the reconciler
+        # records the first as a comment's representative, so a resolution order
+        # that varied with the file's spelling would vary the comment's marker
+        # between two runs of one command.
+        findings = plan_loop.read_commanded_findings(self.context(tmp_path, 1, 0), POLICY)
+        assert [f["severity"] for f in findings] == ["high", "low"]
+
+    def test_a_repeated_ordinal_resolves_to_one_finding(self, tmp_path):
+        # The parse collapses duplicates, and this agrees rather than relying on it:
+        # the file is an input to a gate holding a write token, so the bound must be
+        # here too.
+        self.raw(context := self.context(tmp_path, 0), [0, 0, 0])
+        assert len(plan_loop.read_commanded_findings(context, POLICY)) == 1
+
+    def test_an_empty_set_of_ordinals_is_refused(self, tmp_path):
+        # There is no command naming no finding, and an empty set would make
+        # check_commanded_scope's ∀-claim vacuously true — the fixless-plan shape
+        # check_plan_cardinality refuses, arriving through the command instead.
+        self.raw(context := self.context(tmp_path, 0), [])
+        with pytest.raises(Rejection, match="empty"):
+            plan_loop.read_commanded_findings(context, POLICY)
+
+    @pytest.mark.parametrize("value", ["01", 0, {"0": 0}, None, "0"])
+    def test_ordinals_that_are_not_a_list_are_refused(self, tmp_path, value):
+        # A bare string is ITERABLE: `"01"` read as a sequence yields two ordinals
+        # nobody typed, both of which resolve to real findings. So the container's
+        # type is checked, not just its elements.
+        self.raw(context := self.context(tmp_path, 0), value)
+        with pytest.raises(Rejection, match="must be a list"):
+            plan_loop.read_commanded_findings(context, POLICY)
+
+    def test_one_ordinal_past_the_end_refuses_the_whole_command(self, tmp_path):
+        # NOT the subset that resolves. The commander asserted these findings take
+        # one remediation, so verifying a plan against the half that exists would be
+        # a scope the harness chose — the one thing ADR-0013 reserves to the human.
+        self.raw(context := self.context(tmp_path, 0), [0, 7])
+        with pytest.raises(Rejection, match="7"):
+            plan_loop.read_commanded_findings(context, POLICY)
+
+    def test_every_commanded_finding_is_fenced_separately(self, tmp_path):
+        # One fence per untrusted payload, exactly as for a single command. One block
+        # holding several findings would let text quoted inside the first read, to
+        # the model and to a human, as structure between them.
+        message = plan_loop.build_plan_user_message(self.context(tmp_path, 0, 1), POLICY)
+        assert message.count("<commanded_finding>") == 2
+        assert message.count("</commanded_finding>") == 2
+        for finding in self.TWO_FINDINGS:
+            assert finding["title"] in message
+
+    def test_the_prompt_says_the_findings_take_one_remediation(self, tmp_path):
+        # The assertion is the COMMANDER's, and the message has to say so: the model
+        # is told to plan one fix for the set, not to judge whether they are one
+        # defect (ADR-0005's content question, which nothing here asks).
+        message = plan_loop.build_plan_user_message(self.context(tmp_path, 0, 1), POLICY)
+        assert "ONE remediation" in message
+        assert "every file they name" in message
+
+    def test_a_single_finding_command_still_says_ONE_finding(self, tmp_path):
+        # The unchanged case, and it must stay unchanged: the plural wording on a
+        # one-finding command would tell the model to coordinate across a set of one.
+        message = plan_loop.build_plan_user_message(
+            self.context(tmp_path, 0, findings=[self.TWO_FINDINGS[0]]), POLICY)
+        assert "ONE finding" in message
+        assert "no other" in message
+
+    def test_the_fenced_findings_precede_the_diff(self, tmp_path):
+        # Same ordering property the single-finding case has: the command comes
+        # first, the contributor-authored context after it.
+        message = plan_loop.build_plan_user_message(self.context(tmp_path, 0, 1), POLICY)
+        assert message.rindex("</commanded_finding>") < message.index("untrusted_diff")
 
 
 class TestRunWiring:

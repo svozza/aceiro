@@ -544,43 +544,53 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
         )
 
 
-def check_commanded_scope(plan: dict, commanded_finding: dict | None) -> None:
-    """ADR-0007: the command names ONE finding, so the fix must touch its file.
+def check_commanded_scope(plan: dict, commanded_findings: list[dict] | None) -> None:
+    """ADR-0007/ADR-0013: the fix must touch the file of EVERY commanded finding.
 
     This scope was enforced by the PROMPT alone — verify_plan never saw the
-    finding. A generator steered by text in the contributor-authored head tree
+    findings. A generator steered by text in the contributor-authored head tree
     (which it may Read in full) into patching the other files a PR changed, and
     none of the finding's own, produced a plan that verified: every path is in
     changed_files, none is denylisted, the chain is ordered. The commander asked
     for auth.py and got settings.py.
 
-    AMONG, not equal to. ADR-0009 adds the stacked pull request precisely for a
+    SUBSET, not equality. ADR-0009 adds the stacked pull request precisely for a
     fix that only makes sense applied across several files, so requiring the path
-    set to be exactly the finding's would refuse the case that ADR exists for. A
-    fix touching the commanded file plus others is a judgement a human reviews;
-    one that never touches it is not the commanded fix.
+    set to be exactly the commanded paths would refuse the case that ADR exists
+    for. A fix touching the commanded files plus others is a judgement a human
+    reviews; one that misses any commanded file is not the commanded fix.
+
+    For a single commanded finding this is byte-for-byte the ∈ check it replaces:
+    one path, one membership test. That is what makes ADR-0013's widening a
+    generalisation of the existing gate rather than a replacement for it — the
+    multi-finding case adds conjuncts and weakens none.
 
     None means no command (the review lane, and every test that passes no
     finding), which refuses nothing extra. A plan with no fix step has no path
     set to compare — check_plan_cardinality is what refuses a plan doing nothing.
     """
-    if commanded_finding is None:
+    if not commanded_findings:
         return
     paths = {step["args"]["path"] for step in plan["steps"] if step["kind"] in ANCHORED_KINDS}
     if not paths:
         return
-    commanded_path = commanded_finding.get("path")
-    if commanded_path not in paths:
+    # Sorted and deduplicated so the message is stable and names each missing file
+    # once, however many commanded findings share it.
+    missing = sorted({
+        finding.get("path") for finding in commanded_findings
+    } - paths)
+    if missing:
         raise Rejection(
-            f"plan: the commanded finding is on {commanded_path!r} but the fix touches "
-            f"{sorted(paths)}; a plan that never touches the commanded file is not the "
-            "commanded fix (ADR-0007: the command names one finding)"
+            f"plan: the commanded finding(s) are on {missing} but the fix touches "
+            f"{sorted(paths)}; a plan that never touches a commanded file is not the "
+            "commanded fix (ADR-0013: the command names a set of findings, and the fix "
+            "must touch every path they name)"
         )
 
 
 def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                            policy_plan: dict, content_source, head_branch: str | None = None,
-                           commanded_finding: dict | None = None) -> None:
+                           commanded_findings: list[dict] | None = None) -> None:
     """ADR-0005: frame, denylist, suggest.line provenance, bounding, anchoring
     (which for a suggest step includes PLACEMENT — that `old` begins at the
     addressed line and ends at a line end, so the anchored region and the region
@@ -622,7 +632,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # whatever was commanded, so that is the reason a reader should get. Here
     # rather than later because it is still decidable from the plan plus the
     # command, before anything is read off disk.
-    check_commanded_scope(plan, commanded_finding)
+    check_commanded_scope(plan, commanded_findings)
 
     # suggest.line provenance (ADR-0009 addendum): the same in-hunk check a
     # finding's line gets, against the same SHA-anchored diff, in the verifier
@@ -1036,7 +1046,7 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
 
 def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: dict,
                 content_source, head_branch: str | None = None,
-                commanded_finding: dict | None = None) -> None:
+                commanded_findings: list[dict] | None = None) -> None:
     """Raise Rejection on the first policy violation; return None if verified.
 
     Mirrors verify()'s phase order (schema, provenance-shaped checks, markdown,
@@ -1047,15 +1057,15 @@ def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: di
     caller's trust decision, and a callable keeps this module free of any
     filesystem assumption beyond it.
 
-    `commanded_finding` is the finding the command names (ADR-0007), making the
-    plan's scope a CHECKED property rather than a prompt instruction. None means
-    no command and refuses nothing extra.
+    `commanded_findings` are the findings the command names (ADR-0007, ADR-0013),
+    making the plan's scope a CHECKED property rather than a prompt instruction.
+    None (or empty) means no command and refuses nothing extra.
     """
     check_plan_schema(plan, policy["plan"])
     check_plan_cardinality(plan, policy["plan"])
     check_plan_ordering(plan, policy["plan"])
     check_plan_containment(
-        plan, diff_text, changed_files, policy["plan"], content_source, head_branch, commanded_finding
+        plan, diff_text, changed_files, policy["plan"], content_source, head_branch, commanded_findings
     )
     check_plan_markdown(plan, policy)
     check_plan_secrets(plan, policy)

@@ -152,7 +152,7 @@ class TestFencing:
             }],
             "residual_risk": "",
         }))
-        (context / "commanded_index.json").write_text(json.dumps({"index": 0}))
+        (context / "commanded_index.json").write_text(json.dumps({"indices": [0]}))
         message = plan_loop.build_plan_user_message(context, POLICY)
         assert message.count("<commanded_finding>") == 1
         assert message.count("</commanded_finding>") == 1

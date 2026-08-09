@@ -531,7 +531,7 @@ def comment_content(body: str) -> str:
 def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
                           signatures: dict[tuple[str, int], str], metadata: dict,
                           *, bot_login: str, head_sha: str,
-                          commanded_finding_key: str | None) -> None:
+                          commanded_finding_keys: tuple[str, ...] | None) -> None:
     """Make the pull request's suggestion comments match the verified plan's.
 
     Re-posting is not idempotent — an identical comment on an unchanged line
@@ -549,33 +549,60 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
     against, so a push landing mid-run leaves the suggestion marked outdated rather
     than misplaced on content it never described.
 
-    `commanded_finding_key` is the SCOPE. One run delivers one commanded finding
-    (ADR-0007), while the comment listing is the whole pull request, so retraction
-    has to be told what this command could have produced or it withdraws every
-    OTHER finding's live suggestion — with a note claiming it left the latest
-    remediation, which is untrue, and deleting the human thread under it if there
-    is no reply to force a strike. Two commands on one pull request is the designed
-    flow.
+    `commanded_finding_keys` is the SCOPE — a SET, because one run delivers the
+    findings ONE command named (ADR-0007, ADR-0013), while the comment listing is
+    the whole pull request. Retraction has to be told what this command could have
+    produced or it withdraws every OTHER finding's live suggestion — with a note
+    claiming it left the latest remediation, which is untrue, and deleting the human
+    thread under it if there is no reply to force a strike. Two commands on one pull
+    request is the designed flow.
 
-    The scope is the FINDING, not its file. A path was the scope first, on the
+    The scope is the FINDINGS, not their files. A path was the scope first, on the
     reasoning that the scope gate already requires the plan to touch it — but two
     findings of one accepted artifact routinely share a file, and the reviewer was
     measured doing exactly that (ADR-0009 addendum C), so a path is the set TWO
     commands speak for. `/fix 2` then withdrew `/fix 1`'s live suggestion. Each
-    comment records the finding it was delivered for (finding_marker, on the marker
-    line), and a command retracts only comments carrying its own key.
+    comment records the ONE finding it was delivered for (finding_marker, on the
+    marker line — a comment's marker stays per finding, since a comment speaks for
+    exactly one; what carries a set is the COMMAND), and a command retracts only
+    comments whose key is in its own set.
 
-    None retracts NOTHING, and so does a comment whose own key cannot be
-    established: a run whose scope is unknown may still post — its own suggestions
-    are verified — but must not take anything down. That also makes the change
-    backward-safe, since comments delivered before the marker existed carry no key
-    and are left standing rather than withdrawn by the first command to follow.
+    The widening pays for itself on the shared-file case: `/fix 1,3` with both
+    anchors in one file reconciles with scope {K1, K3}, so an earlier `/fix 1`
+    comment is in scope, absent from `wanted`, and retracted by this reconciler with
+    no new mechanism (ADR-0013).
+
+    The reverse — `/fix 1,3` then `/fix 3` — does NOT retract, because the earlier
+    comment records the first commanded finding and {K1} is not in {K3}. That is
+    cross-command partiality, which ADR-0009's addendum D accepts deliberately and
+    for the reason it gives: the leftover comment is still on the pull request, still
+    visible, and GitHub marks it outdated when the head moves, so a half-fix cannot
+    land silently. Nothing is built for it.
+
+    None (or an empty set) retracts NOTHING, and so does a comment whose own key
+    cannot be established: a run whose scope is unknown may still post — its own
+    suggestions are verified — but must not take anything down. That also makes the
+    change backward-safe, since comments delivered before the marker existed carry
+    no key and are left standing rather than withdrawn by the first command to
+    follow.
     """
     all_comments = list(review_comments(repo, pr_number))
     ours = [(fingerprint, c) for c in all_comments if (fingerprint := owned_fingerprint(c, bot_login))]
     replied_ids = human_replied_ids(all_comments, bot_login)
     wanted = {suggestion_fingerprint(step["args"], signatures): step for step in steps}
     live = {fingerprint for fingerprint, _ in ours}
+
+    # What each comment RECORDS is one finding's key (ADR-0013: the marker stays per
+    # finding; what carries a set is the command). Under a multi-finding command
+    # every commanded finding is on the plan's single suggestion path — cardinality
+    # permits one suggest step per path, and the scope gate requires the fix to
+    # touch every commanded path — so one contiguous replacement covers the whole
+    # set and no single finding is uniquely "the" one it speaks for. The FIRST
+    # commanded finding is recorded as the representative: deterministic, because
+    # the keys arrive in the canonical ordinal order read_commanded_indices
+    # established, and immaterial to scope, which is set membership below.
+    scope = frozenset(commanded_finding_keys or ())
+    recorded_key = commanded_finding_keys[0] if commanded_finding_keys else None
 
     fresh = [(fingerprint, step) for fingerprint, step in wanted.items() if fingerprint not in live]
     if fresh:
@@ -591,7 +618,7 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             pr_number,
             REVIEW_BODY,
             [comment_anchor(step) | {
-                "body": render_suggestion(step, fingerprint, metadata, commanded_finding_key)}
+                "body": render_suggestion(step, fingerprint, metadata, recorded_key)}
              for fingerprint, step in fresh],
             head_sha=head_sha,
         )
@@ -614,7 +641,7 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
         if fingerprint not in wanted:
             continue
         body = render_suggestion(
-            wanted[fingerprint], fingerprint, metadata, commanded_finding_key)
+            wanted[fingerprint], fingerprint, metadata, recorded_key)
         if is_struck(comment):
             patch_review_comment(repo, comment["id"], body)
             print(f"restored previously retracted suggestion comment {comment['id']}")
@@ -622,11 +649,10 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             patch_review_comment(repo, comment["id"], body)
             print(f"updated suggestion comment {comment['id']} (its suggestion changed)")
 
-    # Scoped to what THIS command speaks for: a comment on another finding's file
-    # is not withdrawn by a command that was never about it. `path` comes from the
-    # listing, so a comment GitHub reports without one is out of scope and left
-    # standing — the fail-closed reading, since the alternative is deleting a
-    # comment whose subject could not be established.
+    # Scoped to what THIS command speaks for: a comment delivered for a finding
+    # this command did not name is not withdrawn by it. A comment whose own key
+    # cannot be established is out of scope and left standing — the fail-closed
+    # reading, since the alternative is deleting a comment whose subject is unknown.
     stale = [(fingerprint, comment) for fingerprint, comment in ours if fingerprint not in wanted]
     if stale:
         # Re-read immediately before the DELETEs. The listing above happened before
@@ -644,7 +670,7 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             print(f"could not re-read replies before retracting ({exc}); using the earlier scan")
 
     for fingerprint, comment in stale:
-        if commanded_finding_key is None or owned_finding_key(comment, bot_login) != commanded_finding_key:
+        if owned_finding_key(comment, bot_login) not in scope:
             print(f"suggestion comment {comment['id']} is outside this command's scope, left as is")
             continue
         retract(repo, comment, replied_ids, WITHDRAWN_NOTE)

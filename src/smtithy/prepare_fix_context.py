@@ -1,4 +1,4 @@
-"""Compose the remediation lane's context from a `/fix N` command.
+"""Compose the remediation lane's context from a `/fix N[,M...]` command.
 
 prepare_context's counterpart for the command channel (ADR-0007). It runs in the
 gated `fix` job, before the plan session, and every precondition the command
@@ -19,9 +19,12 @@ The preconditions, and why each is this module's rather than a gate's:
   accepted review; it cannot prove that review was ever posted, and the commander
   is acting on a comment they read. This is also where drift lands: the witness is
   scoped to a SHA, so a head that moved since the review has no witness.
-- **The ordinal names one of that review's findings.** Both gates refuse an
+- **Every ordinal names one of that review's findings.** Both gates refuse an
   out-of-range ordinal, but composing a context that addresses nothing would spend
   a model call to fail closed later, and this is the one place a commander sees why.
+  One bad ordinal refuses the whole command: the commander asserted these findings
+  take one remediation (ADR-0013), so the subset that resolves is not what they
+  asked for.
 
 The composed directory is prepare_context's, plus the two files that make the
 commanded finding derivable rather than supplied (ADR-0007's second addendum):
@@ -141,8 +144,8 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
     every precondition has passed: a partially composed directory would be a
     context the plan session could read.
     """
-    index = parse_fix_command(comment_body)
-    if index is None:
+    indices = parse_fix_command(comment_body)
+    if indices is None:
         return None
 
     # Trust first, and on the COMMENT author (ADR-0007). Before the artifact
@@ -206,10 +209,13 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
         ) from exc
 
     findings = review["findings"]
-    if index >= len(findings):
+    # Every ordinal, and one out of range refuses the WHOLE command: the commander
+    # asserted that these findings take one remediation, so honouring the subset
+    # that happens to resolve would deliver a scope nobody named (ADR-0013).
+    if past_the_end := sorted(index + 1 for index in indices if index >= len(findings)):
         raise Refused(
-            f"the command names finding {index + 1} but the posted review has {len(findings)}; "
-            "no fix"
+            f"the command names finding(s) {past_the_end} but the posted review has "
+            f"{len(findings)}; no fix"
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,9 +229,13 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
     (output_dir / "diff.patch").write_bytes(diff_bytes)
     (output_dir / "changed_files.json").write_text(json.dumps(changed_files), encoding="utf-8")
     (output_dir / "review.json").write_text(json.dumps(review, ensure_ascii=False), encoding="utf-8")
-    (output_dir / "commanded_index.json").write_text(json.dumps({"index": index}), encoding="utf-8")
+    # SORTED, so the file is byte-identical for `/fix 3,1` and `/fix 1,3` — the same
+    # property stack.fix_key rests on, held one step earlier so the two cannot
+    # disagree about whether ordering was part of the command.
+    (output_dir / "commanded_index.json").write_text(
+        json.dumps({"indices": sorted(indices)}), encoding="utf-8")
     return {"head_sha": head_sha, "base_sha": base_sha,
-            "base_ref": base_ref, "head_ref": head_ref, "index": index}
+            "base_ref": base_ref, "head_ref": head_ref, "indices": sorted(indices)}
 
 
 def main() -> int:
@@ -259,7 +269,8 @@ def main() -> int:
                 handle.write("commanded=false\n")
         return 0
 
-    print(f"commanded finding {result['index'] + 1} on head {result['head_sha']}")
+    ordinals = ", ".join(str(index + 1) for index in result["indices"])
+    print(f"commanded finding(s) {ordinals} on head {result['head_sha']}")
     if output := os.environ.get("GITHUB_OUTPUT"):
         with Path(output).open("a", encoding="utf-8") as handle:
             handle.write("commanded=true\n")

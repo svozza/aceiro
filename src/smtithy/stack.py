@@ -85,35 +85,25 @@ def fix_marker(key: str) -> str:
     return f"<!-- smtithy:fix:{key} -->"
 
 
-def fix_key(pr_number: int, head_sha: str, finding: dict,
-            signatures: dict[tuple[str, int], str]) -> str:
-    """ADR-0007's (pr, head_sha, finding) deduplication key.
+def finding_component(finding: dict, signatures: dict[tuple[str, int], str]) -> str:
+    """One commanded finding's contribution to a fix key.
 
-    Each component earns its place:
+    The finding as its PATH plus its LINE plus the anchor signature of that line —
+    the anchored CODE, never the model's prose. Measured on the extraction source:
+    the model reworded every finding on every run over a byte-identical diff, so a
+    title-or-body-derived key never matched twice. Severity is out for the same
+    reason it is out of a suggestion's fingerprint: a re-graded finding is the same
+    defect.
 
-    - `pr_number`, because two pull requests can carry byte-identical findings on
-      the same path and a fix for one must not dedup against the other's.
-    - `head_sha`, because this delivery's premise dies with the head (ADR-0009
-      addendum). A new head means the anchors were re-verified against different
-      bytes, so an earlier fix PR does not speak for it and a fresh command must be
-      honoured. This is exactly where the key differs from a suggestion's, which
-      deliberately excludes the SHA because the head churns when the suggestion
-      does not.
-    - the finding, as its PATH plus its LINE plus the anchor signature of that
-      line — the anchored CODE, never the model's prose. Measured on the extraction
-      source: the model reworded every finding on every run over a byte-identical
-      diff, so a title-or-body-derived key never matched twice. Severity is out for
-      the same reason it is out of a suggestion's fingerprint: a re-graded finding
-      is the same defect.
-
-    The line is IN the key, on both branches. A window=1 signature is not unique
-    for periodic code — two copy-pasted blocks give two anchors the same window —
-    so signature-alone made two distinct findings one key, and the follow-up pull
-    request for the first then refused every later command for the second with
-    AlreadyDelivered, pointing the commander at a fix for another defect. Costs no
-    anchor stability to include: `head_sha` is already a component, so within one
-    key's scope the file's bytes are fixed and the line cannot shift. This is the
-    same collision suggest.suggestion_fingerprint answers by folding `old` in.
+    The line is IN the component, on both branches. A window=1 signature is not
+    unique for periodic code — two copy-pasted blocks give two anchors the same
+    window — so signature-alone made two distinct findings one key, and the
+    follow-up pull request for the first then refused every later command for the
+    second with AlreadyDelivered, pointing the commander at a fix for another
+    defect. Costs no anchor stability to include: `head_sha` is a component of the
+    key this feeds, so within one key's scope the file's bytes are fixed and the
+    line cannot shift. This is the same collision
+    suggest.suggestion_fingerprint answers by folding `old` in.
 
     A signature the map does not carry falls back to the path and line alone.
     Provenance makes that unreachable for a verified plan — the finding's line must
@@ -131,7 +121,63 @@ def fix_key(pr_number: int, head_sha: str, finding: dict,
         f"unanchored\0{line}" if signature is None
         else f"anchored\0{line}\0{normalize_signature_line(signature)}"
     )
-    parts = [str(pr_number), head_sha, path, anchored]
+    return f"{path}\0{anchored}"
+
+
+def fix_key(pr_number: int, head_sha: str, findings: list[dict],
+            signatures: dict[tuple[str, int], str]) -> str:
+    """ADR-0007's (pr, head_sha, findings) deduplication key, over the SET.
+
+    Each component earns its place:
+
+    - `pr_number`, because two pull requests can carry byte-identical findings on
+      the same path and a fix for one must not dedup against the other's.
+    - `head_sha`, because this delivery's premise dies with the head (ADR-0009
+      addendum). A new head means the anchors were re-verified against different
+      bytes, so an earlier fix PR does not speak for it and a fresh command must be
+      honoured. This is exactly where the key differs from a suggestion's, which
+      deliberately excludes the SHA because the head churns when the suggestion
+      does not.
+    - the commanded findings, each through finding_component, folded in SORTED
+      order.
+
+    SORTED is what makes this a key over the SET rather than over the typed list
+    (ADR-0013): `/fix 3,1` and `/fix 1,3` are one command, so they must not open
+    two follow-up pull requests. The sort is over the per-finding components rather
+    than over the ordinals, because the ordinals are not in the key at all — a
+    re-graded artifact reorders them while the defects are unchanged, which is the
+    silent wrong-finding failure ADR-0007's second addendum exists to prevent.
+
+    `/fix 1` and `/fix 1,3` therefore compute DIFFERENT keys, and that is
+    deliberate: a wider scope is a different fix and a different artefact, so
+    refusing it would mean a commander who narrowed too far could never widen. The
+    count is in the key by construction — a set of one folds one component — so no
+    prefix relationship can collide.
+
+    Each component is HASHED before the fold, so what is joined is fixed-length hex
+    and no content can span a boundary. A separator would not do, however exotic:
+    the last field of a component is the anchor signature, which is CONTRIBUTOR CODE
+    and may contain any byte at all (normalize_signature_line folds indentation and
+    composes NFC — it does not restrict the alphabet). A file crafted to carry the
+    separator plus a well-formed second component would then make `/fix 1` fold to
+    the same string as `/fix 1,3`, and since a key match REFUSES with
+    AlreadyDelivered that is a denial of service on every later command for those
+    findings, pointing the commander at a fix for a different scope. Verified
+    reachable before this was written, which is why the property is hex rather than
+    a cleverer delimiter.
+
+    A SET of components, so equal components fold once. The parse already collapses
+    a repeated ordinal, and this agrees with it rather than relying on it — and it
+    is the consistent reading of a key that deliberately ignores prose and severity:
+    two findings sharing a path, a line and an anchor signature are one defect to
+    every other identity in this harness, so they must not make one command look
+    like two.
+    """
+    digests = sorted({
+        hashlib.sha256(finding_component(finding, signatures).encode()).hexdigest()
+        for finding in findings
+    })
+    parts = [str(pr_number), head_sha, *digests]
     return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
 
 

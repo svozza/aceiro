@@ -1,9 +1,10 @@
 """Runs Claude Code via the Agent SDK to produce a remediation PLAN artifact.
 
 The second cc_loop-style session (ADR-0007: remediation is commanded per
-finding). Input is the ACCEPTED review artifact plus the ordinal the command
-named — the commanded finding is derived from the two, never supplied, so its
-membership in an accepted review is structural (read_commanded_finding) — plus
+finding; ADR-0013: the command names a SET of them). Input is the ACCEPTED review
+artifact plus the ordinals the command named — the commanded findings are derived
+from the two, never supplied, so their membership in an accepted review is
+structural (read_commanded_findings) — plus
 the same review context the reviewer saw; output is plan.json, arrived at
 through an in-process
 `submit_plan` tool whose handler runs verify_plan() in this process — the
@@ -160,37 +161,58 @@ def render_plan_rejection_guidance(policy: dict) -> str:
     )
 
 
-def read_commanded_index(context_dir: Path) -> int:
-    """The ordinal the command named, as a plain non-negative int.
+def read_commanded_indices(context_dir: Path) -> list[int]:
+    """The ordinals the command named, sorted, as plain non-negative ints.
 
     The one fact about the command that cannot be derived from anything else, so
     it is the only thing the remediation lane's context adds to the review's own.
+    A SET, because `/fix 3,1` and `/fix 1,3` are one command (ADR-0013); returned
+    sorted so every downstream reader sees one canonical order and cannot make
+    ordering part of an identity.
 
-    Every non-int is refused rather than coerced, and `bool` is excluded
+    Every per-element bound the single-ordinal version had still applies, per
+    element. Every non-int is refused rather than coerced, and `bool` is excluded
     explicitly because it is an `int` in Python — `True` would resolve
     findings[1], a real finding on a file nobody commanded. A negative value is
     refused for the same reason and it is the sharper case: Python indexes from
     the end, so -1 is the only out-of-range ordinal that silently resolves to a
     finding at all.
+
+    Three bounds are the SET's own. The list must be a list, because a bare string
+    is iterable and `"12"` would read as two ordinals nobody typed. It must not be
+    empty: there is no command naming no finding, and an empty set would make every
+    scope check pass vacuously — the same fixless-plan shape check_plan_cardinality
+    refuses. And a repeated ordinal collapses rather than naming a finding twice.
     """
     raw = json.loads(read_harness_text(context_dir / "commanded_index.json"))
     if not isinstance(raw, dict):
         raise Rejection("commanded_index.json: expected a JSON object")
-    index = raw.get("index")
-    if isinstance(index, bool) or not isinstance(index, int):
-        raise Rejection(f"commanded_index.json: index must be an integer, got {index!r}")
-    if index < 0:
+    indices = raw.get("indices")
+    if not isinstance(indices, list):
         raise Rejection(
-            f"commanded_index.json: index {index} is negative, which would address a "
-            "finding from the end of the review rather than none at all"
+            f"commanded_index.json: indices must be a list, got {type(indices).__name__}; "
+            "a bare string is iterable and would read each character as an ordinal"
         )
-    return index
+    if not indices:
+        raise Rejection(
+            "commanded_index.json: indices is empty; a command names at least one finding, "
+            "and an empty set would leave the plan's scope unconstrained"
+        )
+    for index in indices:
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise Rejection(f"commanded_index.json: index must be an integer, got {index!r}")
+        if index < 0:
+            raise Rejection(
+                f"commanded_index.json: index {index} is negative, which would address a "
+                "finding from the end of the review rather than none at all"
+            )
+    return sorted(set(indices))
 
 
-def read_commanded_finding(context_dir: Path, policy: dict, *,
-                           diff_text: str | None = None,
-                           changed_files: list[str] | None = None) -> dict:
-    """The commanded finding, DERIVED from the accepted artifact and the ordinal.
+def read_commanded_findings(context_dir: Path, policy: dict, *,
+                            diff_text: str | None = None,
+                            changed_files: list[str] | None = None) -> list[dict]:
+    """The commanded findings, DERIVED from the accepted artifact and the ordinals.
 
     Membership rather than shape, which is the property the previous contract
     could not state. finding.json used to be an input: a well-shaped finding no
@@ -209,12 +231,18 @@ def read_commanded_finding(context_dir: Path, policy: dict, *,
     about. No signing key is needed, because neither gate is comparing its input
     against another job's copy; each verifies the artifact it holds.
 
-    The ordinal is the RENDERED position (artifact.rendered_findings), because
+    Each ordinal is a RENDERED position (artifact.rendered_findings), because
     `/fix 3` means the third finding of the comment the commander read and
     review.json holds model order.
 
+    Returned in ordinal order, which is the sorted order read_commanded_indices
+    established. That makes the list a function of the SET the commander named and
+    not of how they typed it — the property stack.fix_key needs so `/fix 3,1` and
+    `/fix 1,3` cannot open two follow-up pull requests.
+
     One reader for the two things that need it: the prompt (which quotes the
-    finding) and verify_plan (which checks the plan's scope against it, ADR-0007).
+    findings) and verify_plan (which checks the plan's scope against them,
+    ADR-0007 and ADR-0013).
     Shared with the executor for the same reason — two readers would be two
     chances to disagree about which finding was commanded — which is why the
     provenance inputs are parameters. The plan session reads them from the
@@ -233,28 +261,40 @@ def read_commanded_finding(context_dir: Path, policy: dict, *,
     # pull request never touched.
     verify(review, diff_text, changed_files, policy)
 
-    index = read_commanded_index(context_dir)
+    indices = read_commanded_indices(context_dir)
     findings = rendered_findings(review, severity_ranks(policy))
-    if index >= len(findings):
+    # Every ordinal, and one past the end rejects the whole command: the scope the
+    # commander asserted is the set they named, so resolving the subset that happens
+    # to exist would verify a plan against a scope nobody asked for.
+    if past_the_end := [index for index in indices if index >= len(findings)]:
         raise Rejection(
-            f"commanded_index.json: index {index} but the accepted review has "
+            f"commanded_index.json: index/indices {past_the_end} but the accepted review has "
             f"{len(findings)} finding(s); the command names no finding of it"
         )
-    return findings[index]
+    return [findings[index] for index in indices]
 
 
 def build_plan_user_message(context_dir: Path, policy: dict) -> str:
-    """The review context the reviewer saw, plus the one commanded finding.
+    """The review context the reviewer saw, plus the commanded findings.
 
-    The finding is the one the maintainer's command names (ADR-0007), derived by
-    read_commanded_finding from the accepted artifact rather than read from a file
-    that merely claims to be an element of one; it is fenced anyway because it
-    quotes contributor code. The diff and PR description arrive through
+    The findings are the ones the maintainer's command names (ADR-0007, ADR-0013),
+    derived by read_commanded_findings from the accepted artifact rather than read
+    from a file that merely claims to hold elements of one; they are fenced anyway
+    because they quote contributor code. The diff and PR description arrive through
     build_user_message unchanged: the plan is anchored against the same
     SHA-anchored context the review was, or the anchor and the review can
     disagree.
+
+    Each finding is fenced SEPARATELY rather than as one JSON array, so the fence
+    is per untrusted payload exactly as it is for a single command: one block whose
+    content is several findings would let text quoted inside the first appear to a
+    reader (and to the model) to be structure between them.
+
+    Naming several findings asserts they take ONE remediation. That assertion is
+    the commander's, and the message says so — the model is not asked to judge it,
+    and nothing in the plan lane checks it (ADR-0005's content question).
     """
-    finding = read_commanded_finding(context_dir, policy)
+    findings = read_commanded_findings(context_dir, policy)
     review_context = build_user_message(context_dir)
     # The reviewer's closing instruction is the one review-specific sentence
     # in an otherwise reusable context block; swap it rather than duplicate
@@ -266,10 +306,25 @@ def build_plan_user_message(context_dir: Path, policy: dict) -> str:
     review_context = review_context.replace(
         closing, "Investigate with your tools as needed, then return your plan."
     )
+    fenced = "\n".join(
+        fence(json.dumps(finding, indent=2, ensure_ascii=False), "commanded_finding")
+        for finding in findings
+    )
+    if len(findings) == 1:
+        preamble = (
+            "A maintainer has commanded a fix for ONE finding of an accepted "
+            "review. Plan the remediation for this finding and no other:"
+        )
+    else:
+        preamble = (
+            f"A maintainer has commanded a fix for {len(findings)} findings of an "
+            "accepted review, and by naming them together has asserted that they "
+            "take ONE remediation. Plan that remediation for these findings and no "
+            "others — your fix must touch every file they name:"
+        )
     return (
-        "A maintainer has commanded a fix for ONE finding of an accepted "
-        "review. Plan the remediation for this finding and no other:\n"
-        f"{fence(json.dumps(finding, indent=2, ensure_ascii=False), 'commanded_finding')}\n\n"
+        f"{preamble}\n"
+        f"{fenced}\n\n"
         "The review context below is what the reviewer saw, for the same PR "
         "at the same head SHA.\n\n"
         f"{review_context}"
@@ -319,7 +374,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path,
     # the reason logged rather than reaching the model.
     try:
         user_message = build_plan_user_message(context_dir, policy)
-        commanded_finding = read_commanded_finding(context_dir, policy)
+        commanded_findings = read_commanded_findings(context_dir, policy)
     except (OSError, ValueError, UnicodeError, Rejection) as exc:
         return fail(transcript, f"cannot assemble the plan context: {exc}")
     transcript.log("context", sha256=sha256(user_message), bytes=len(user_message.encode()))
@@ -340,12 +395,12 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path,
     # head branch to supply and nothing to fail closed about.
     head_branch = os.environ.get("HEAD_REF") or None
 
-    # The commanded finding is pinned HERE for the same reason the content source
-    # is: which finding was commanded is this process's trust decision, read from
+    # The commanded findings are pinned HERE for the same reason the content source
+    # is: which findings were commanded is this process's trust decision, read from
     # the context the maintainer's command produced, never from a submission.
     def checked(artifact, diff, files, pol):
         verify_fn(artifact, diff, files, pol, content_source,
-                  head_branch=head_branch, commanded_finding=commanded_finding)
+                  head_branch=head_branch, commanded_findings=commanded_findings)
 
     return drive_session(
         transcript=transcript,

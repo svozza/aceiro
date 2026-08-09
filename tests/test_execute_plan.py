@@ -352,7 +352,7 @@ def artifact_dir(tmp_path):
         }],
         "residual_risk": "",
     }))
-    (artifact / "commanded_index.json").write_text(json.dumps({"index": 0}))
+    (artifact / "commanded_index.json").write_text(json.dumps({"indices": [0]}))
     return artifact
 
 
@@ -892,12 +892,12 @@ class TestSuggestionDelivery:
         assert len(posted) == 1
 
     def test_the_retraction_scope_is_the_commanded_finding(self, delivery_env, posted, monkeypatch):
-        # One command names one finding (ADR-0007), so this run may only withdraw
-        # what that command could have produced. Unscoped, the reconciler reads
-        # every OTHER finding's live suggestion as withdrawn and takes it down.
-        # From the COMMANDED FINDING, not from the plan's steps: scope is a fact
-        # about the command. The FINDING and not its file, because two findings of
-        # one accepted artifact routinely share a file.
+        # One command names one or more findings (ADR-0007, ADR-0013), so this run
+        # may only withdraw what that command could have produced. Unscoped, the
+        # reconciler reads every OTHER finding's live suggestion as withdrawn and
+        # takes it down. From the COMMANDED FINDINGS, not from the plan's steps:
+        # scope is a fact about the command. The FINDINGS and not their files,
+        # because two findings of one accepted artifact routinely share a file.
         import suggest
 
         stub_pr(monkeypatch, pr_payload())
@@ -906,9 +906,9 @@ class TestSuggestionDelivery:
             (delivery_env / "review.json").read_text())["findings"][0]
         expected = suggest.finding_identity(
             commanded, anchor_signatures(PLAN_DIFF, content_source=tree_source()))
-        assert posted[0]["commanded_finding_key"] == expected
+        assert posted[0]["commanded_finding_keys"] == (expected,)
         # Not the file: a path is the set two commands speak for.
-        assert posted[0]["commanded_finding_key"] != commanded["path"]
+        assert commanded["path"] not in posted[0]["commanded_finding_keys"]
 
     def test_an_unresolvable_login_posts_nothing(self, delivery_env, posted, monkeypatch, capsys):
         # Ownership decides which comments the write token may edit or delete, so
@@ -1126,13 +1126,14 @@ class TestStackedPrDelivery:
         }
 
     def test_the_key_is_the_commanded_findings_key(self, stacked_env, stacked, monkeypatch):
-        # ADR-0007's (pr, head_sha, finding). The finding is the DERIVED one, so
-        # the key cannot be steered by anything the plan job wrote.
+        # ADR-0007's (pr, head_sha, findings), over the SET (ADR-0013). The findings
+        # are the DERIVED ones, so the key cannot be steered by anything the plan job
+        # wrote.
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
         expected = stack.fix_key(
             1, "reviewed-sha",
-            {"path": "src/app.py", "line": 2},
+            [{"path": "src/app.py", "line": 2}],
             execute_plan.anchor_signatures(
                 PLAN_DIFF, content_source=execute_plan.tree_content_source(
                     Path(sys.argv[sys.argv.index("--pr-root") + 1]))),

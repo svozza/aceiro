@@ -155,7 +155,7 @@ class TestTheHappyPath:
     def test_the_ordinal_written_is_the_zero_based_index(self, lane):
         run(lane)
         index = json.loads((lane["output"] / "commanded_index.json").read_text())
-        assert index == {"index": 0}
+        assert index == {"indices": [0]}
 
     def test_the_review_written_is_the_one_fetched(self, lane):
         run(lane)
@@ -214,7 +214,7 @@ class TestThePreconditions:
         # Refused HERE as well as at both gates: this is the one place a commander
         # sees why, and composing a context whose ordinal addresses nothing would
         # spend a model call to fail closed later.
-        with pytest.raises(pfc.Refused, match="2 but the posted review"):
+        with pytest.raises(pfc.Refused, match=r"\[2\] but the posted review"):
             run(lane, body="/fix 2")
         assert not lane["output"].exists()
 
@@ -254,6 +254,58 @@ class TestThePreconditions:
         monkeypatch.setattr(pfc, "posting_run_id", lambda *a, **k: None)
         with pytest.raises(pfc.Refused, match="carries no run link"):
             run(lane)
+
+
+class TestTheCommandNamesASet:
+    """ADR-0013: `/fix N,M` names several findings, and the composed context carries
+    every ordinal — canonically ordered, so the file is a function of the SET.
+    """
+
+    TWO_FINDINGS = [
+        REVIEW["findings"][0],
+        {"path": "src/util.py", "line": 1, "severity": "low",
+         "title": "check() is unreachable", "body": "the other body"},
+    ]
+
+    def indices(self, lane):
+        return json.loads((lane["output"] / "commanded_index.json").read_text())["indices"]
+
+    def test_every_commanded_ordinal_is_written(self, lane):
+        lane["review"] = {**REVIEW, "findings": self.TWO_FINDINGS}
+        run(lane, body="/fix 1,2")
+        assert self.indices(lane) == [0, 1]
+
+    def test_the_file_is_the_same_whichever_order_was_typed(self, lane, tmp_path):
+        # Sorted here rather than only in stack.fix_key, so the two cannot disagree
+        # about whether ordering was part of the command. Held one step upstream of
+        # the key means a reader of the context sees the canonical form too.
+        lane["review"] = {**REVIEW, "findings": self.TWO_FINDINGS}
+        run(lane, body="/fix 2,1")
+        first = (lane["output"] / "commanded_index.json").read_bytes()
+        lane["output"] = tmp_path / "again"
+        run(lane, body="/fix 1,2")
+        assert (lane["output"] / "commanded_index.json").read_bytes() == first
+
+    def test_one_ordinal_past_the_end_refuses_the_whole_command(self, lane):
+        # NOT the subset that resolves: the commander asserted these findings take
+        # one remediation, so composing a context for half of them would be a scope
+        # the harness chose. Refused before a model credential exists, which is the
+        # one place a commander reads why.
+        lane["review"] = {**REVIEW, "findings": self.TWO_FINDINGS}
+        with pytest.raises(pfc.Refused, match=r"\[3\] but the posted review"):
+            run(lane, body="/fix 1,3")
+        assert not lane["output"].exists()
+
+    def test_the_refusal_names_every_ordinal_that_missed(self, lane):
+        # A count alone leaves the commander guessing which of the ordinals they
+        # typed was the wrong one.
+        lane["review"] = {**REVIEW, "findings": self.TWO_FINDINGS}
+        with pytest.raises(pfc.Refused, match=r"\[3, 4\]"):
+            run(lane, body="/fix 1,3,4")
+
+    def test_a_repeated_ordinal_is_written_once(self, lane):
+        run(lane, body="/fix 1,1")
+        assert self.indices(lane) == [0]
 
 
 class TestDrift:
@@ -381,7 +433,8 @@ class TestTheEmittedOutputsMatchWhatPrepareReturned:
         monkeypatch.setattr(
             pfc, "prepare",
             lambda **kw: {"head_sha": "reviewed-sha", "base_sha": "event-base",
-                          "base_ref": "main", "head_ref": "feature/x", "index": 0} | {ref: ""},
+                          "base_ref": "main", "head_ref": "feature/x",
+                          "indices": [0]} | {ref: ""},
         )
         output = tmp_path / "step-output"
         output.write_text("")

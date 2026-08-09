@@ -41,9 +41,12 @@ reason that mode was chosen, and per-file suggestions of a coordinated fix can b
 half-applied.
 
 The stacked path additionally carries ADR-0007's deduplication key on
-(pr, head_sha, finding), which the suggestion path deliberately does not: a
+(pr, head_sha, findings), which the suggestion path deliberately does not: a
 command is not idempotent the way a push is, and two maintainers typing `/fix 3`
-must not produce two branches and two pull requests.
+must not produce two branches and two pull requests. The key is computed over the
+SET of commanded findings (ADR-0013), so `/fix 3,1` and `/fix 1,3` are one command
+while `/fix 1` and `/fix 1,3` are two — the second being a widening, which is a
+different fix and a different artefact.
 
 Environment: GITHUB_TOKEN, GITHUB_REPOSITORY, PR_NUMBER, HEAD_SHA, BASE_SHA
 (the diff anchor), BASE_REF (the reviewed base BRANCH, which is what a retarget
@@ -71,7 +74,7 @@ from artifact import redact_line
 from diff_map import anchor_signatures
 from github_api import api_json, fail, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
-from plan_loop import read_commanded_finding
+from plan_loop import read_commanded_findings
 from plan_verify import apply_patch_steps, tree_content_source, verify_plan
 from post import read_model_stamp, resolve_bot_login
 from prepare_context import fetch_anchored_pair
@@ -371,11 +374,11 @@ def main() -> None:
     # finding input left, and no key is needed: this process accepts the artifact
     # itself rather than comparing two copies of one.
     try:
-        commanded_finding = read_commanded_finding(args.artifact_dir, policy,
-                                                   diff_text=diff_text,
-                                                   changed_files=changed_files)
+        commanded_findings = read_commanded_findings(args.artifact_dir, policy,
+                                                     diff_text=diff_text,
+                                                     changed_files=changed_files)
     except Rejection as exc:
-        fail("the bundle's commanded finding is not an accepted review's finding: "
+        fail("the bundle's commanded finding(s) are not an accepted review's findings: "
              f"{redact_line(str(exc), policy)}")
     # Written out because the prover takes a PATH, not a parsed list: pointing it
     # at the bundle's copy would prove the frame condition against the very list
@@ -391,7 +394,7 @@ def main() -> None:
     try:
         verify_plan(
             plan, diff_text, changed_files, policy, tree_content_source(args.pr_root),
-            head_branch=reviewed_head_ref, commanded_finding=commanded_finding,
+            head_branch=reviewed_head_ref, commanded_findings=commanded_findings,
         )
     except Rejection as exc:
         # Redacted at the caller, which is where the policy is: a Rejection
@@ -485,10 +488,11 @@ def main() -> None:
                 ),
                 base=base,
                 reviewed_sha=reviewed_sha,
-                # ADR-0007's (pr, head_sha, finding), over the DERIVED finding, so
+                # ADR-0007's (pr, head_sha, findings), over the DERIVED findings, so
                 # nothing the plan job wrote can steer which existing fix this
-                # command dedups against.
-                key=fix_key(pr_number, reviewed_sha, commanded_finding, signatures),
+                # command dedups against. Over the SET (ADR-0013), so `/fix 3,1` and
+                # `/fix 1,3` are one command and cannot open two pull requests.
+                key=fix_key(pr_number, reviewed_sha, commanded_findings, signatures),
                 metadata=metadata,
                 bot_login=bot_login,
             )
@@ -511,17 +515,23 @@ def main() -> None:
         return
 
     steps = [step for step in plan["steps"] if step["kind"] == "suggest"]
-    # The retraction scope. One command names one finding (ADR-0007), so this run
-    # speaks only for THAT finding: without it the reconciler would read every
-    # OTHER finding's live suggestion as withdrawn and take it down. Derived from
-    # the commanded finding rather than from the plan's steps, because scope is a
-    # fact about the COMMAND. The finding, not its file — two findings of one
-    # accepted artifact routinely share a file, and a path is the set two commands
-    # speak for.
+    # The retraction scope. One command names one or more findings (ADR-0007,
+    # ADR-0013), so this run speaks only for THOSE findings: without the scope the
+    # reconciler would read every OTHER finding's live suggestion as withdrawn and
+    # take it down. Derived from the commanded findings rather than from the plan's
+    # steps, because scope is a fact about the COMMAND. The findings, not their
+    # files — two findings of one accepted artifact routinely share a file, and a
+    # path is the set two commands speak for.
+    #
+    # A tuple, not a set: membership is what scope needs, and the ORDER is what the
+    # reconciler records on a comment (the marker stays per finding). Canonical
+    # because read_commanded_findings returns ordinal order, so the same command
+    # records the same representative on every run.
     reconcile_suggestions(repo, pr_number, steps, signatures, metadata,
                           bot_login=bot_login, head_sha=reviewed_sha,
-                          commanded_finding_key=finding_identity(
-                              commanded_finding, signatures))
+                          commanded_finding_keys=tuple(
+                              finding_identity(finding, signatures)
+                              for finding in commanded_findings))
     print(f"delivered {len(steps)} suggestion(s) on {delivery.path!r}")
 
     # TOCTOU guard, second half — the posture post.py takes after ITS write, and

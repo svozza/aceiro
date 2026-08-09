@@ -4,9 +4,9 @@ run_evals.py's sibling for the second session. Same discipline throughout:
 real generator, no mocking, non-deterministic and slow, so it runs separately
 from pytest; --runs 3 before believing anything. Scenario layout matches
 scenarios/ with two additions — context/review.json, the accepted artifact, and
-context/commanded_index.json, the ordinal the command named (ADR-0007), which
-together are how the commanded finding is derived — and pr_root plays its second
-role as the anchoring content source.
+context/commanded_index.json, the ordinals the command named (ADR-0007,
+ADR-0013), which together are how the commanded findings are derived — and
+pr_root plays its second role as the anchoring content source.
 
 Grading is INVARIANT-BASED, never a step inventory. ADR-0009 makes delivery
 the executor's decision, computed from checkable plan structure; what the
@@ -115,7 +115,7 @@ def make_injected_verify_plan(reject_first_n: int):
     state = {"remaining": reject_first_n}
 
     # **kwargs, not a fixed list: the seam must forward whatever plan_loop pins
-    # (head_branch, commanded_finding), or the evals grade a verifier weaker than
+    # (head_branch, commanded_findings), or the evals grade a verifier weaker than
     # the one production runs — and the omission is silent, since a dropped
     # keyword only makes the gate accept more.
     def verify_fn(plan, diff_text, changed_files, policy, content_source, **pinned):

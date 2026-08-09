@@ -46,10 +46,17 @@ METADATA = {
 FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "title": "t", "body": "b"}
 
 
-def key(pr_number=7, head_sha="reviewed-sha", finding=None, signatures=None):
+def key(pr_number=7, head_sha="reviewed-sha", finding=None, findings=None, signatures=None):
+    """A fix key. `finding` is the one-finding shorthand; `findings` names a set.
+
+    Both spellings exist because ADR-0013 made the key set-valued while every
+    single-ordinal property below is unchanged: the one-finding case must stay
+    exactly what it was, or the widening would be a replacement.
+    """
+    if findings is None:
+        findings = [FINDING if finding is None else finding]
     return stack.fix_key(
-        pr_number, head_sha,
-        FINDING if finding is None else finding,
+        pr_number, head_sha, findings,
         SIGNATURES if signatures is None else signatures,
     )
 
@@ -159,6 +166,89 @@ class TestTheDedupKey:
         assert key(signatures=impersonating) != key(signatures={}), (
             f"a signature of {impersonation!r} keys identically to no signature at all"
         )
+
+
+class TestTheKeyIsOverTheSet:
+    """ADR-0013: `fix_key` folds the SORTED per-finding identities, so the command
+    a key identifies is the SET of findings the commander named.
+
+    Two consequences that pull in opposite directions and are both wanted:
+    `/fix 3,1` and `/fix 1,3` are ONE command and must not open two pull requests,
+    while `/fix 1` and `/fix 1,3` are TWO — the second read as a widening, because
+    refusing it would mean a commander who narrowed too far could never widen.
+    """
+
+    OTHER = FINDING | {"path": "src/util.py", "line": 1}
+
+    def test_the_order_the_commander_typed_is_not_in_the_key(self):
+        # The load-bearing one. `/fix 3,1` and `/fix 1,3` name the same findings, so
+        # a key that moved with the typing order would let one commander's two
+        # spellings open two branches and two pull requests — precisely the
+        # duplication ADR-0007 forbids.
+        assert key(findings=[FINDING, self.OTHER]) == key(findings=[self.OTHER, FINDING]), (
+            "the key depends on the order the ordinals were typed, so /fix 3,1 and "
+            "/fix 1,3 dedup as two different commands"
+        )
+
+    def test_a_wider_command_is_a_different_key(self):
+        # `/fix 1` then `/fix 1,3` is a WIDENING and must be honoured: a different
+        # scope is a different fix and a different artefact. A key that collided
+        # would refuse the second with AlreadyDelivered, pointing the commander at a
+        # pull request delivering half of what they asked for.
+        assert key(findings=[FINDING]) != key(findings=[FINDING, self.OTHER])
+
+    def test_no_two_sets_of_findings_fold_to_one_key(self):
+        # Every non-empty subset of three findings, so the fold is pinned over sizes
+        # as well as members: a fold reading only its first component, or losing the
+        # count, collides here.
+        third = FINDING | {"path": "src/other.py", "line": 3}
+        sets = [[FINDING], [self.OTHER], [third],
+                [FINDING, self.OTHER], [FINDING, third], [self.OTHER, third],
+                [FINDING, self.OTHER, third]]
+        keys = [key(findings=members) for members in sets]
+        assert len(set(keys)) == len(sets), "two different commanded sets share one key"
+
+    @pytest.mark.parametrize("separator", ["\x00", "\x01", "\x1f", "|", "\n", "\t"])
+    def test_no_signature_can_forge_a_second_component(self, separator):
+        # The fold folds several components into one string, and the LAST field of a
+        # component is the anchor signature — CONTRIBUTOR CODE, whose alphabet
+        # normalize_signature_line does not restrict (it composes NFC and folds
+        # indentation; every other byte survives). So a contributor can put any
+        # separator in a signature, and if the fold joined on one, a file crafted to
+        # carry that separator plus a well-formed second component would make
+        # `/fix 1` key identically to `/fix 1,3`.
+        #
+        # That direction is the dangerous one: a key match REFUSES with
+        # AlreadyDelivered, so the collision is a denial of service on every later
+        # command for those findings, and the refusal points the commander at a
+        # follow-up pull request delivering a different scope. Parametrized over
+        # separators rather than one guess, because a single candidate passes against
+        # every delimiter except the one it was written for — the shape that reads as
+        # enforcement while enforcing nothing.
+        signatures = dict(SIGNATURES)
+        second = stack.finding_component(self.OTHER, signatures)
+        signatures[(FINDING["path"], FINDING["line"])] = (
+            f"{SIGNATURES[(FINDING['path'], FINDING['line'])]}{separator}{second}"
+        )
+        assert key(findings=[FINDING], signatures=signatures) != \
+            key(findings=[FINDING, self.OTHER]), (
+                f"a signature carrying {separator!r} folds to the key of a WIDER command, "
+                "so every later /fix for that pair refuses as already delivered"
+            )
+
+    def test_a_repeated_finding_does_not_change_the_key(self):
+        # The parse collapses duplicates, and the key must agree: a set of one folds
+        # one component however many times the ordinal was typed. Otherwise `/fix 1`
+        # and a `/fix 1,1` that slipped through would be two commands.
+        assert key(findings=[FINDING]) == key(findings=[FINDING, FINDING])
+
+    def test_a_set_of_one_is_byte_for_byte_the_single_finding_key(self):
+        # ADR-0013's widening must not change the one-finding case, or every
+        # in-flight follow-up pull request stops deduplicating against its own
+        # repeat command. Driven through fix_key both ways rather than compared
+        # against a stored constant, so the property is "the shapes agree" and not
+        # "the hash is this".
+        assert stack.fix_key(7, "reviewed-sha", [FINDING], SIGNATURES) == key()
 
 
 class TestTheMarkerCarriesTheKey:
