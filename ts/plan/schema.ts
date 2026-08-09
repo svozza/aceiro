@@ -191,6 +191,9 @@ function checkScalar(value: unknown, spec: ScalarSpec, where: string): string | 
       if (spec.minimum !== undefined && value < spec.minimum) {
         throw new Rejection(`${where}: below minimum ${spec.minimum}`);
       }
+      if (spec.maximum !== undefined && value > spec.maximum) {
+        throw new Rejection(`${where}: above maximum ${spec.maximum}`);
+      }
       return value;
     }
     case 'enum': {

@@ -28,6 +28,7 @@ export interface ScalarSpec {
   readonly min_length?: number;
   readonly max_length?: number;
   readonly minimum?: number;
+  readonly maximum?: number;
   readonly pattern?: string;
   readonly values?: readonly string[];
   readonly markdown?: boolean;
@@ -93,7 +94,7 @@ function requireKeys(object: Record<string, unknown>, keys: readonly string[], w
  * has no reader must never load. */
 const SCALAR_KEYS: Readonly<Record<'string' | 'integer' | 'enum', readonly string[]>> = {
   string: ['type', 'min_length', 'max_length', 'pattern', 'markdown'],
-  integer: ['type', 'minimum'],
+  integer: ['type', 'minimum', 'maximum'],
   enum: ['type', 'values'],
 };
 
@@ -211,9 +212,10 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
         throw new PolicyError(`${where}: unknown type ${JSON.stringify(type)}`);
       }
       // Exactly the keys the reader for this type consults. A spec key nobody
-      // reads is the defect requireKeys already refuses one level up: `maximum`
-      // alongside `minimum` reads as a cap and caps nothing, and neither gate has
-      // ever had a reader for it.
+      // reads is the defect requireKeys already refuses one level up: a bound that
+      // reads as present and constrains nothing. `maximum` was that defect and now
+      // has a reader in both gates, because ADR-0013's `group` needs a RANGE and an
+      // upper bound the policy cannot express is the same defect inverted.
       requireOptionalKeys(scalar, SCALAR_KEYS[type], where);
       if (type === 'string' && typeof scalar['max_length'] !== 'number') {
         // Mirrors the artifact verifier's rule that every string must declare how
@@ -228,10 +230,23 @@ export function checkPlanPolicy(candidate: unknown): PlanPolicy {
       // for every integer, so a bound that reads as present admits everything —
       // and the Python twin raises TypeError on the same comparison rather than
       // returning a verdict.
-      for (const key of ['min_length', 'max_length', 'minimum'] as const) {
+      for (const key of ['min_length', 'max_length', 'minimum', 'maximum'] as const) {
         if (key in scalar && !Number.isInteger(scalar[key])) {
           throw new PolicyError(`${where}: ${key} is ${JSON.stringify(scalar[key])}, not an integer bound`);
         }
+      }
+      // An inverted range admits nothing, so every plan rejects on an argument the
+      // policy appears merely to bound. A policy fault, not a claim about a plan,
+      // which is why it lands with the others rather than in checkScalar.
+      if (
+        Number.isInteger(scalar['minimum']) &&
+        Number.isInteger(scalar['maximum']) &&
+        (scalar['maximum'] as number) < (scalar['minimum'] as number)
+      ) {
+        throw new PolicyError(
+          `${where}: minimum ${String(scalar['minimum'])} is above maximum ` +
+            `${String(scalar['maximum'])}, so no value satisfies it and every plan rejects`,
+        );
       }
       if (typeof scalar['pattern'] === 'string') {
         try {

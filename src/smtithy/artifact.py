@@ -66,6 +66,8 @@ def _scalar_to_json_schema(spec: dict) -> dict:
             out = {"type": "integer"}
             if "minimum" in spec:
                 out["minimum"] = spec["minimum"]
+            if "maximum" in spec:
+                out["maximum"] = spec["maximum"]
             return out
         case "enum":
             return {"enum": spec["values"]}

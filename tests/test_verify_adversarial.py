@@ -123,16 +123,86 @@ class TestEveryTopLevelSpecIsEnforced:
     def test_a_spec_key_no_reader_consults_is_a_policy_error(
         self, artifact, sample_diff, changed_files, policy
     ):
-        # `maximum` has a reader in NEITHER gate, so {"minimum": 1,
-        # "maximum": 2} reads as a cap to whoever reviews policy.json and admits
-        # 100. Same rule ts/plan/policy.ts applies to the plan section's own
-        # keys, and the same reasoning: a constraint nobody enforces is worse
-        # than an absent one, because it is read as present.
+        # A constraint nobody enforces is worse than an absent one, because it is
+        # read as present. Same rule ts/plan/policy.ts applies to the plan
+        # section's own keys, and the same reasoning. `maximum` was this rule's
+        # example until ADR-0013's `group` needed a range — see
+        # TestTheIntegerRangeIsEnforced, and note the key it names here is one no
+        # reader has ever consulted rather than one that recently gained one.
         extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "maximum": 2}
+        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "exclusive_maximum": 2}
         artifact["ticket"] = 100
         with pytest.raises(Rejection, match="policy error"):
             verify(artifact, sample_diff, changed_files, extended)
+
+
+class TestTheIntegerRangeIsEnforced:
+    """`maximum` has a reader in both gates, because ADR-0013's `group` needs a
+    RANGE and a bound the policy can state but no gate enforces is exactly the
+    defect SCALAR_KEYS exists to refuse — arriving from the other direction.
+
+    So the key is admitted AND enforced, in one change: admitting it without a
+    reader would be the same defect wearing an ADR's authority.
+    """
+
+    def test_a_value_above_the_maximum_is_rejected(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "maximum": 2}
+        artifact["ticket"] = 3
+        with pytest.raises(Rejection, match="above maximum 2"):
+            verify(artifact, sample_diff, changed_files, extended)
+
+    def test_a_value_at_the_maximum_is_accepted(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # The complement: an inclusive bound, matching how `minimum` reads. A cap
+        # that refused its own stated value would make the policy unreadable.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "maximum": 2}
+        artifact["ticket"] = 2
+        verify(artifact, sample_diff, changed_files, extended)
+
+    def test_a_maximum_that_is_not_an_integer_bound_is_a_policy_error(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # The value-side rule `minimum` already has: `maximum: "bogus"` reads as a
+        # cap, and `value > "bogus"` raises TypeError from the middle of a check —
+        # a crash where the caller expects a verdict — while the TypeScript twin
+        # evaluates it as false and admits everything.
+        extended = copy.deepcopy(policy)
+        for bogus in ("2", 2.5, True):
+            extended["artifact_schema"]["ticket"] = {"type": "integer", "maximum": bogus}
+            artifact["ticket"] = 3
+            with pytest.raises(Rejection, match="not an integer bound"):
+                verify(artifact, sample_diff, changed_files, extended)
+
+    def test_an_inverted_range_is_a_policy_error(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # No value satisfies it, so every artifact rejects on a field the policy
+        # appears merely to bound — and the rejection names the FIELD, so nobody
+        # would connect it to the policy. Refused as a policy fault instead.
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 5, "maximum": 2}
+        artifact["ticket"] = 3
+        with pytest.raises(Rejection, match="policy error.*above maximum"):
+            verify(artifact, sample_diff, changed_files, extended)
+
+    def test_the_advertised_schema_carries_the_maximum_too(self, policy):
+        # build_artifact_schema is what the generator's tool input declares, and a
+        # bound the verifier enforces that the schema omits is a submission burned
+        # on a rejection the model was never told about.
+        import artifact as artifact_module
+
+        extended = copy.deepcopy(policy)
+        extended["artifact_schema"]["findings"]["item_fields"]["ticket"] = {
+            "type": "integer", "minimum": 1, "maximum": 4,
+        }
+        schema = artifact_module.build_artifact_schema(extended)
+        advertised = schema["properties"]["findings"]["items"]["properties"]["ticket"]
+        assert advertised == {"type": "integer", "minimum": 1, "maximum": 4}
 
     def test_a_spec_key_belonging_to_another_type_is_a_policy_error(
         self, artifact, sample_diff, changed_files, policy

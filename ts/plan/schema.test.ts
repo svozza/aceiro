@@ -449,20 +449,71 @@ describe('the policy itself is validated', () => {
   });
 
   it('rejects a scalar spec key no gate reads', () => {
-    // `maximum` has no reader in EITHER gate, so {minimum:1, maximum:2} read as
-    // a cap to a reviewer while admitting 100. Same fail-closed rule the plan
-    // policy's own top-level keys get: a key nobody reads is the worst outcome
-    // for a reviewable policy file.
+    // A key nobody reads is the worst outcome for a reviewable policy file: it
+    // reads as a cap while admitting everything. Same fail-closed rule the plan
+    // policy's own top-level keys get. `maximum` was this rule's example until
+    // ADR-0013's `group` needed a range, so the key named here is one no reader
+    // has ever consulted rather than one that recently gained one.
     assert.throws(
       () =>
         checkPlanPolicy({
           ...POLICY,
           step_kinds: {
-            patch: { write_class: false, args: { n: { type: 'integer', minimum: 1, maximum: 2 } } },
+            patch: { write_class: false, args: { n: { type: 'integer', minimum: 1, exclusive_maximum: 2 } } },
           },
           ordering: [],
         }),
-      { name: 'PolicyError', message: /maximum/ },
+      { name: 'PolicyError', message: /exclusive_maximum/ },
+    );
+  });
+
+  it('enforces an integer maximum rather than merely admitting the key', () => {
+    // `maximum` gained a reader because ADR-0013's `group` needs a RANGE, and a
+    // bound the policy can state while no gate enforces it is precisely the defect
+    // the rule above refuses — arriving from the other direction. So the key is
+    // admitted AND enforced in one change; the twin is verify.py's check_scalar.
+    const policy = checkPlanPolicy({
+      ...POLICY,
+      step_kinds: { patch: { write_class: false, args: { n: { type: 'integer', minimum: 1, maximum: 2 } } } },
+      ordering: [],
+    });
+    const step = (n: number) => ({ steps: [{ id: 's0', kind: 'patch', args: { n } }] });
+    assert.throws(() => checkPlanSchema(step(3), policy), { name: 'Rejection', message: /above maximum 2/ });
+    // Inclusive, matching how `minimum` reads: a cap refusing its own stated value
+    // would make the policy unreadable.
+    assert.doesNotThrow(() => checkPlanSchema(step(2), policy));
+  });
+
+  it('rejects a maximum that is not an integer bound', () => {
+    // The value-side rule `minimum` already has. `maximum: "bogus"` makes
+    // `value > spec.maximum` false for every integer here — a bound that reads as
+    // present and admits everything — while the Python twin raises TypeError from
+    // the middle of a check rather than returning a verdict.
+    for (const bogus of ['2', 2.5, true]) {
+      assert.throws(
+        () =>
+          checkPlanPolicy({
+            ...POLICY,
+            step_kinds: { patch: { write_class: false, args: { n: { type: 'integer', maximum: bogus } } } },
+            ordering: [],
+          }),
+        { name: 'PolicyError', message: /not an integer bound/ },
+      );
+    }
+  });
+
+  it('rejects an inverted integer range', () => {
+    // No value satisfies it, so every plan rejects on an argument the policy
+    // appears merely to bound — and the rejection names the ARGUMENT, so nobody
+    // would connect it to the policy. Refused as a policy fault instead.
+    assert.throws(
+      () =>
+        checkPlanPolicy({
+          ...POLICY,
+          step_kinds: { patch: { write_class: false, args: { n: { type: 'integer', minimum: 5, maximum: 2 } } } },
+          ordering: [],
+        }),
+      { name: 'PolicyError', message: /above maximum/ },
     );
   });
 
@@ -494,6 +545,7 @@ describe('the policy itself is validated', () => {
             path: { type: 'string', min_length: 1, max_length: 500, pattern: 'a+' },
             body: { type: 'string', max_length: 10, markdown: true },
             line: { type: 'integer', minimum: 1 },
+            group: { type: 'integer', minimum: 1, maximum: 10 },
             tag: { type: 'enum', values: ['x', 'y'] },
           },
         },

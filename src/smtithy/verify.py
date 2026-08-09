@@ -87,12 +87,15 @@ class Rejection(Exception):
 
 # Every key a scalar spec of each type may carry, being exactly the keys the
 # branch below reads for it. Twin of ts/plan/policy.ts's SCALAR_KEYS: a spec key
-# with no reader — `maximum` had none in either gate — reads as a constraint to
-# whoever reviews policy.json while constraining nothing, which is worse than an
-# absent bound because it is read as present.
+# with no reader reads as a constraint to whoever reviews policy.json while
+# constraining nothing, which is worse than an absent bound because it is read as
+# present. `maximum` was the example of that defect and is now enforced in both
+# gates, because ADR-0013's `group` needs a RANGE and an unbounded upper end is
+# the same defect from the other direction — a bound the ADR states that the
+# policy cannot express.
 SCALAR_KEYS = {
     "string": frozenset({"type", "min_length", "max_length", "pattern", "markdown"}),
-    "integer": frozenset({"type", "minimum"}),
+    "integer": frozenset({"type", "minimum", "maximum"}),
     "enum": frozenset({"type", "values"}),
 }
 
@@ -127,13 +130,25 @@ def check_scalar_spec(spec: dict, where: str) -> None:
                 f"policy error: scalar spec at {where} has a pattern this gate cannot "
                 f"compile ({exc}); it would raise rather than reject"
             ) from exc
-    for key in ("min_length", "max_length", "minimum"):
+    for key in ("min_length", "max_length", "minimum", "maximum"):
         # bool is an int in Python, and `minimum: true` is not a bound.
         if key in spec and (not isinstance(spec[key], int) or isinstance(spec[key], bool)):
             raise Rejection(
                 f"policy error: scalar spec at {where} declares {key}="
                 f"{spec[key]!r}, which is not an integer bound"
             )
+    # An inverted range admits nothing, so every artifact rejects on a field the
+    # policy appears merely to bound. A policy fault rather than a claim about an
+    # artifact, which is why it lands here with the others.
+    if (
+        isinstance(spec.get("minimum"), int) and not isinstance(spec.get("minimum"), bool)
+        and isinstance(spec.get("maximum"), int) and not isinstance(spec.get("maximum"), bool)
+        and spec["maximum"] < spec["minimum"]
+    ):
+        raise Rejection(
+            f"policy error: scalar spec at {where} declares minimum {spec['minimum']} above "
+            f"maximum {spec['maximum']}, so no value satisfies it and every artifact rejects"
+        )
     if spec["type"] == "enum" and not isinstance(spec.get("values"), list):
         raise Rejection(
             f"policy error: scalar spec at {where} declares values="
@@ -165,6 +180,8 @@ def check_scalar(value, spec: dict, where: str) -> None:
                 raise Rejection(f"{where}: expected integer, got {type(value).__name__}")
             if value < spec.get("minimum", float("-inf")):
                 raise Rejection(f"{where}: below minimum {spec['minimum']}")
+            if value > spec.get("maximum", float("inf")):
+                raise Rejection(f"{where}: above maximum {spec['maximum']}")
         case "enum":
             if value not in spec["values"]:
                 raise Rejection(f"{where}: {value!r} not in {spec['values']}")
