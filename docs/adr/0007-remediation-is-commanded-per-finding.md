@@ -16,7 +16,12 @@ requiring author trust as well would forbid exactly that.
 
 **The command names one finding.** `/fix <n>` rather than "fix everything
 trivial". Per-finding scoping lets a maintainer accept one suggestion without the
-others, and it makes the deduplication key natural.
+others, and it makes the deduplication key natural. (**Widened by ADR-0013**: the
+command names one or MORE findings, because a coordinated multi-file fix cannot be
+scoped from a single anchor and the commander is the only admissible source of that
+scope. The reasoning here is unchanged — naming several findings is still a
+per-finding human judgement, made explicitly, and the deduplication key is computed
+over the set.)
 
 **Drift means refuse.** `issue_comment` carries an issue number and no SHAs, so
 the pull request must be fetched to resolve them — at which point the head SHA is

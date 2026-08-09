@@ -60,7 +60,10 @@ property above:
   the fallback for what suggestions cannot express — still bounded by
   ADR-0005's caps and still within `changed_files`.
 - The boundary is STRUCTURAL, not a size judgment, and atomicity is the
-  reason. Suggestions are independently applicable: each is its own
+  reason. **The atomicity rule below is a property of ONE PLAN — corrected in
+  the fourth addendum, which records that two commands can still deliver one
+  defect in independently applicable pieces, and why that is accepted.**
+  Suggestions are independently applicable: each is its own
   one-click commit, appliable in any subset and any order. A single
   finding whose fix spans multiple files (rename plus its call sites, a
   signature change plus its callers) is only correct as a whole — delivered

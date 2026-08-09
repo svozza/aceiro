@@ -92,6 +92,17 @@ findings on real pull requests, with maintainers commanding both halves separate
 That is a reviewer-side measurement, and it is the evidence that would justify
 designing a second command shape.
 
+**ANSWERED by ADR-0013** (2026-08-09), and the revisit trigger was not waited for:
+the split was already measured here, on #61. The command names a SET of findings
+(`/fix 1,2`), the scope comes from the commander because every other candidate source
+is refused by a decision this ADR or ADR-0005 already took, and
+`check_commanded_scope` widens from ∈ to ⊆. Stacked delivery's trigger then falls out
+of the command's scope rather than being engineered — no prompt expression rule
+changes, so this section's warning is respected. ADR-0013 also records the concession
+that follows: a commander CAN now name unrelated findings and get the one mixed pull
+request §3c refused, which relocates an unverifiable content question rather than
+closing it.
+
 ## The same-file trigger is not reachable either
 
 Recorded because it was believed to be the one reachable route to stacked delivery,
@@ -151,6 +162,11 @@ was wrong. A rule this ADR claims is "checkable from the verified plan's step li
 should be checked from the step list, so that a future prompt revision cannot quietly
 make it false. Ordering: it belongs with whatever change eventually gives stacked
 delivery a trigger, since that change is what would make the shape reachable.
+
+**That change is ADR-0013**, so the region check is now owed rather than merely
+advisable. Note also that ADR-0009's atomicity rule is corrected by this ADR's fourth
+addendum: what is enforced is a property of one PLAN, and two commands can still
+deliver one defect in independently applicable pieces.
 
 ## Consequences
 

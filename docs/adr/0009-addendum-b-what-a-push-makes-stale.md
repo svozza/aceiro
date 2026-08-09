@@ -52,10 +52,13 @@ scoped to `server.rs`, which never looked at `version.rs`, never re-derived that
 finding, and could not have re-posted its suggestion.
 
 **This is the defect `reconcile_suggestions` already guards against, one artefact
-over.** Retraction takes `commanded_path` precisely because "one run delivers one
+over.** Retraction takes a scope argument precisely because "one run delivers one
 commanded finding (ADR-0007), while the comment listing is the whole pull request",
 so a run must be told what it speaks for or it withdraws another command's live
-work. Retraction is scoped; superseding was not. Same mistake — one run's process
+work. Retraction is scoped; superseding was not. (That argument was `commanded_path`
+when this addendum was filed; the 2026-08-06 review moved it to
+`commanded_finding_key`, because two findings of one artifact routinely share a file
+and a path is the set TWO commands speak for.) Same mistake — one run's process
 acting on another command's artefact — caught for comments and missed for wrappers.
 
 ## Decision: the wrapper stops making the claim

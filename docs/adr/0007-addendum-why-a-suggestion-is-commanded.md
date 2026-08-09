@@ -68,11 +68,15 @@ Two consequences make that concrete:
   harness declined to fix something and told nobody — or unrequested noise. So
   auto-posting cannot ship before the decline channel exists, which makes it
   strictly downstream of that design rather than parallel to it.
-- **Retraction scope has no source.** `reconcile_suggestions`'s `commanded_path` is
-  the scope, and its contract is that `None` retracts NOTHING, precisely so one
-  command does not withdraw another finding's live suggestion. Uncommanded, the
-  scope must widen to the whole artifact — a much broader deletion authority over
-  human-visible threads, for a lane whose worst case today is a wrong comment.
+- **Retraction scope has no source.** `reconcile_suggestions`'s
+  `commanded_finding_key` is the scope, and its contract is that `None` retracts
+  NOTHING, precisely so one command does not withdraw another finding's live
+  suggestion. Uncommanded, the scope must widen to the whole artifact — a much
+  broader deletion authority over human-visible threads, for a lane whose worst case
+  today is a wrong comment. (Written as `commanded_path` when this addendum was
+  filed; the 2026-08-06 review scoped retraction to the FINDING, since two findings
+  of one artifact routinely share a file. The argument is unchanged — a path was
+  simply the wrong grain for it.)
 
 Cost — a model session per suggestible finding on every push — is real but is the
 weakest of the arguments and is deliberately not load-bearing here. A consumer

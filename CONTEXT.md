@@ -23,8 +23,17 @@ _Avoid_: response, output, review object
 One defect claim in an artifact, anchored to a file and line the diff touched.
 Provenance-constrained, and the only part of an artifact that becomes an inline
 comment. A defect in unchanged code is still a finding when the change makes it
-reachable — anchored to the changed line responsible, not to the defect.
+reachable — anchored to the changed line responsible, not to the defect. One
+anchor, always: it is the property that makes provenance checkable, so a finding
+never names a second location however related.
 _Avoid_: issue, comment, problem
+
+**Group**:
+A finding's claim that it and other findings sharing its value are one defect.
+Advisory: it is addressed to a human choosing what to command, never read by the
+remediator, because whether two findings are one defect is not a property the
+verifier can check. What a group buys is that a commander can see the split.
+_Avoid_: cluster, related, duplicate
 
 **Residual risk**:
 What the reviewer could not establish, and the reader must therefore carry: a
@@ -105,7 +114,9 @@ _Avoid_: collaborator, member, maintainer
 **Commander**:
 The person who issues a remediation command on a pull request. Must hold
 write-or-above; their trust is what authorises a fix, independently of whether
-the pull request's author is trusted.
+the pull request's author is trusted. A command names one or more findings, and
+naming several asserts they take one remediation — the only source of a fix's
+scope that is neither the model's nor the harness's.
 _Avoid_: requester, invoker, maintainer
 
 **Quarantine**:
@@ -125,7 +136,7 @@ The application that posts findings about a pull request. Its effect is one
 idempotent comment upsert.
 
 **Remediator**:
-The application that proposes a fix for one commanded finding. Its effect is
+The application that proposes a fix for the commanded findings. Its effect is
 inert and human-applied either way: suggestion comments by default, a stacked
 follow-up pull request where a suggestion cannot carry the fix. Never runs
 tests; see ADR-0001.
@@ -134,5 +145,14 @@ tests; see ADR-0001.
 Which effect a remediation takes — suggestions or a stacked pull request. The
 executor's decision, read from the verified plan's step list, never the
 generator's. Not a size judgement: a fix that could be half-applied is not
-deliverable as suggestions.
+deliverable as suggestions. Atomicity is a property of one plan, so two
+commands can still deliver one defect in pieces.
 _Avoid_: mode, output, channel, strategy
+
+**Decline**:
+The harness telling a commander it will not perform the fix they commanded,
+because the channel cannot express it or has already delivered it. A reply to
+the command rather than an artifact or a step, so no model runs to produce one
+and its text is the harness's. Distinct from a rejection, which is a verdict
+about an artifact, and from a run that merely failed.
+_Avoid_: refusal, error, rejection
