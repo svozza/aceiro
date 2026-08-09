@@ -48,6 +48,12 @@ SIGNATURES = anchor_signatures(PLAN_DIFF, content_source=tree_source())
 # the commanded finding the same way.
 COMMANDED = {"path": "src/app.py", "line": 2}
 
+# A live wrapper of ours, exactly as the reconciler writes one. Derived rather
+# than restated: the two bodies now carry a per-run SHA and the paths delivered
+# for, so a hand-written copy would keep matching after the format changed —
+# which is how the supersede skip's own discriminator stopped testing anything.
+WRAPPER_BODY = suggest.review_body(head_sha="reviewed-sha", paths=["src/app.py"])
+
 
 def finding_key(path="src/app.py", line=2):
     return suggest.finding_identity({"path": path, "line": line}, SIGNATURES)
@@ -448,7 +454,7 @@ class TestOwnership:
         # The same guard on the review side, where a mis-scope OVERWRITES a body:
         # this one destroys a human's review summary rather than a comment.
         assert not suggest.is_our_review(
-            {"id": 1, "body": suggest.REVIEW_BODY, "user": {"login": ""}}, "")
+            {"id": 1, "body": WRAPPER_BODY, "user": {"login": ""}}, "")
 
 
 # ----------------------------------------------------------- retraction ---
@@ -1256,7 +1262,7 @@ class TestReviewWrappers:
     def test_our_previous_wrapper_is_rewritten_and_minimized(self, api, monkeypatch):
         calls, _, set_reviews = api
         updated, minimized = [], []
-        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+        set_reviews([{"id": 7, "body": WRAPPER_BODY, "user": {"login": BOT},
                       "node_id": "PRR_7"}])
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append({"id": rid, "body": body}))
@@ -1267,7 +1273,8 @@ class TestReviewWrappers:
                                       commanded_finding_keys=(finding_key(),))
 
         assert [u["id"] for u in updated] == [7]
-        assert updated[0]["body"] == suggest.SUPERSEDED_REVIEW_BODY
+        assert updated[0]["body"] == suggest.superseded_review_body(
+            {"body": WRAPPER_BODY}), "the spent body is not the one the module writes"
         assert minimized == ["PRR_7"]
 
     def test_a_human_review_is_never_touched(self, api, monkeypatch):
@@ -1287,7 +1294,7 @@ class TestReviewWrappers:
         # summary. The marker is copyable; the author check is the backstop.
         _, _, set_reviews = api
         updated = []
-        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": "a-human"},
+        set_reviews([{"id": 7, "body": WRAPPER_BODY, "user": {"login": "a-human"},
                       "node_id": "PRR_7"}])
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append(rid))
@@ -1299,8 +1306,9 @@ class TestReviewWrappers:
     def test_an_already_superseded_wrapper_is_left_alone(self, api, monkeypatch):
         _, _, set_reviews = api
         updated = []
-        set_reviews([{"id": 7, "body": suggest.SUPERSEDED_REVIEW_BODY, "user": {"login": BOT},
-                      "node_id": "PRR_7"}])
+        set_reviews([{"id": 7,
+                      "body": suggest.superseded_review_body({"body": WRAPPER_BODY}),
+                      "user": {"login": BOT}, "node_id": "PRR_7"}])
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append(rid))
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
@@ -1312,7 +1320,7 @@ class TestReviewWrappers:
         # Cosmetic tidying in front of an atomic POST: a permission the bot turns
         # out not to have must cost a collapsed timeline entry, never a delivery.
         calls, _, set_reviews = api
-        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+        set_reviews([{"id": 7, "body": WRAPPER_BODY, "user": {"login": BOT},
                       "node_id": "PRR_7"}])
         monkeypatch.setattr(suggest, "minimize_review",
                             lambda node: (_ for _ in ()).throw(RuntimeError("Resource not accessible")))
@@ -1323,7 +1331,7 @@ class TestReviewWrappers:
 
     def test_a_failing_body_rewrite_does_not_fail_the_run(self, api, monkeypatch):
         calls, _, set_reviews = api
-        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+        set_reviews([{"id": 7, "body": WRAPPER_BODY, "user": {"login": BOT},
                       "node_id": "PRR_7"}])
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: (_ for _ in ()).throw(RuntimeError("403")))
@@ -1347,7 +1355,7 @@ class TestReviewWrappers:
         # function whose whole contract is never to fail — and this runs BEFORE the
         # POST, so cosmetic tidying took the delivery with it.
         calls, _, set_reviews = api
-        set_reviews([{"user": {"login": BOT}, "body": suggest.REVIEW_BODY, "node_id": "N2"}])
+        set_reviews([{"user": {"login": BOT}, "body": WRAPPER_BODY, "node_id": "N2"}])
         suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
                                       bot_login=BOT, head_sha="reviewed-sha",
                                       commanded_finding_keys=(finding_key(),))
@@ -1358,7 +1366,7 @@ class TestReviewWrappers:
         # moment the newest does not exist yet.
         _, _, set_reviews = api
         order = []
-        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+        set_reviews([{"id": 7, "body": WRAPPER_BODY, "user": {"login": BOT},
                       "node_id": "PRR_7"}])
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: order.append("supersede"))
@@ -1373,7 +1381,7 @@ class TestReviewWrappers:
         _, set_comments, set_reviews = api
         updated = []
         set_comments([comment(10)])
-        set_reviews([{"id": 7, "body": suggest.REVIEW_BODY, "user": {"login": BOT},
+        set_reviews([{"id": 7, "body": WRAPPER_BODY, "user": {"login": BOT},
                       "node_id": "PRR_7"}])
         monkeypatch.setattr(suggest, "update_review_body",
                             lambda repo, pr, rid, body: updated.append(rid))
@@ -1381,6 +1389,185 @@ class TestReviewWrappers:
                                       bot_login=BOT, head_sha="reviewed-sha",
                                       commanded_finding_keys=(finding_key(),))
         assert updated == []
+
+
+class TestTheWrapperIsSelfDating:
+    """ADR-0009's addendum B. `REVIEW_BODY` was the ONLY artefact the harness posts
+    with no reviewed SHA — the suggestion comment's footer, the reviewer's sticky
+    comment and the follow-up pull-request body all carry one — so after a push it
+    was a live, undated claim pointing at comments GitHub had marked outdated.
+
+    It matters more than symmetry: an artefact that never claims a currency never
+    needs a later run to correct it, and `/fix` is commanded so there may BE no later
+    run — `supersede_previous_reviews` executes only inside `if fresh:`.
+    """
+
+    def test_the_live_wrapper_carries_the_head_it_delivered_for(self):
+        body = suggest.review_body(head_sha="abc1234", paths=["src/app.py"])
+        assert "abc1234" in body
+
+    def test_the_live_wrapper_carries_the_paths_it_delivered_for(self):
+        body = suggest.review_body(head_sha="abc1234", paths=["src/b.py", "src/a.py"])
+        assert "`src/a.py`" in body and "`src/b.py`" in body
+
+    def test_the_paths_are_sorted_and_deduplicated(self):
+        # Two suggestions on one path are refused, but a plan reaching here with a
+        # repeated path must not produce a body naming it twice — and the order must
+        # not vary with the plan's step order, or two runs of one command write two
+        # different bodies.
+        assert suggest.review_body(head_sha="s", paths=["b.py", "a.py", "b.py"]) == \
+            suggest.review_body(head_sha="s", paths=["a.py", "b.py"])
+
+    def test_the_posted_wrapper_names_the_verified_head_and_the_plans_paths(self, api):
+        # Through the reconciler, so the values are the ones production passes rather
+        # than the ones a test chose: the head the plan was VERIFIED against, and the
+        # paths of the steps actually posted.
+        _, _, _ = api
+        posted = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(suggest, "submit_review",
+                          lambda repo, pr, body, comments, *, head_sha: posted.append(body))
+            suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                          bot_login=BOT, head_sha="verified-head",
+                                          commanded_finding_keys=(finding_key(),))
+        assert "verified-head" in posted[0]
+        assert "`src/app.py`" in posted[0]
+
+    def test_the_live_wrapper_still_carries_the_ownership_marker_on_line_one(self):
+        # Ownership is unchanged: marker plus resolved bot login. The stamp is
+        # appended to that line, not put in place of it.
+        body = suggest.review_body(head_sha="s", paths=["a.py"])
+        assert body.split("\n")[0].startswith(suggest.REVIEW_MARKER)
+        assert suggest.is_our_review({"body": body, "user": {"login": BOT}}, BOT)
+
+    def test_the_live_wrapper_is_not_mistaken_for_a_spent_one(self):
+        # The discriminator must separate the two bodies, or the pass either rewrites
+        # the wrapper it just posted or never rewrites anything.
+        assert not suggest.is_superseded(
+            {"body": suggest.review_body(head_sha="s", paths=["a.py"])})
+
+
+class TestTheSpentWrapperStatesOnlyWhatItsRunEstablished:
+    """The DEFECT addendum B was written about: the supersede pass takes no scope, so
+    a wrapper superseded by a run scoped to another file had its body claim "any from
+    this one that still apply are in the current suggestion comments".
+
+    Measured false on `svozza/artel` #61 — the `version.rs` wrapper was superseded by
+    a run scoped to `server.rs`, which never looked at `version.rs`, never re-derived
+    that finding and could not have re-posted its suggestion.
+    """
+
+    # An EARLIER head than the reconciler is called with below, since the property
+    # is that the spent body keeps the wrapper's own facts rather than the
+    # superseding run's.
+    OLD_HEAD = "cd8fa363"
+
+    def spent(self, head_sha="abc1234", paths=("src/app.py",)):
+        return suggest.superseded_review_body(
+            {"body": suggest.review_body(head_sha=head_sha, paths=list(paths))})
+
+    def test_the_spent_body_no_longer_claims_anything_was_carried_forward(self):
+        body = self.spent()
+        assert "still apply are in the current suggestion comments" not in body
+        # And says so positively, rather than merely omitting it: a reader has to
+        # know that the silence is deliberate.
+        assert "did not evaluate" in body
+
+    def test_the_spent_body_states_what_THAT_wrapper_delivered_for(self):
+        # Recovered from the wrapper's own stamp, NOT from the rewriting run. Taking
+        # this run's facts would be the same over-claim in a new place — a body
+        # asserting a scope its own run never had.
+        body = self.spent(head_sha=self.OLD_HEAD, paths=("src/version.rs",))
+        assert self.OLD_HEAD in body
+        assert "`src/version.rs`" in body
+
+    def test_a_wrapper_from_another_run_is_not_relabelled_with_this_runs_facts(self, api):
+        # The property stated as the production scenario: a run scoped to server.rs
+        # supersedes a wrapper delivered for version.rs, and what the spent body says
+        # must be version.rs at ITS head.
+        _, _, set_reviews = api
+        earlier = suggest.review_body(head_sha=self.OLD_HEAD, paths=["src/version.rs"])
+        set_reviews([{"id": 7, "body": earlier, "user": {"login": BOT}, "node_id": "PRR_7"}])
+        updated = []
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(suggest, "update_review_body",
+                          lambda repo, pr, rid, body: updated.append(body))
+            patch.setattr(suggest, "minimize_review", lambda node: None)
+            suggest.reconcile_suggestions("o/r", 1, [step()], SIGNATURES, METADATA,
+                                          bot_login=BOT, head_sha="reviewed-sha",
+                                          commanded_finding_keys=(finding_key(),))
+        assert self.OLD_HEAD in updated[0] and "`src/version.rs`" in updated[0]
+        assert "reviewed-sha" not in updated[0], (
+            "the spent body was relabelled with the SUPERSEDING run's head, so it claims a "
+            "scope its own run never had"
+        )
+        assert "src/app.py" not in updated[0]
+
+    def test_a_wrapper_with_no_stamp_says_the_scope_is_unrecorded(self):
+        # Posted before the stamp existed. Fail-closed on a CLAIM rather than on an
+        # effect: an unknown scope stated as a known one is exactly the over-claim
+        # this change removes, so it is said out loud instead.
+        body = suggest.superseded_review_body(
+            {"body": f"{suggest.REVIEW_MARKER}\nan older wrapper"})
+        assert "did not record the scope" in body
+
+    def test_the_spent_body_is_recognised_as_spent(self):
+        # The discriminator, which is what the constant comparison used to be. Both
+        # bodies now carry a per-run SHA, so equality against a constant could never
+        # hold again and every run would rewrite and re-minimize every wrapper.
+        assert suggest.is_superseded({"body": self.spent()})
+
+    def test_the_marker_is_read_from_line_one_only(self):
+        # Same containment as every other marker here. A wrapper body carries no model
+        # text today, so this is defence in depth — and it is the position rule that
+        # makes it stay true if that ever changes.
+        planted = f"{suggest.REVIEW_MARKER}\nlive\n{suggest.SUPERSEDED_MARKER}"
+        assert not suggest.is_superseded({"body": planted})
+
+    def test_a_spent_wrapper_is_still_ours(self):
+        # Ownership must survive the rewrite, or the pass loses track of the wrappers
+        # it spent and they accumulate un-minimized.
+        assert suggest.is_our_review({"body": self.spent(), "user": {"login": BOT}}, BOT)
+
+    def test_no_path_can_shift_the_stamps_boundaries(self):
+        # The stamp packs a SHA and a path list into one marker, and a path is
+        # contributor-influenced (schema-constrained, but its text is not ours). The
+        # separators are outside policy.json's path pattern, so no legal path can
+        # move the boundary — parametrized over the delimiters rather than one guess.
+        for hostile in ("a|b.py", "a,b.py", "a>b.py", "a b.py"):
+            stamp = suggest.delivered_stamp(
+                {"body": suggest.review_body(head_sha="abc1234", paths=[hostile])})
+            assert stamp is None or stamp[0] == "abc1234", (
+                f"a path of {hostile!r} moved the stamp's SHA boundary"
+            )
+
+    def test_the_stamp_round_trips_what_the_live_body_recorded(self):
+        # The two halves are one mechanism: if the writer and the reader disagree,
+        # every spent body reads as unrecorded and the change buys nothing.
+        body = suggest.review_body(head_sha="abc1234", paths=["src/b.py", "src/a.py"])
+        assert suggest.delivered_stamp({"body": body}) == ("abc1234", ["src/a.py", "src/b.py"])
+
+    @pytest.mark.parametrize("head_sha", [
+        "cd8fa363",                                   # a short SHA, as GitHub abbreviates
+        "a" * 40,                                     # a full one
+        "reviewed-sha",                               # what every fixture in this file uses
+        "HEAD",                                       # and whatever else a caller passes
+    ])
+    def test_the_reader_accepts_every_sha_the_writer_will_emit(self, head_sha):
+        # The reader must not be NARROWER than the writer, and a hex class made it so:
+        # a non-hex value round-tripped as UNRECORDED, so a spent body silently took
+        # the wrapper-predates-the-stamp branch while every test naming the recorded
+        # one still passed. Found that way.
+        #
+        # The SHA is harness-supplied (HEAD_SHA, from the pull request) and never
+        # contributor-authored, so a hex class bought no containment the separator
+        # exclusion does not already give — only a way for the two halves to disagree.
+        body = suggest.review_body(head_sha=head_sha, paths=["src/a.py"])
+        assert suggest.delivered_stamp({"body": body}) == (head_sha, ["src/a.py"])
+        assert head_sha in suggest.superseded_review_body({"body": body}), (
+            f"a wrapper stamped {head_sha!r} reads as having recorded no scope, so its spent "
+            "body says the scope is unknown when the wrapper recorded it"
+        )
 
 
 class TestPostedPayload:

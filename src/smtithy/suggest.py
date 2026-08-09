@@ -419,24 +419,135 @@ def render_suggestion(step: dict, fingerprint: str, metadata: dict,
 # with an author check because anyone can paste it into their own review.
 REVIEW_MARKER = "<!-- smtithy:review -->"
 
-# The reviews API requires a body on a COMMENT event, so this is the one line the
-# review itself carries; the substance is in the suggestion comments.
-REVIEW_BODY = (
-    f"{REVIEW_MARKER}\n"
-    "🤖 **AI-suggested fixes** — see the suggestion comments below. Not a human "
-    "review; counts toward no approval."
-)
+# Appended to the marker line of a wrapper this pass has already spent, so a later
+# run recognises it instead of rewriting it every time. Needed because both bodies
+# now carry a per-run SHA and are therefore no longer constants: the skip used to
+# compare the body against SUPERSEDED_REVIEW_BODY, which stops working the moment
+# either body varies (ADR-0009's addendum B names this consequence). Same shape as
+# STRUCK_MARKER on a suggestion comment, and read from the marker line for the same
+# reason — REVIEW_MARKER stays the ownership half; this is only how "already spent"
+# is recognised.
+SUPERSEDED_MARKER = "<!-- smtithy:superseded -->"
 
-# Replaces a superseded wrapper's body. A spent wrapper's text says "see the
-# suggestion comments below" while the reconciler deletes comments independently
-# of the review that posted them, so a wrapper can end up pointing at nothing.
-# This states only what is still true.
-SUPERSEDED_REVIEW_BODY = (
-    f"{REVIEW_MARKER}\n"
-    "🤖 **Superseded AI remediation.** A later run has posted updated suggestions "
-    "on this pull request; any from this one that still apply are in the current "
-    "suggestion comments. Not a human review; counts toward no approval."
-)
+# What a wrapper delivered for, stamped on its own marker line so a LATER run can
+# recover it. This is the whole point of self-dating being coupled to the supersede
+# change: the pass takes no scope and cannot know what an earlier run spoke for, so
+# without the stamp a spent body could only either say nothing or restate the
+# rewriting run's own facts as if they were the wrapper's — which is the over-claim
+# this change exists to remove, in a new place.
+#
+# Read back from a position this module AUTHORS, exactly as post.posting_run_id
+# recovers a run id from its own footer. The whole line is harness-authored (a
+# wrapper body carries no model text at all) and ownership is still marker plus
+# resolved bot login, so nothing contributor-influenced enters the parse.
+#
+# `|` separates the SHA from the paths and `,` separates the paths: neither is in
+# policy.json's path pattern (`\.?[A-Za-z0-9][A-Za-z0-9._/-]*`), so no path can
+# shift a boundary. A wrapper with no stamp is one posted before this change and
+# reads as unknown, which the spent body then says rather than guesses.
+#
+# The SHA half is bounded by the SEPARATORS rather than by a hex class, and that is
+# deliberate. Hex is what a real head SHA is, so a hex class reads as tighter — but
+# the value is harness-supplied (HEAD_SHA, from the pull request), never
+# contributor-authored, so hex buys no containment the separator exclusion does not
+# already give. What it DOES buy is a way for the reader to silently disagree with
+# the writer: a non-hex value round-trips as UNRECORDED, so every test using a
+# placeholder SHA would exercise the wrapper-predates-the-stamp branch while naming
+# the recorded one. Found exactly that way.
+DELIVERED_RE = re.compile(r"<!-- smtithy:delivered:([^\s|>]+)\|([^\s>]*) -->")
+
+
+def delivered_marker(head_sha: str, paths: list[str]) -> str:
+    return f"<!-- smtithy:delivered:{head_sha}|{','.join(sorted(set(paths)))} -->"
+
+
+def delivered_stamp(review: dict) -> tuple[str, list[str]] | None:
+    """What a wrapper of ours recorded delivering, or None if it recorded nothing.
+
+    From the marker line only, like every other marker here. None means the wrapper
+    predates the stamp, and the caller must then say so rather than substitute its
+    own facts.
+    """
+    match = DELIVERED_RE.search((review.get("body") or "").split("\n", 1)[0])
+    if match is None:
+        return None
+    return match.group(1), [path for path in match.group(2).split(",") if path]
+
+
+def review_body(*, head_sha: str, paths: list[str]) -> str:
+    """The live wrapper's body, carrying what it delivered for.
+
+    The reviews API requires a body on a COMMENT event, so this is the one line the
+    review itself carries; the substance is in the suggestion comments.
+
+    SELF-DATING (ADR-0009's addendum B). This was the only artefact the harness
+    posts with no `reviewed SHA` — the suggestion comment's footer, the reviewer's
+    sticky comment and the follow-up pull-request body all carry one — so after a
+    push it was a live, undated claim pointing at comments GitHub had marked
+    outdated.
+
+    That matters more here than symmetry: an artefact that never claims a currency
+    NEVER NEEDS A LATER RUN TO CORRECT IT, and this lane may never run again. `/fix`
+    is commanded, so no subsequent run is guaranteed, and supersede_previous_reviews
+    executes only inside `if fresh:` — a wrapper is tidied only when a later command
+    posts new suggestions. Self-dating is what makes that acceptable rather than a
+    gap, and it is why moving the supersede pass out of that guard was not adopted:
+    doing so still depends on a later run arriving.
+
+    The stamp on the marker line is the machine-readable half, for the supersede pass
+    to recover; the prose is the human's.
+    """
+    delivered = ", ".join(f"`{path}`" for path in sorted(set(paths)))
+    return (
+        f"{REVIEW_MARKER} {delivered_marker(head_sha, paths)}\n"
+        f"🤖 **AI-suggested fixes** for {delivered} at `{head_sha}` — see the "
+        "suggestion comments below. Each one's currency is shown on the suggestion "
+        "itself, where GitHub marks it outdated once the head moves past that SHA. "
+        "Not a human review; counts toward no approval."
+    )
+
+
+def superseded_review_body(review: dict) -> str:
+    """Replaces a spent wrapper's body, stating only what THAT wrapper established.
+
+    The old text said "any from this one that still apply are in the current
+    suggestion comments", and on `svozza/artel` #61 that was FALSE: the `version.rs`
+    wrapper was superseded by a run scoped to `server.rs`, which never looked at
+    `version.rs`, never re-derived that finding and could not have re-posted its
+    suggestion. The supersede pass takes no scope, so the claim is one the rewriting
+    run did not evaluate — the same defect reconcile_suggestions guards against, one
+    artefact over (ADR-0009's addendum B).
+
+    Scoping the pass the way retraction is scoped was REJECTED: with per-finding
+    commands, wrappers would then accumulate roughly one per distinct file ever
+    remediated and none would ever be tidied, reviving the nine-wrapper problem the
+    first addendum measured. So every prior wrapper is still superseded — the
+    timeline stays collapsed — and what changes is that the body stops over-claiming.
+
+    Takes the REVIEW, not this run's facts, because the facts belong to the wrapper:
+    restating the rewriting run's SHA and paths here would be the same over-claim in
+    a new place. They are recovered from the wrapper's own stamp, which is why
+    self-dating and this change are one change.
+
+    A wrapper is a delivery VEHICLE, not a record of findings: it exists only because
+    the reviews API has no upsert for creation, and the substance was never in it.
+    """
+    stamp = delivered_stamp(review)
+    if stamp is None:
+        # Posted before the stamp existed. Says so rather than guessing: an unknown
+        # scope stated as a known one is the over-claim this function removes.
+        spoke_for = "This review delivered suggestions that it did not record the scope of"
+    else:
+        head_sha, paths = stamp
+        delivered = ", ".join(f"`{path}`" for path in paths) or "no recorded files"
+        spoke_for = f"This review delivered suggestions for {delivered} at `{head_sha}`"
+    return (
+        f"{REVIEW_MARKER} {SUPERSEDED_MARKER}\n"
+        f"🤖 **Spent AI remediation.** {spoke_for}, and it is spent. It does not say "
+        "whether any of them still apply: the run that superseded it did not evaluate "
+        "them, and each suggestion's own currency is shown on that suggestion, where "
+        "GitHub marks it outdated. Not a human review; counts toward no approval."
+    )
 
 
 def is_our_review(review: dict, bot_login: str) -> bool:
@@ -449,6 +560,21 @@ def is_our_review(review: dict, bot_login: str) -> bool:
     if not bot_login or (review.get("user") or {}).get("login") != bot_login:
         return False
     return (review.get("body") or "").strip().startswith(REVIEW_MARKER)
+
+
+def is_superseded(review: dict) -> bool:
+    """Whether a wrapper of ours has already been spent by this pass.
+
+    Read from the MARKER LINE, not by comparing the body against a constant. The
+    comparison was how the pass avoided rewriting the wrapper it had just posted, and
+    both bodies now carry a per-run SHA — so neither is a constant and the equality
+    would never hold again, making every run rewrite (and re-minimize) every wrapper
+    it had already spent.
+
+    Same rule every other marker here follows: line 1, which is the only part of the
+    body this module authors.
+    """
+    return SUPERSEDED_MARKER in (review.get("body") or "").split("\n", 1)[0]
 
 
 def supersede_previous_reviews(repo: str, pr_number: int, bot_login: str) -> None:
@@ -468,6 +594,11 @@ def supersede_previous_reviews(repo: str, pr_number: int, bot_login: str) -> Non
     Both are BEST EFFORT and neither may fail the run. This is cosmetic tidying in
     front of an atomic POST: a permission the bot turns out not to have must cost a
     collapsed timeline entry, never a delivery. Failures print and carry on.
+
+    Takes no scope, deliberately (ADR-0009's addendum B), so every prior wrapper is
+    spent and the timeline stays collapsed. What each spent body may CLAIM is bounded
+    instead: superseded_review_body reads the wrapper's own stamp rather than this
+    run's facts.
     """
     try:
         reviews = [review for review in pull_reviews(repo, pr_number) if is_our_review(review, bot_login)]
@@ -476,10 +607,13 @@ def supersede_previous_reviews(repo: str, pr_number: int, bot_login: str) -> Non
         return
 
     for review in reviews:
-        # The one just posted carries the current suggestions; only earlier ones are
-        # spent. Identified by body rather than by id, so this needs no coupling to
-        # what the POST returned.
-        if (review.get("body") or "").strip() == SUPERSEDED_REVIEW_BODY.strip():
+        # Already spent, so leave it: rewriting it again would re-minimize it every
+        # run and lose nothing but calls. Recognised by MARKER rather than by
+        # comparing the body against a constant — both bodies now carry a per-run SHA
+        # and neither is a constant, so the old equality would never hold again.
+        # Still identified from the body rather than by id, so this needs no coupling
+        # to what the POST returned.
+        if is_superseded(review):
             continue
         # `.get`, not `review["id"]`, and the same value in the handler: the
         # subscript raised KeyError INSIDE the try, and the handler's own f-string
@@ -487,7 +621,7 @@ def supersede_previous_reviews(repo: str, pr_number: int, bot_login: str) -> Non
         # losing the delivery to cosmetic tidying, since this runs before the POST.
         review_id = review.get("id")
         try:
-            update_review_body(repo, pr_number, review_id, SUPERSEDED_REVIEW_BODY)
+            update_review_body(repo, pr_number, review_id, superseded_review_body(review))
             print(f"marked review {review_id} superseded")
         except Exception as exc:  # noqa: BLE001
             print(f"could not rewrite review {review_id} ({exc}); continuing")
@@ -616,7 +750,12 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
         submit_review(
             repo,
             pr_number,
-            REVIEW_BODY,
+            # Self-dating (ADR-0009's addendum B): the wrapper records the head it
+            # delivered for and the paths it touched, so it never claims a currency a
+            # later run would have to correct — which matters because `/fix` is
+            # commanded and there may BE no later run.
+            review_body(head_sha=head_sha,
+                        paths=[step["args"]["path"] for _, step in fresh]),
             [comment_anchor(step) | {
                 "body": render_suggestion(step, fingerprint, metadata, recorded_key)}
              for fingerprint, step in fresh],
