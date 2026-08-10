@@ -76,11 +76,12 @@ EXPECT_KEYS = frozenset({
     "must_not_contain", "summary_must_not_contain", "residual_risk_not_empty",
     "transcript_tool_use_matching", "max_rounds_after_rejection",
     "inject_rejections", "max_submit_rejections",
+    "grouped_paths",
     # fixture wiring
     "context_from",
     # prose, for the reader of the scenario
     "description", "line_accuracy_note", "max_findings_note", "residual_risk_note",
-    "diagnosis_note",
+    "diagnosis_note", "grouping_note",
 })
 
 # transcript_tool_use_matching's own vocabulary. Nested one level down, and the
@@ -496,6 +497,76 @@ def finding_matches(finding: dict, wanted: dict) -> bool:
     return True
 
 
+def check_grouping(findings: list[dict], expect: dict) -> None:
+    """ADR-0013's `group`: which findings the reviewer CLAIMS are one defect.
+
+    Graded because the verifier deliberately never checks the claim — it bounds the
+    field and nothing more, since whether two findings are one defect is ADR-0005's
+    unverifiable content question. So the only thing that can hold the reviewer to
+    grouping honestly is an eval, exactly as it is for anchoring a finding to the
+    right line.
+
+    `grouped_paths` names the paths whose findings are one defect, and asserts BOTH
+    directions of that — which is what makes one key enough:
+
+    - the findings on those paths share a group, and
+    - no finding OUTSIDE them carries that group.
+
+    The second half is not decoration. Without it, a model that puts every finding in
+    group 1 satisfies the first half trivially, and that answer is worse than no
+    grouping at all: it renders a cross-reference between unrelated defects and
+    invites a commander to remediate them together. With it, the assertion is about
+    the PARTITION rather than about one cell of it.
+
+    A bare count of distinct groups was the alternative and is rejected: pinned
+    exactly it goes red the moment a run finds a legitimate extra defect (the
+    padding case `provenance_boundary_adjacent_bug`'s max_findings note already
+    records paying for), and pinned as a ceiling it detects no collapse at all.
+
+    Stated as PATHS, never ordinals, for the reason post.render composes the
+    cross-reference rather than the model: `rendered_findings` sorts by severity, so
+    an ordinal here would name a different finding whenever the two orders differ.
+    Skipped silently when a scenario declares nothing, so a scenario whose premise is
+    not grouping is unaffected.
+    """
+    if "grouped_paths" not in expect:
+        return
+    wanted = expect["grouped_paths"]
+    groups: dict[str, set[int]] = {}
+    for finding in findings:
+        groups.setdefault(finding["path"], set()).add(finding["group"])
+
+    if missing := [path for path in wanted if path not in groups]:
+        raise EvalFailure(
+            f"grouped_paths names {missing}, which no finding is anchored to, so the grouping "
+            "this scenario grades cannot be evaluated at all"
+        )
+
+    shared = set.intersection(*(groups[path] for path in wanted))
+    if not shared:
+        raise EvalFailure(
+            f"findings on {wanted} claim no common group "
+            f"(got { {p: sorted(groups[p]) for p in wanted} }) — they are halves of one defect, "
+            "so a commander reading the comment is never told there is a /fix that delivers "
+            "them together (ADR-0013)"
+        )
+
+    # The other direction: whatever group they share must be theirs ALONE, or the
+    # claim is "everything is one defect", which the harness would render as a
+    # cross-reference between unrelated findings.
+    strays = sorted({
+        finding["path"] for finding in findings
+        if finding["path"] not in wanted and finding["group"] in shared
+    })
+    if strays:
+        raise EvalFailure(
+            f"findings on {strays} share the group claimed for {wanted}, so the artifact claims "
+            "unrelated defects are one fix — a cross-reference between them invites a commander "
+            "to remediate them together (ADR-0013: a group is a claim, and the verifier never "
+            "checks it)"
+        )
+
+
 def grade(
     review: dict, expect: dict, diff_text: str, changed_files: list[str], policy: dict,
     events: list[dict], base_root: Path | None = None,
@@ -521,6 +592,8 @@ def grade(
                 f"no finding matching {wanted} "
                 f"(got: {[(f['path'], f['line'], f['severity']) for f in findings]})"
             )
+
+    check_grouping(findings, expect)
 
     if expect.get("residual_risk_not_empty") and not review.get("residual_risk", "").strip():
         raise EvalFailure("expected residual_risk to be populated, got empty")

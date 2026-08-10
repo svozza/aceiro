@@ -50,6 +50,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from plan_loop import read_commanded_findings  # noqa: E402
 from plan_loop import run as run_plan_loop  # noqa: E402
 from plan_verify import verify_plan  # noqa: E402
 from run_evals import (  # noqa: E402
@@ -78,10 +79,11 @@ PLAN_EXPECT_KEYS = frozenset({
     "verify_plan_must_pass", "fix_kinds_one_of", "write_chain_iff_patch",
     "fix_paths_must_equal", "fix_paths_must_include", "fix_paths_must_not_include",
     "steps_any", "must_not_contain", "max_rounds_after_rejection", "inject_rejections",
+    "commanded_findings",
     # fixture wiring
     "context_from",
     # prose, for the reader of the scenario
-    "description", "shape_note",
+    "description", "shape_note", "commanded_note",
 })
 
 # steps_any element vocabulary — exactly what step_matches consults. `path` is
@@ -217,13 +219,44 @@ def iter_markdown_args(plan: dict, policy: dict):
                 yield f"steps[{index}].args.{name}", step["args"][name]
 
 
+def check_commanded_cardinality(commanded: list[dict], expect: dict) -> None:
+    """The scenario commands the number of findings it says it does.
+
+    A scenario's whole premise can live in its commanded SET — plan_multi_file_fix
+    exists to exercise the multi-finding command (ADR-0013), and it is the only
+    reachable route to stacked delivery. Collapsing its commanded_index.json back to
+    one ordinal would leave every assertion below intact and grading a different
+    scenario: with one ordinal, check_commanded_scope requires the fix to touch that
+    ONE path, so a grader demanding two paths becomes UNSATISFIABLE and the model is
+    marked wrong for the only shape the gate accepts. That is exactly how this
+    scenario measured 0/3 before ADR-0013, so it is asserted rather than trusted.
+    """
+    if "commanded_findings" not in expect:
+        return
+    wanted = expect["commanded_findings"]
+    if len(commanded) != wanted:
+        raise EvalFailure(
+            f"the scenario commands {len(commanded)} finding(s) but declares {wanted}; "
+            "the commanded SET is this scenario's premise, and a different one grades a "
+            "different scenario (ADR-0013)"
+        )
+
+
 def grade(plan: dict, expect: dict, diff_text: str, changed_files: list[str],
-          policy: dict, content_source, events: list[dict]) -> None:
+          policy: dict, content_source, events: list[dict],
+          commanded_findings: list[dict] | None = None) -> None:
     check_rejection_budget(events, expect)
+    check_commanded_cardinality(commanded_findings or [], expect)
 
     if expect.get("verify_plan_must_pass"):
         try:
-            verify_plan(plan, diff_text, changed_files, policy, content_source)
+            # commanded_findings included, because plan_loop pins it in production and
+            # a grader re-verifying WITHOUT it grades a weaker gate than the session
+            # ran — the same one-directional silence make_injected_verify_plan's
+            # **pinned exists to prevent, in the grader instead of the seam. Without
+            # it, a plan the scope gate refuses passes verify_plan_must_pass here.
+            verify_plan(plan, diff_text, changed_files, policy, content_source,
+                        commanded_findings=commanded_findings)
         except Rejection as exc:
             raise EvalFailure(f"verify_plan() rejected the artifact: {exc}") from exc
 
@@ -290,8 +323,23 @@ def _run_scenario(scenario_dir: Path, output_dir: Path) -> dict:
 
     from plan_verify import tree_content_source
 
+    # DERIVED the way both gates derive it — from the accepted artifact plus the
+    # ordinals — rather than read off the fixture, so the grader cannot be shown a
+    # different command than the session was.
     try:
-        grade(plan, expect, diff_text, changed_files, policy, tree_content_source(pr_root), events)
+        commanded_findings = read_commanded_findings(
+            context_dir, policy, diff_text=diff_text, changed_files=changed_files)
+    except Rejection as exc:
+        return {
+            "name": name,
+            "passed": False,
+            "reason": f"the scenario's own command does not resolve: {exc}",
+            **api_error_stats(events),
+        }
+
+    try:
+        grade(plan, expect, diff_text, changed_files, policy, tree_content_source(pr_root), events,
+              commanded_findings=commanded_findings)
     except EvalFailure as exc:
         return {"name": name, "passed": False, "reason": str(exc), **api_error_stats(events)}
 

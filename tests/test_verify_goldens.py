@@ -91,7 +91,7 @@ def test_finding_on_dotfile_path_passes(valid_artifact, policy):
         {
             "path": ".github/workflows/ci.yml",
             "line": 2,
-            "severity": "high", "group": 1,
+            "severity": "high",
             "group": 1,
             "title": "checkout persists credentials",
             "body": "The new step leaves the token on disk for later steps.",
@@ -105,7 +105,7 @@ def test_finding_on_new_file_passes(valid_artifact, sample_diff, changed_files, 
         {
             "path": "tests/unit/test_logger.py",
             "line": 4,
-            "severity": "medium", "group": 1,
+            "severity": "medium",
             "group": 1,
             "title": "test asserts the buggy behaviour",
             "body": "The new test pins `get_level()` to `None`, codifying the bug.",

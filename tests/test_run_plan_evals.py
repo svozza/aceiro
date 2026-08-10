@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy" / "evals
 
 import cc_loop  # noqa: E402
 import run_plan_evals  # noqa: E402
+from plan_loop import read_commanded_findings  # noqa: E402
 from conftest import POLICY  # noqa: E402
 from verify import Rejection  # noqa: E402
 
@@ -297,6 +298,140 @@ class TestGradeEndToEnd:
         with pytest.raises(run_plan_evals.EvalFailure, match="verify_plan.*byte-match"):
             run_plan_evals.grade(plan, {"verify_plan_must_pass": True}, PLAN_DIFF,
                                  PLAN_CHANGED_FILES, POLICY, tree_source(), [])
+
+
+class TestTheGraderReVerifiesWithTheCommandedFindings:
+    """The grader's `verify_plan_must_pass` must run the gate the SESSION ran.
+
+    Without the commanded findings it re-verifies a weaker verifier: a plan that
+    never touches a commanded path passes here and is refused in production. Same
+    one-directional silence make_injected_verify_plan's `**pinned` exists to prevent
+    — a dropped keyword only ever makes the gate accept MORE — arriving in the grader
+    instead of the seam.
+    """
+
+    OTHER = {"path": "src/util.py", "line": 1, "severity": "high", "group": 1,
+             "title": "t", "body": "b"}
+
+    def test_a_plan_outside_the_commanded_scope_is_reported(self):
+        # The suggestion is on src/app.py; the command names src/util.py, so the
+        # scope gate refuses it. If the grader dropped the argument this passes.
+        with pytest.raises(run_plan_evals.EvalFailure, match="verify_plan.*commanded finding"):
+            run_plan_evals.grade(
+                suggest_plan(), {"verify_plan_must_pass": True}, PLAN_DIFF,
+                PLAN_CHANGED_FILES, POLICY, tree_source(), [],
+                commanded_findings=[self.OTHER])
+
+    def test_a_plan_inside_the_commanded_scope_still_passes(self):
+        # Calibration: the argument must not refuse everything, or the assertion
+        # above would hold for the wrong reason.
+        commanded = {**self.OTHER, "path": "src/app.py", "line": 2}
+        run_plan_evals.grade(
+            suggest_plan(), {"verify_plan_must_pass": True}, PLAN_DIFF,
+            PLAN_CHANGED_FILES, POLICY, tree_source(), [], commanded_findings=[commanded])
+
+
+class TestCheckCommandedCardinality:
+    """A scenario commands the number of findings it declares (ADR-0013).
+
+    plan_multi_file_fix's whole premise is its commanded SET, and collapsing it back
+    to one ordinal leaves every other assertion intact while grading a different
+    scenario — with one ordinal, check_commanded_scope requires the fix to touch that
+    ONE path, so a grader demanding two paths is UNSATISFIABLE. That is exactly how
+    the scenario measured 0/3 before ADR-0013.
+    """
+
+    FINDING = {"path": "src/app.py", "line": 2, "severity": "high", "group": 1,
+               "title": "t", "body": "b"}
+
+    def test_the_declared_count_passes(self):
+        run_plan_evals.check_commanded_cardinality(
+            [self.FINDING, self.FINDING], {"commanded_findings": 2})
+
+    def test_a_collapsed_command_fails(self):
+        with pytest.raises(run_plan_evals.EvalFailure, match="commands 1 finding"):
+            run_plan_evals.check_commanded_cardinality(
+                [self.FINDING], {"commanded_findings": 2})
+
+    def test_a_widened_command_fails_too(self):
+        # Both directions: a third ordinal is as much a different scenario as one
+        # fewer, and it would silently widen the scope gate the grader relies on.
+        with pytest.raises(run_plan_evals.EvalFailure, match="commands 3 finding"):
+            run_plan_evals.check_commanded_cardinality(
+                [self.FINDING] * 3, {"commanded_findings": 2})
+
+    def test_a_scenario_declaring_nothing_is_unaffected(self):
+        run_plan_evals.check_commanded_cardinality([self.FINDING], {})
+
+    def test_it_is_wired_into_grade(self):
+        with pytest.raises(run_plan_evals.EvalFailure, match="commands 1 finding"):
+            run_plan_evals.grade(
+                suggest_plan(), {"commanded_findings": 2}, PLAN_DIFF, PLAN_CHANGED_FILES,
+                POLICY, tree_source(), [], commanded_findings=[self.FINDING])
+
+
+class TestTheMultiFileScenarioIsSATISFIABLE:
+    """The scenario measured 0/3 because it was IMPOSSIBLE, not because the model
+    was wrong: one ordinal was commanded, anchored to constants.py, while the grader
+    required the fix to touch client.py and server.py — and check_commanded_scope
+    requires the fix to touch every COMMANDED path.
+
+    A one-anchor Finding cannot scope a multi-file fix (ADR-0009's addendum C), which
+    is what ADR-0013's set-valued command fixes. These assertions are the ones that
+    would have caught the original: a scenario nothing can pass is worse than an
+    absent one, because it reads as a measured model failure.
+    """
+
+    NAME = "plan_multi_file_fix"
+
+    def scenario(self):
+        return run_plan_evals.PLAN_SCENARIOS_DIR / self.NAME
+
+    def commanded(self):
+        scenario = self.scenario()
+        return read_commanded_findings(scenario / "context", POLICY)
+
+    def test_the_command_resolves_against_its_own_review(self):
+        assert len(self.commanded()) == 2
+
+    def test_the_scenario_declares_the_count_it_commands(self):
+        expect = json.loads((self.scenario() / "expect.json").read_text())
+        run_plan_evals.check_commanded_cardinality(self.commanded(), expect)
+
+    def test_the_plan_the_grader_demands_SATISFIES_the_scope_gate(self):
+        # THE assertion. Built from the scenario's own fix_paths_must_include and run
+        # through the real check, so a fixture whose grader and gate disagree fails
+        # here instead of costing three model sessions to discover.
+        from plan_verify import check_commanded_scope
+
+        expect = json.loads((self.scenario() / "expect.json").read_text())
+        demanded = {"steps": [
+            {"id": f"s{index}", "kind": "patch",
+             "args": {"path": path, "old": "x", "new": "y"}}
+            for index, path in enumerate(expect["fix_paths_must_include"])
+        ]}
+        check_commanded_scope(demanded, self.commanded())
+
+    def test_every_commanded_path_is_one_the_grader_requires(self):
+        # The same coherence from the other side: a commanded finding on a path the
+        # grader does not require would let a passing plan miss it, since
+        # fix_paths_must_include is what the grader checks.
+        expect = json.loads((self.scenario() / "expect.json").read_text())
+        commanded_paths = {finding["path"] for finding in self.commanded()}
+        assert commanded_paths <= set(expect["fix_paths_must_include"])
+
+    def test_the_commanded_findings_span_two_files(self):
+        # Which is what makes this stacked delivery's first reachable trigger in an
+        # eval: two paths mean the fix must touch both, and a review comment carries
+        # exactly one path (ADR-0013).
+        assert len({finding["path"] for finding in self.commanded()}) == 2
+
+    def test_the_findings_claim_one_group(self):
+        # Two findings commanded together ARE one defect, so the review that produced
+        # them must say so — otherwise the scenario's own artifact contradicts the
+        # command it carries.
+        review = json.loads((self.scenario() / "context/review.json").read_text())
+        assert len({finding["group"] for finding in review["findings"]}) == 1
 
 
 class TestScenarioExpectations:

@@ -1,0 +1,7 @@
+{
+  "number": 9042,
+  "title": "chore(shared): name the batch window in seconds and add an item cap",
+  "body": "Renames `BATCH_WINDOW` to `BATCH_WINDOW_SECONDS` so the unit is in the name, and adds `MAX_BATCH_ITEMS` for the upcoming size-based flush. `metrics.py` is migrated to the new names; the docstrings on `enqueue` and `drain` are unrelated readability tweaks.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

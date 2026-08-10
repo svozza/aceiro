@@ -114,7 +114,7 @@ def valid_artifact():
             {
                 "path": "aws_lambda_powertools/logging/logger.py",
                 "line": 13,
-                "severity": "high", "group": 1,
+                "severity": "high",
                 "group": 1,
                 "title": "default parameter is accepted but never used",
                 "body": "`get_level` gained a `default` argument but the return "

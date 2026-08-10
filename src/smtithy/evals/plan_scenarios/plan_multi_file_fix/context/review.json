@@ -2,11 +2,19 @@
   "summary": "The constant rename left two importers referring to a name that no longer exists.",
   "findings": [
     {
-      "path": "aws_lambda_powertools/shared/constants.py",
-      "line": 3,
+      "path": "aws_lambda_powertools/shared/client.py",
+      "line": 6,
       "severity": "high",
-      "title": "DEFAULT_TIMEOUT renamed but two importers still reference the old name",
-      "body": "The rename to `DEFAULT_TIMEOUT_SECONDS` migrated `http.py` but `client.py` and `server.py` (both changed in this PR) still do `from aws_lambda_powertools.shared.constants import DEFAULT_TIMEOUT`, which now raises ImportError at import time. Fix: update both imports and both call sites to the new name.",
+      "title": "client still passes the removed DEFAULT_TIMEOUT name",
+      "body": "The rename to `DEFAULT_TIMEOUT_SECONDS` migrated `http.py`, but this module still does `from aws_lambda_powertools.shared.constants import DEFAULT_TIMEOUT`, which no longer exists — so importing it raises ImportError. Fix: use the new name in the import and at this call site.",
+      "group": 1
+    },
+    {
+      "path": "aws_lambda_powertools/shared/server.py",
+      "line": 6,
+      "severity": "high",
+      "title": "server still passes the removed DEFAULT_TIMEOUT name",
+      "body": "The same rename, second call site: this module also imports `DEFAULT_TIMEOUT` and passes it here, so importing it raises ImportError. Fixing one importer without the other leaves the code broken, so the two changes are one fix.",
       "group": 1
     }
   ],

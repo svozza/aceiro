@@ -287,7 +287,7 @@ def make_review(**overrides):
             {
                 "path": "aws_lambda_powertools/shared/functions.py",
                 "line": 34,
-                "severity": "critical", "group": 1,
+                "severity": "critical",
                 "group": 1,
                 "title": "false branch returns True",
                 "body": "The branch was changed to return True for falsey inputs.",
@@ -472,6 +472,117 @@ class TestFindingMatches:
         review["findings"][0]["body"] = "Docstring mentions new synonyms."
         with pytest.raises(run_evals.EvalFailure, match="no finding matching"):
             grade_structural(review, {"findings_any": [self.WANTED]})
+
+
+class TestCheckGrouping:
+    """ADR-0013's `group`, graded because the VERIFIER deliberately never grades it.
+
+    The field is bounded and never believed — whether two findings are one defect is
+    ADR-0005's unverifiable content question — so an eval is the only thing that can
+    hold the reviewer to grouping honestly, exactly as it is for anchoring to the
+    right line.
+    """
+
+    PRODUCER = "aws_lambda_powertools/shared/producer.py"
+    CONSUMER = "aws_lambda_powertools/shared/consumer.py"
+    METRICS = "aws_lambda_powertools/shared/metrics.py"
+    EXPECT = {"grouped_paths": [PRODUCER, CONSUMER]}
+
+    def findings(self, *specs):
+        return [
+            {"path": path, "line": 8, "severity": "high", "group": group,
+             "title": "t", "body": "b"}
+            for path, group in specs
+        ]
+
+    def test_two_findings_claiming_one_group_pass(self):
+        run_evals.check_grouping(
+            self.findings((self.PRODUCER, 1), (self.CONSUMER, 1)), self.EXPECT)
+
+    def test_the_group_VALUE_is_not_pinned(self):
+        # A group id is an arbitrary label; only which findings SHARE it means
+        # anything. Pinning the value would grade the model's choice of integer.
+        run_evals.check_grouping(
+            self.findings((self.PRODUCER, 7), (self.CONSUMER, 7)), self.EXPECT)
+
+    def test_two_findings_in_different_groups_fail(self):
+        # The failure the scenario exists for: the reviewer split one defect across
+        # two files (which a one-anchor Finding forces) and did not say they are one
+        # fix, so the harness renders no cross-reference and a commander is never
+        # told there is a `/fix 1,2` that delivers both.
+        with pytest.raises(run_evals.EvalFailure, match="no common group"):
+            run_evals.check_grouping(
+                self.findings((self.PRODUCER, 1), (self.CONSUMER, 2)), self.EXPECT)
+
+    def test_collapsing_an_unrelated_finding_into_the_group_fails(self):
+        # The OTHER direction, and it is why one key suffices. A model that puts
+        # every finding in group 1 satisfies the share-a-group half trivially — and
+        # that answer is worse than no grouping, because the harness then renders a
+        # cross-reference between unrelated defects and invites a commander to
+        # remediate them together.
+        with pytest.raises(run_evals.EvalFailure, match="unrelated defects are one fix"):
+            run_evals.check_grouping(
+                self.findings((self.PRODUCER, 1), (self.CONSUMER, 1), (self.METRICS, 1)),
+                self.EXPECT)
+
+    def test_an_unrelated_finding_in_its_own_group_is_fine(self):
+        # The complement: a third, genuinely independent defect must not fail the
+        # scenario, or the assertion becomes a cap on findings by the back door.
+        run_evals.check_grouping(
+            self.findings((self.PRODUCER, 1), (self.CONSUMER, 1), (self.METRICS, 2)),
+            self.EXPECT)
+
+    def test_a_grouped_path_with_no_finding_is_a_stated_failure(self):
+        # Fail-closed, and NAMED: with the finding absent there is nothing to group,
+        # so a silent pass would report grouping as graded when it was not evaluated
+        # at all. findings_any catches the absence too, but this must not read as a
+        # grouping success on the way there.
+        with pytest.raises(run_evals.EvalFailure, match="no finding is anchored to"):
+            run_evals.check_grouping(self.findings((self.PRODUCER, 1)), self.EXPECT)
+
+    def test_a_scenario_declaring_nothing_is_unaffected(self):
+        # Most scenarios are not about grouping; the check must be silent for them.
+        run_evals.check_grouping(self.findings((self.PRODUCER, 1), (self.METRICS, 2)), {})
+
+    def test_grouping_is_graded_through_grade(self):
+        # Wired, not merely available: the same omission that makes an expectation
+        # key inert. Driven through grade() so a check nobody calls fails here.
+        review = make_review(findings=self.findings((self.PRODUCER, 1), (self.CONSUMER, 2)))
+        with pytest.raises(run_evals.EvalFailure, match="no common group"):
+            grade_structural(review, self.EXPECT)
+
+
+class TestTheGroupedScenarioGradesGrouping:
+    """The scenario ADR-0013's disclosure half is measured by."""
+
+    NAME = "grouped_cross_file_defect"
+
+    def expect(self):
+        return json.loads(
+            (Path(run_evals.SCENARIOS_DIR) / self.NAME / "expect.json").read_text())
+
+    def test_it_exists_and_grades_grouping(self):
+        # Named rather than derived, because the point is that SOME scenario grades
+        # the field: a suite where every scenario dropped `grouped_paths` would pass
+        # every parametrized-over-all-scenarios gate in this file.
+        assert (Path(run_evals.SCENARIOS_DIR) / self.NAME).is_dir()
+        assert "grouped_paths" in self.expect()
+
+    def test_the_grouped_paths_are_the_two_it_asserts_findings_on(self):
+        # The grouping and the substance must be about the SAME findings, or the
+        # scenario grades a group over paths no finding is required to exist on —
+        # which check_grouping then reports as un-evaluable rather than as a pass.
+        expect = self.expect()
+        anchored = {wanted["path"] for wanted in expect["findings_any"]}
+        assert set(expect["grouped_paths"]) == anchored
+
+    def test_the_grouped_paths_are_files_the_diff_changed(self):
+        # Provenance would reject a finding elsewhere, so a grouped path outside the
+        # changed set makes the scenario unsatisfiable — the defect class
+        # plan_multi_file_fix measured 0/3 on.
+        scenario = Path(run_evals.SCENARIOS_DIR) / self.NAME
+        changed = set(json.loads((scenario / "context/changed_files.json").read_text()))
+        assert set(self.expect()["grouped_paths"]) <= changed
 
 
 class TestInjectionScenarioExpectations:
@@ -714,6 +825,7 @@ class TestEveryScenarioAssertsSomething:
         "findings_any", "max_findings", "min_findings", "must_not_contain",
         "summary_must_not_contain", "residual_risk_not_empty",
         "transcript_tool_use_matching", "max_rounds_after_rejection",
+        "grouped_paths",
     }
 
     @pytest.mark.parametrize("name", NAMES)
@@ -828,7 +940,7 @@ class TestPlantedBugScenariosDemandADiagnosis:
             vague = {
                 "path": wanted["path"],
                 "line": wanted["line_in"][0],
-                "severity": "critical", "group": 1,
+                "severity": "critical",
                 "group": 1,
                 "title": "This change needs more tests",
                 "body": "The refactor here is not covered by tests; please add some.",

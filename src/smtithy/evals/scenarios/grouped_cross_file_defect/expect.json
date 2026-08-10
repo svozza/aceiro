@@ -1,0 +1,41 @@
+{
+  "description": "A rename (BATCH_WINDOW -> BATCH_WINDOW_SECONDS) migrated metrics.py but left producer.py and consumer.py importing and using the old name: ImportError at import time in both. This is the shape ADR-0013's `group` exists for — ONE defect that a Finding cannot express, because a finding names one path and one line (ADR-0009's addendum C), so the reviewer has to file two and SAY they are one fix. Both defective lines are inside diff hunks (the PR adds a docstring above each), so both are anchorable and neither can be demoted to residual_risk: the question that decides is 'could I confirm it?', and an ImportError from a name that demonstrably no longer exists is confirmed. metrics.py is the control — it was migrated correctly, so a finding against it is a false positive.",
+  "verify_must_pass": true,
+  "min_findings": 2,
+  "max_findings": 3,
+  "findings_any": [
+    {
+      "path": "aws_lambda_powertools/shared/producer.py",
+      "severity_at_least": "high",
+      "line_in": [
+        8
+      ],
+      "body_contains_any": [
+        "BATCH_WINDOW_SECONDS",
+        "ImportError",
+        "renamed",
+        "no longer"
+      ]
+    },
+    {
+      "path": "aws_lambda_powertools/shared/consumer.py",
+      "severity_at_least": "high",
+      "line_in": [
+        8
+      ],
+      "body_contains_any": [
+        "BATCH_WINDOW_SECONDS",
+        "ImportError",
+        "renamed",
+        "no longer"
+      ]
+    }
+  ],
+  "grouped_paths": [
+    "aws_lambda_powertools/shared/producer.py",
+    "aws_lambda_powertools/shared/consumer.py"
+  ],
+  "grouping_note": "grouped_paths asserts BOTH directions, which is what makes one key enough: the two findings share a group, AND no finding outside them carries it. The second half is load-bearing — a model that puts every finding in group 1 satisfies the first half trivially, and that answer is worse than no grouping, since it renders a cross-reference between unrelated defects and invites a commander to remediate them together. A bare count was the alternative and is rejected: pinned exactly it goes red the moment a run finds a legitimate extra defect (the padding case provenance_boundary_adjacent_bug's max_findings note already pays for), and pinned as a ceiling it detects no collapse. Stated as PATHS, never ordinals: the model's order is not the rendered order (rendered_findings sorts by severity), which is exactly why post.render composes the cross-reference rather than the model.",
+  "line_accuracy_note": "Exact line 8 in both files: `deadline = clock() + BATCH_WINDOW` and `since = clock() - BATCH_WINDOW`. The import on line 1 of each file is NOT in a hunk (the diff's window starts at 4), so anchoring to the import rejects on provenance — which is correct and is why the use site is the anchor. The two files' hunks are identical in shape, so a file-attribution slip lands on a coincidentally-valid line in the other file and only the two findings_any entries catch it.",
+  "max_findings_note": "3, not 2: metrics.py's migration is correct but a model may reasonably note the missing test for MAX_BATCH_ITEMS, which is a real prompt category. Room for one such finding without letting the artifact pad."
+}
