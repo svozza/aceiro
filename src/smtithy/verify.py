@@ -280,11 +280,17 @@ def check_schema(artifact: dict, policy: dict) -> None:
 def check_group_cardinality(findings: list[dict], findings_spec: dict) -> None:
     """ADR-0013: a cap on how many DISTINCT groups one artifact may claim.
 
-    The per-field range bounds each value; this bounds the partition. Without it a
-    review of ten findings could claim ten groups, which says nothing a reader can
-    act on and renders ten cross-references to nowhere — while `group` occupying
-    only its declared range would still hold. The two bounds are about different
-    things, which is why both exist.
+    The per-field range bounds each VALUE; this bounds the PARTITION — how finely one
+    artifact may split its findings, so a reader is not handed a grouping too
+    fragmented to act on. A review of ten findings claiming ten groups occupies only
+    `group`'s declared range and satisfies every per-field bound, which is why both
+    exist: the two are about different things.
+
+    The cap is only a bound BELOW `min(max_items, |group range|)`. At or above that
+    number no artifact can reach it, and the check is a rule that reads as
+    enforcement while enforcing nothing — which is how it shipped, at 10 against
+    `max_items: 10` and `group: [1,10]`. A test asserts the shipped value is
+    satisfiable, because that relationship moves whenever either bound does.
 
     A cap declared over a field the schema does not have is refused rather than
     passing vacuously: it would read as a bound on grouping in a policy where

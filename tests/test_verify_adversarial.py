@@ -136,6 +136,127 @@ class TestEveryTopLevelSpecIsEnforced:
             verify(artifact, sample_diff, changed_files, extended)
 
 
+class TestTheDistinctGroupCapIsABoundThatCanFire:
+    """ADR-0013's second safety property: "The verifier bounds it and never believes
+    it. Integer, range, a cap on distinct groups."
+
+    `check_group_cardinality` and `max_distinct_groups` arrived with ZERO tests —
+    every arm was deletable with the suite green, including the call site and the
+    whole body. And the shipped value was 10 against `max_items: 10` and
+    `group: [1,10]`, so `len(distinct) > 10` was unsatisfiable: a rule that read as
+    enforcement while enforcing nothing.
+
+    The cap bounds the PARTITION, where the per-field range bounds each value. Ten
+    findings in ten groups occupy only `group`'s declared range and satisfy every
+    per-field bound, which is why both bounds exist.
+
+    Every case runs against a deep-copied policy. policy.json is never mutated by a
+    test — the fixture is function-scoped and copied precisely because a dozen
+    modules import the same dict.
+    """
+
+    def grouped(self, groups: list[int]) -> dict:
+        # One finding per entry, anchored to lines SAMPLE_DIFF's hunks carry, so the
+        # artifact reaches the cardinality check rather than refusing on provenance.
+        return {
+            "summary": "several defects, variously grouped",
+            "findings": [
+                {"path": "aws_lambda_powertools/logging/logger.py", "line": 10 + offset,
+                 "severity": "high", "group": group,
+                 "title": f"defect {offset}", "body": "the body"}
+                for offset, group in enumerate(groups)
+            ],
+            "residual_risk": "",
+        }
+
+    def test_more_distinct_groups_than_the_cap_is_rejected(
+        self, sample_diff, changed_files, policy
+    ):
+        policy["artifact_schema"]["findings"]["max_distinct_groups"] = 2
+        with pytest.raises(Rejection, match="distinct group values exceeds"):
+            verify(self.grouped([1, 2, 3]), sample_diff, changed_files, policy)
+
+    def test_exactly_the_cap_is_accepted(self, sample_diff, changed_files, policy):
+        # The complement, and it pins `>` rather than `>=`: the `>=` mutation survives
+        # otherwise, and a cap refusing its own stated value makes the policy
+        # unreadable — the same reasoning as the inclusive `maximum` above.
+        policy["artifact_schema"]["findings"]["max_distinct_groups"] = 2
+        verify(self.grouped([1, 2]), sample_diff, changed_files, policy)
+
+    def test_repeated_groups_count_once(self, sample_diff, changed_files, policy):
+        # It is the PARTITION that is bounded, not the number of findings: three
+        # findings claiming one defect are the case ADR-0013 exists to enable, and
+        # counting findings rather than distinct values would refuse it.
+        policy["artifact_schema"]["findings"]["max_distinct_groups"] = 2
+        verify(self.grouped([1, 1, 1, 2]), sample_diff, changed_files, policy)
+
+    def test_a_cap_over_a_field_the_schema_does_not_have_is_a_policy_error(
+        self, sample_diff, changed_files, policy
+    ):
+        # SCALAR_KEYS' rule for a key with no reader, applied to a reader with no
+        # key: the cap would read as a bound on grouping in a policy where nothing is
+        # grouped. Refused rather than passing vacuously.
+        del policy["artifact_schema"]["findings"]["item_fields"]["group"]
+        artifact = self.grouped([1])
+        del artifact["findings"][0]["group"]
+        with pytest.raises(Rejection, match="the cap bounds nothing"):
+            verify(artifact, sample_diff, changed_files, policy)
+
+    @pytest.mark.parametrize("bogus", ["3", 2.5, True])
+    def test_a_cap_that_is_not_an_integer_bound_is_a_policy_error(
+        self, sample_diff, changed_files, policy, bogus
+    ):
+        # Type before use, the rule check_scalar_spec already applies:
+        # `len(...) > "3"` raises TypeError from the middle of a check, which is a
+        # crash where the caller expects a verdict. `True` is an int in Python and
+        # would read as a cap of 1.
+        policy["artifact_schema"]["findings"]["max_distinct_groups"] = bogus
+        with pytest.raises(Rejection, match="not an integer bound"):
+            verify(self.grouped([1, 2]), sample_diff, changed_files, policy)
+
+    def test_an_absent_cap_bounds_nothing_and_is_not_a_fault(
+        self, sample_diff, changed_files, policy
+    ):
+        # A consumer policy need not declare it. Absent is different from vacuous:
+        # nothing reads as enforcement, so nothing is misread.
+        del policy["artifact_schema"]["findings"]["max_distinct_groups"]
+        verify(self.grouped([1, 2, 3, 4, 5]), sample_diff, changed_files, policy)
+
+    def test_the_SHIPPED_cap_is_satisfiable(self, policy):
+        """The assertion whose absence let a vacuous bound ship.
+
+        The cap can only fire below `min(max_items, |group range|)` — at or above
+        that number no artifact can reach it. It shipped AT that number, so
+        `len(distinct) > cap` was unsatisfiable and every arm of the check was dead
+        code that read as a safety property.
+
+        Derived from the shipped policy rather than compared against a literal, so a
+        future `max_items` bump or a widened group range cannot silently re-vacate
+        the cap: this fails, and the number moves with the bounds it depends on.
+        """
+        findings = policy["artifact_schema"]["findings"]
+        cap = findings["max_distinct_groups"]
+        group = findings["item_fields"]["group"]
+        reachable = min(findings["max_items"], group["maximum"] - group["minimum"] + 1)
+        assert cap < reachable, (
+            f"max_distinct_groups is {cap} and at most {reachable} distinct groups are reachable "
+            f"(max_items {findings['max_items']}, group range [{group['minimum']}, "
+            f"{group['maximum']}]), so no artifact can ever exceed the cap and every arm of "
+            "check_group_cardinality is dead code that reads as a safety property"
+        )
+
+    def test_the_shipped_cap_clears_the_most_demanding_shipped_scenario(self, policy):
+        # The other direction: a cap low enough to be satisfiable must still be high
+        # enough for the reviews this harness asks for. The most demanding shipped
+        # eval scenario is grouped_cross_file_defect at max_findings 3, so a cap
+        # below 3 would refuse an artifact the harness's own evals grade as correct.
+        cap = policy["artifact_schema"]["findings"]["max_distinct_groups"]
+        assert cap >= 3, (
+            f"max_distinct_groups is {cap}, below the 3 findings the most demanding shipped eval "
+            "scenario asks for, so the cap can refuse an artifact the harness itself requests"
+        )
+
+
 class TestTheIntegerRangeIsEnforced:
     """`maximum` has a reader in both gates, because ADR-0013's `group` needs a
     RANGE and a bound the policy can state but no gate enforces is exactly the
