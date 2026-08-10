@@ -77,7 +77,22 @@ RUN_URL_ENV = "RUN_URL"
 # form ends at the first newline, so a reason containing one would truncate — and
 # the truncated remainder would be parsed as FURTHER OUTPUTS, which is how an output
 # write becomes an output injection.
-_DELIMITER = "SMTITHY_DECLINE_EOF"
+#
+# It carries `+` and `=` because the reason interpolates a finding's PATH, and a path
+# must name a file the pull request touched — so the contributor authors the alphabet
+# the guard in emit() is checking against. The policy path pattern
+# (`\.?[A-Za-z0-9][A-Za-z0-9._/-]*`) admits neither character, so no legal path can
+# contain this string, where an all-caps-and-underscore delimiter was a substring of
+# `src/SMTITHY_DECLINE_EOF.py` and every path like it.
+#
+# That mattered: emit() REFUSES a value carrying the delimiter, so a contributor who
+# named a file after it, on a fork, suppressed their own decline entirely — the
+# "declined and told nobody" state ADR-0014 exists to prevent, reached through the
+# mechanism built to prevent it, and fully self-serve since the contributor controls
+# both the fork-ness and the filename. Fixed by making the delimiter inexpressible in
+# the path grammar rather than by weakening the guard from refusing to escaping, which
+# would trade a fail-closed check for a fail-open one.
+_DELIMITER = "SMTITHY_DECLINE_EOF+="
 
 # NEVER post.MARKER. The reviewer's sticky comment owns that one, and sharing it
 # would make the two lanes fight over a single comment: the reviewer's next push
@@ -102,12 +117,20 @@ NOT_A_FAILURE = (
 
 
 def render(reason: str, *, head_sha: str, ordinals: str, run_url: str) -> str:
-    """The decline comment's body. Harness-authored, every word of it.
+    """The decline comment's body. Harness-authored prose, every sentence of it.
 
-    Nothing model-controlled reaches this comment: a decline names a limitation of
+    Nothing MODEL-controlled reaches this comment: a decline names a limitation of
     the CHANNEL, and there is no field in it a generator writes. That is one of the
     three reasons ADR-0014 refuses a `decline` plan step — it would put a harness
     limitation into model-authored prose.
+
+    Harness-authored is not the same as harness-derived, and the difference matters
+    for anyone reasoning from this docstring. The undeliverable `reason` interpolates
+    the commanded PATHS, and a path is CONTRIBUTOR content: schema-constrained, and
+    verified to name a file the pull request touched, but its text is not ours. It is
+    placed in a code span the way the finding's own path already is, and the schema
+    pattern admits no backtick, so nothing in it composes markdown structure. What it
+    cannot be called is a field no untrusted party influences.
 
     Self-dating, per ADR-0009's addendum B: the body carries the head SHA and the
     ordinals it spoke for, so it never claims a currency a later run must correct.
@@ -156,11 +179,21 @@ def emit(reason: str, *, head_sha: str, ordinals: str) -> None:
     something its run had not established.
 
     A value carrying the heredoc delimiter is REFUSED rather than escaped: it could
-    close the block early and have its remainder read as more outputs. Nothing
-    model-controlled reaches here (every reason is harness prose), so this is defence
-    in depth — worth having because the reason text is the part most likely to be
-    reworded later, and a rewording that introduced a newline would be a silent
-    truncation nobody would connect to this.
+    close the block early and have its remainder read as more outputs.
+
+    That guard is **load-bearing on contributor content**, not defence in depth. The
+    reason is harness PROSE, but the undeliverable reason interpolates the commanded
+    PATHS, and a finding's path must name a file the pull request touched
+    (`path_must_be_changed_file`, enforced at verify.py) — so a contributor authors
+    the alphabet this check runs over. A path that contained the delimiter refused the
+    emit and left the commander with no comment at all, which is why _DELIMITER now
+    carries characters the path grammar cannot express.
+
+    Refusing rather than escaping stays: an escape is a fail-open answer to a value
+    that should not exist, and the run staying red is the point. Closing the heredoc
+    would need a line consisting solely of the delimiter and the path pattern forbids
+    newlines, so nothing untrusted ever reached a trusted effect — what was reachable
+    was SUPPRESSION, and suppression is the failure this channel was built to remove.
     """
     if not (output := os.environ.get("GITHUB_OUTPUT")):
         return

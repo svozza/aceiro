@@ -158,6 +158,31 @@ somewhere new.
 - The reason text is **harness-authored**, so nothing model-controlled reaches the
   comment. The decline names a limitation of the channel; there is no field in it a
   generator writes.
+
+  **Amended 2026-08-10.** The second sentence read "there is no field in it a
+  generator writes" and was true of the *generator* and false of everything else,
+  which is the distinction the sentence elided. The undeliverable reason
+  interpolates the commanded **paths**, and a finding's path must name a file the
+  pull request touched (`path_must_be_changed_file`) — so a **contributor** authors
+  that text. Schema-constrained and verified as provenant, but not harness-derived.
+
+  The consequence was measured, not theoretical: `emit` refuses a value carrying
+  the `GITHUB_OUTPUT` heredoc delimiter, and the policy path pattern admitted
+  `SMTITHY_DECLINE_EOF` as a substring, so a contributor who named a file after it
+  suppressed their own decline on a fork — the "honest refusal nobody is notified
+  of" this ADR exists to prevent, reached through the mechanism built to prevent
+  it, and self-serve since the contributor controls both the fork-ness and the
+  filename. Suppression only: closing the heredoc needs a line consisting solely of
+  the delimiter, the path pattern forbids newlines, and a backtick cannot leave the
+  code span, so nothing untrusted ever reached a trusted effect.
+
+  Fixed by making the delimiter inexpressible in the path grammar (it carries `+`
+  and `=`), **not** by switching the guard from refusing to escaping: an escape is
+  a fail-open answer to a value that should not exist. The durable half is this
+  amendment — a future author reasoning from the old sentence would conclude the
+  delimiter guard is defence in depth, when it is load-bearing on contributor
+  content. Recorded in addendum D's shape: the claim is corrected rather than the
+  code stretched to make it true.
 - A red run on `issue_comment` appears in the Actions tab and **not** on the pull
   request's timeline — there is no check-run surface for a comment-triggered workflow
   the way there is for a push. That is why failing cheaply is not sufficient on its

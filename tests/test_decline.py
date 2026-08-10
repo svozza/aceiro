@@ -20,6 +20,7 @@ import pytest
 
 import decline
 import post
+from conftest import POLICY
 
 
 METADATA_RUN = "https://github.com/o/r/actions/runs/99"
@@ -180,10 +181,10 @@ class TestTheEmittedOutputs:
         # GITHUB_OUTPUT's `name=value` form ends at the first newline, so a
         # multi-line reason would truncate — and the REMAINDER would be parsed as
         # further outputs, which is how an output write becomes an output injection.
-        # Nothing model-controlled reaches here, so this is defence in depth: the
-        # reason text is the part most likely to be reworded, and a rewording that
-        # introduced a newline would be a silent truncation nobody would connect to
-        # this.
+        # Nothing MODEL-controlled reaches here — but the reason interpolates a
+        # contributor-authored path, so this guard runs over contributor content and
+        # is not defence in depth. See
+        # test_no_policy_legal_path_can_suppress_the_decline.
         written = self.emit(tmp_path, monkeypatch, reason="first line\nsecond line")
         assert "second line" in written
         assert "\nsecond line=" not in written, "the reason's second line reads as another output"
@@ -197,6 +198,64 @@ class TestTheEmittedOutputs:
             "as further outputs"
         )
         assert "delimiter" in capsys.readouterr().err
+
+    def test_no_policy_legal_path_can_suppress_the_decline(self):
+        """The guard above runs over CONTRIBUTOR content, so the delimiter must be a
+        string the contributor cannot write.
+
+        The undeliverable reason interpolates the commanded paths, and a finding's
+        path must name a file the pull request touched
+        (`path_must_be_changed_file`) — so the contributor authors the alphabet. The
+        delimiter was `SMTITHY_DECLINE_EOF`, and the policy path pattern admits it as
+        a substring, so `src/SMTITHY_DECLINE_EOF.py` refused the emit and left the
+        commander with no comment: the "declined and told nobody" state ADR-0014
+        exists to prevent, reached through the mechanism built to prevent it and
+        fully self-serve, since the contributor controls both the fork-ness and the
+        filename.
+
+        Asserted against the PATTERN rather than against a list of guesses, and in
+        the direction that matters: it is not that these three spellings are refused,
+        it is that NO legal path can contain the delimiter at all.
+        """
+        import re
+
+        pattern = POLICY["artifact_schema"]["findings"]["item_fields"]["path"]["pattern"]
+        for character in decline._DELIMITER:
+            if re.fullmatch(pattern, f"src/a{character}b.py"):
+                continue
+            break
+        else:
+            pytest.fail(
+                f"every character of {decline._DELIMITER!r} is legal in a path, so a contributor can "
+                "name a file after the delimiter and suppress their own decline — the state "
+                "ADR-0014 exists to prevent, through the mechanism built to prevent it"
+            )
+
+    @pytest.mark.parametrize("hostile", [
+        "SMTITHY_DECLINE_EOF",
+        "src/SMTITHY_DECLINE_EOF.py",
+        "tests/fixtures/SMTITHY_DECLINE_EOF_data.json",
+    ])
+    def test_the_reproduced_suppressing_paths_no_longer_suppress(
+            self, tmp_path, monkeypatch, hostile):
+        # The three spellings measured as policy-legal AND decline-killing. They are
+        # here as the reproduction, with the pattern assertion above as the general
+        # property: a delimiter change that only defeated these three would pass here
+        # and fail there.
+        import re
+
+        pattern = POLICY["artifact_schema"]["findings"]["item_fields"]["path"]["pattern"]
+        assert re.fullmatch(pattern, hostile), (
+            f"{hostile!r} is no longer a legal path, so this case reproduces nothing — the "
+            "suppression would now be blocked by the schema rather than by the delimiter"
+        )
+        reason = f"The command names findings on 2 files (`{hostile}`, `src/app.py`), so the fix..."
+        written = self.emit(tmp_path, monkeypatch, reason=reason)
+        assert "declined=true" in written, (
+            f"a command naming {hostile!r} emitted no decline, so a contributor suppressed their "
+            "own decline by choosing a filename"
+        )
+        assert hostile in written
 
     @pytest.mark.parametrize("field", ["reason", "head_sha", "ordinals"])
     def test_an_empty_value_emits_nothing(self, tmp_path, monkeypatch, field):
