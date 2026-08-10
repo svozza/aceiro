@@ -509,7 +509,7 @@ def check_grouping(findings: list[dict], expect: dict) -> None:
     `grouped_paths` names the paths whose findings are one defect, and asserts BOTH
     directions of that — which is what makes one key enough:
 
-    - the findings on those paths share a group, and
+    - EVERY finding on those paths carries ONE group, and
     - no finding OUTSIDE them carries that group.
 
     The second half is not decoration. Without it, a model that puts every finding in
@@ -517,6 +517,13 @@ def check_grouping(findings: list[dict], expect: dict) -> None:
     grouping at all: it renders a cross-reference between unrelated defects and
     invites a commander to remediate them together. With it, the assertion is about
     the PARTITION rather than about one cell of it.
+
+    Both halves are keyed on the FINDING, not on the path. Keyed on the path, the
+    first half was an intersection of per-path group SETS — satisfied by any one
+    finding per path agreeing — so the two halves of the defect could sit in
+    different groups with a third finding on a wanted path bridging them, and the
+    second half exempted wanted paths so it could not see that either. A scenario
+    grading a claim about which findings are one defect has to count findings.
 
     A bare count of distinct groups was the alternative and is rejected: pinned
     exactly it goes red the moment a run finds a legitimate extra defect (the
@@ -542,7 +549,21 @@ def check_grouping(findings: list[dict], expect: dict) -> None:
             "this scenario grades cannot be evaluated at all"
         )
 
-    shared = set.intersection(*(groups[path] for path in wanted))
+    # Over the FINDINGS on those paths, not over the paths. A path maps to a SET of
+    # groups, so an intersection of per-path sets is satisfied by any one finding per
+    # path agreeing — and the halves of the defect can then be in DIFFERENT groups
+    # while a third finding on a wanted path bridges them. Reproduced: halves in
+    # groups 2 and 1 with a bridging note passed, and the harness then renders
+    # `/fix 2,3` coupling an unrelated note with the consumer half while the real
+    # half of the defect gets no cross-reference at all.
+    #
+    # This is also the `strays` half's blind spot from the other side — that check
+    # exempts wanted paths, so a finding on one of them in a foreign group was
+    # invisible to both halves. One computation closes both, and it stays inside the
+    # existing `shared` rather than raising a new message: two shipped tests match on
+    # the message below.
+    inside = {finding["group"] for finding in findings if finding["path"] in wanted}
+    shared = inside if len(inside) == 1 else set()
     if not shared:
         raise EvalFailure(
             f"findings on {wanted} claim no common group "

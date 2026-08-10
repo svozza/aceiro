@@ -490,9 +490,9 @@ class TestCheckGrouping:
 
     def findings(self, *specs):
         return [
-            {"path": path, "line": 8, "severity": "high", "group": group,
+            {"path": path, "line": 8 + offset, "severity": "high", "group": group,
              "title": "t", "body": "b"}
-            for path, group in specs
+            for offset, (path, group) in enumerate(specs)
         ]
 
     def test_two_findings_claiming_one_group_pass(self):
@@ -530,6 +530,42 @@ class TestCheckGrouping:
         # scenario, or the assertion becomes a cap on findings by the back door.
         run_evals.check_grouping(
             self.findings((self.PRODUCER, 1), (self.CONSUMER, 1), (self.METRICS, 2)),
+            self.EXPECT)
+
+    def test_the_two_HALVES_must_share_a_group_even_when_a_third_finding_bridges_them(self):
+        """Graded at FINDING granularity, not path.
+
+        Keyed on the path, `groups` mapped path -> SET of groups and `shared` was an
+        intersection of those sets — satisfied by any ONE finding per path agreeing.
+        So the two halves of the defect could sit in DIFFERENT groups while a third
+        finding on a wanted path carried the bridging value, and the scenario passed.
+
+        The harness then renders `/fix 2,3`, coupling the unrelated note with the
+        consumer half, while the real half of the defect gets NO cross-reference —
+        which is the exact failure the scenario exists to catch, passing.
+        """
+        with pytest.raises(run_evals.EvalFailure, match="no common group"):
+            run_evals.check_grouping(
+                self.findings((self.PRODUCER, 2), (self.CONSUMER, 1), (self.PRODUCER, 1)),
+                self.EXPECT)
+
+    def test_a_stray_finding_on_a_WANTED_path_is_not_exempt(self):
+        # The `strays` half's blind spot, which is the same defect from the other
+        # side: it skips findings whose path is in `wanted`, so an unrelated third
+        # finding collapsed into the group ON a wanted path was invisible to both
+        # halves. One computation closes both — hence one commit and one message.
+        with pytest.raises(run_evals.EvalFailure, match="no common group"):
+            run_evals.check_grouping(
+                self.findings((self.PRODUCER, 1), (self.CONSUMER, 1), (self.PRODUCER, 2)),
+                self.EXPECT)
+
+    def test_every_finding_on_a_wanted_path_may_carry_the_group(self):
+        # The complement, and the shape the scenario actually wants: a reviewer who
+        # files a third finding on a wanted path AS PART OF the same defect is
+        # grouping honestly, and must pass. This is what stops the assertion becoming
+        # a cap on findings per grouped path.
+        run_evals.check_grouping(
+            self.findings((self.PRODUCER, 1), (self.CONSUMER, 1), (self.PRODUCER, 1)),
             self.EXPECT)
 
     def test_a_grouped_path_with_no_finding_is_a_stated_failure(self):
