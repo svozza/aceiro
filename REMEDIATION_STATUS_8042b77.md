@@ -51,6 +51,41 @@ depicts, for the five nodes whose stated properties changed: the review comment
 plurality wiring), the decline (rendered-order resolution and the delimiter), and
 the generator's eval line (finding-granularity grouping and the pinning lists).
 
+## The ADR observation, resolved
+
+The review filed one ADR observation separately from the findings: ADR-0013's
+same-file paragraph asserts that two findings anchored in one file "produce one
+contiguous replacement — which is correct", and nothing enforces contiguity or
+coverage.
+
+**Resolved by the user, 2026-08-10: strike the claim, do not add the check.** The
+clause is struck and the paragraph amended in addendum D's shape. Reproduced first,
+for two findings on non-adjacent changed lines: two `suggest` steps are refused by
+cardinality; one span covering both plus the lines between VERIFIES and rewrites the
+uncommanded middle; one step covering only one finding VERIFIES and delivers half the
+command.
+
+A coverage check was measured and refused on two grounds. A finding's anchor is not
+where its fix goes — CONTEXT.md's Finding entry says "anchored to the changed line
+responsible, not to the defect" — and `grouped_cross_file_defect` demonstrates it:
+the findings anchor to the use site (line 8) because the import is out of hunk, while
+the correct fix changes the import (line 1). Verified that the correct fix passes
+today and a coverage rule would refuse it. Second, the rule would be `suggest`-only,
+because `patch` carries no `line` argument at all, and `patch` is the kind the
+multi-file case this ADR exists for actually routes to.
+
+The span-rewrite half is **not ADR-0013's and not this branch's**: the placement
+logic in `check_plan_containment` is byte-identical on `main` (compared by AST), and
+the shape is reachable through a single `/fix N`. It is ADR-0005's accepted position —
+anchoring and the bounding caps constrain where a fix may land and how much it may
+change, never which lines within that region. Recorded, not fixed.
+
+That makes three documents corrected this round rather than three checks stretched:
+`check_group_cardinality`'s docstring (F5), ADR-0014's Consequences (F7), and this
+paragraph. Worth naming as a pattern — a claim outliving the code that justified it
+is this project's most common documentation defect, and the review process catches it
+reliably.
+
 ## Two findings were REFUTED — do not re-file them
 
 Recorded so a future round does not re-open a closed question. Both were reached by
@@ -83,19 +118,6 @@ harm?**
   "fix" this.**
 
 ## Deliberately out of scope, with the reason
-
-- **ADR-0013's same-file contiguity claim.** The ADR asserts that "two findings
-  anchored in one file produce one contiguous replacement", and nothing enforces
-  contiguity or coverage: a plan can deliver half a same-file command with nothing
-  refusing, warning or recording it. Unaffected by the S5 refutation, which was
-  about whether the *reconciler* mislabels; this is about what the *ADR claims*. An
-  ADR amendment in addendum D's shape rather than a code fix, and it **needs a
-  decision on whether region coverage becomes a checked property** — so it is left
-  for the owner rather than decided here.
-
-  Note the precedent this round set twice: where a document described a harm the
-  code does not prevent, the sentence was struck (F5's docstring) or amended (F7's
-  ADR) rather than the check strengthened to match the prose.
 
 - **`finding_component`'s non-injectivity.** Pre-existing, refuted as filed, and
   any fix spans `stack.py` and `suggest.py`. See the refutation above.

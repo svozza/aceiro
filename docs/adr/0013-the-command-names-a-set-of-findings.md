@@ -59,8 +59,39 @@ start.
 
 The same-file case needs no new machinery either. `check_plan_cardinality` already
 permits at most one `suggest` step per path, so two findings anchored in one file
-produce one contiguous replacement and route to suggestions — which is correct, and
-is why that rule is unchanged by this ADR.
+route to suggestions, and that rule is unchanged by this ADR.
+
+**Amended 2026-08-10.** This paragraph asserted that two same-file findings "produce
+one contiguous replacement — which is correct", and the clause is struck: nothing
+enforces contiguity or coverage, so the sentence described a property the code does
+not have. What cardinality actually guarantees is *one* `suggest` step per path. Which
+lines that step addresses is not checked. Measured, for two findings on non-adjacent
+changed lines:
+
+- **two `suggest` steps** — refused by cardinality, as the paragraph says;
+- **one span covering both plus the lines between** — verifies, and rewrites the
+  uncommanded lines inside the span;
+- **one step covering only *one* finding** — verifies, delivers half the command, and
+  nothing refuses, warns or records it.
+
+A coverage check was considered and **refused**, because a finding's anchor is not
+where its fix goes. CONTEXT.md's Finding entry is explicit — "anchored to the changed
+line responsible, not to the defect" — and the harness's own grouping scenario is the
+demonstration: the findings anchor to the use site because the import is out of hunk,
+while the correct fix changes the import. The two regions are disjoint *by design*, so
+a rule requiring the fix to cover the anchored line would refuse the answer the evals
+grade as right. It would also be `suggest`-only, since `patch` carries no `line` — and
+`patch` is the kind the multi-file case this ADR exists for actually routes to.
+
+The span-rewrite half is **not this ADR's**: the placement logic is byte-identical on
+`main` and reachable through a single `/fix N`, which predates the set-valued command
+entirely. It is ADR-0005's accepted position — anchoring and the bounding caps
+constrain *where* a fix may land and *how much* it may change, never which lines
+within that region, because that is the unverifiable content question. The human
+merge is the control. Recorded here rather than fixed, and the claim corrected rather
+than the check stretched to make it true — ADR-0009 addendum D's precedent, applied
+twice more in the same pass (`check_group_cardinality`'s docstring, ADR-0014's
+Consequences).
 
 ## The concession, stated plainly
 
