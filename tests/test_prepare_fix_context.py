@@ -308,6 +308,155 @@ class TestTheCommandNamesASet:
         assert self.indices(lane) == [0]
 
 
+class TestTheOrdinalIsResolvedInRenDeredOrder:
+    """`/fix 3` is the third finding of the COMMENT the commander read.
+
+    plan_loop.read_commanded_findings and post.render both resolve through
+    artifact.rendered_findings; this module read review["findings"] directly, which
+    is MODEL order. rendered_findings' own docstring names the hazard: "Resolving
+    that ordinal against the artifact's own order names a different finding than the
+    commander pointed at whenever the model's order is not already sorted, and
+    nothing about that failure is visible: both findings are real."
+
+    Every fixture in this file and all four plan_scenarios reviews are
+    severity-order-invariant, which is why nothing caught it — a SORTED fixture
+    cannot distinguish the two orders, so these carry model orders that are not
+    severity order and would pass under either reading otherwise.
+
+    Nothing requires the model to emit sorted findings: the review prompt states no
+    ordering rule, the verifier has no ordering check, and run_evals refuses to state
+    eval expectations as ordinals BECAUSE the two orders can differ.
+    """
+
+    def finding(self, path, line, severity, group, title):
+        return {"path": path, "line": line, "severity": severity, "group": group,
+                "title": title, "body": "the body"}
+
+    def fork(self, lane):
+        lane["pr"] = {**pr_payload(),
+                      "head": {"sha": "reviewed-sha", "ref": "feature/x",
+                               "repo": {"full_name": "contributor/r"}}}
+        return lane
+
+    # Model order [high app.py, low util.py, medium app.py], which RENDERS as
+    # [high app.py, medium app.py, low util.py]. So `/fix 1,2` names two findings in
+    # ONE file — one contiguous suggestion, legal on a fork.
+    ONE_FILE_WHEN_RENDERED = "one_file_when_rendered"
+    # Model order [low app.py, high app.py, medium util.py], rendering as
+    # [high app.py, medium util.py, low app.py]. So `/fix 1,2` genuinely spans two
+    # paths and has no delivery on a fork.
+    TWO_FILES_WHEN_RENDERED = "two_files_when_rendered"
+
+    def review_for(self, which):
+        if which == self.ONE_FILE_WHEN_RENDERED:
+            findings = [
+                self.finding("src/app.py", 2, "high", 1, "load() breaks callers"),
+                self.finding("src/util.py", 1, "low", 2, "check() is unreachable"),
+                self.finding("src/app.py", 3, "medium", 1, "and the caller here"),
+            ]
+        else:
+            findings = [
+                self.finding("src/app.py", 2, "low", 1, "load() breaks callers"),
+                self.finding("src/app.py", 3, "high", 2, "the caller here"),
+                self.finding("src/util.py", 1, "medium", 2, "check() is unreachable"),
+            ]
+        return {**REVIEW, "findings": findings}
+
+    def test_a_deliverable_command_on_a_fork_is_not_falsely_declined(self, lane):
+        """Direction (a): the decline fires on a command that HAS a delivery.
+
+        The gate failing closed wrongly, and worse than that — the harness posts a
+        `pull-requests: write` comment asserting the command names files it does not
+        name, which is the over-claiming artefact ADR-0009's addendum B is about.
+
+        This is the case test_two_findings_sharing_a_file_on_a_fork_are_honoured
+        exists to protect, with the one thing that fixture lacks: a model order that
+        is not already severity order.
+        """
+        lane["review"] = self.review_for(self.ONE_FILE_WHEN_RENDERED)
+        self.fork(lane)
+        assert run(lane, body="/fix 1,2")["indices"] == [0, 1], (
+            "the rendered ordinals 1,2 are two findings in src/app.py — one contiguous "
+            "suggestion a fork can carry — and the command was declined, because the paths "
+            "were resolved in model order"
+        )
+
+    def test_the_reachable_false_decline_is_the_harness_own_suggested_command(self, lane):
+        """The aggravating fact: the false decline is reachable by OBEYING the harness.
+
+        post.group_cross_reference composes a `/fix N,M` in rendered ordinals and
+        tells the commander to type it verbatim. Under the model-order read, 864 of
+        9472 harness-authored cross-references are declined on a fork with a false
+        claim about what they name. So the round trip the harness advertises is
+        pinned here: its own composed command, fed back through prepare().
+        """
+        import re
+
+        from artifact import rendered_findings, severity_ranks
+        from post import group_cross_reference
+
+        review = self.review_for(self.ONE_FILE_WHEN_RENDERED)
+        rendered = rendered_findings(review, severity_ranks(POLICY))
+        reference = group_cross_reference(rendered, 0)
+        assert reference is not None, "the fixture renders no cross-reference, so it pins no round trip"
+        # Read out of the rendered prose rather than recomposed, so this is the
+        # string a commander can actually copy out of the posted comment.
+        composed = re.search(r"`(/fix [^`]+)`", reference)
+        assert composed, f"the cross-reference composes no /fix command: {reference}"
+        command = composed.group(1)
+
+        lane["review"] = review
+        self.fork(lane)
+        # Every ordinal in the group, so the whole command the harness told the
+        # commander to type must be honoured — not just the two-ordinal prefix.
+        assert run(lane, body=command)["indices"] == sorted(
+            position for position, finding in enumerate(rendered)
+            if finding["group"] == rendered[0]["group"]
+        ), (
+            f"the harness composed {command!r} and prepare() declined it; following the "
+            "cross-reference's own instruction gets the command refused with a false claim "
+            "about which files it names"
+        )
+
+    def test_a_command_with_no_delivery_still_declines(self, lane):
+        """Direction (b): the fast decline does not fire on a command that genuinely
+        has no delivery, which is the entire cost ADR-0014 was written to avoid.
+
+        Under the model-order read prepare() sees only {src/app.py} and composes the
+        context — so the commander spends the approval gate, a model session, both
+        gates, the prover and a `contents: write` job to get a red run in a log they
+        must click into.
+        """
+        lane["review"] = self.review_for(self.TWO_FILES_WHEN_RENDERED)
+        self.fork(lane)
+        with pytest.raises(pfc.Undeliverable) as exc:
+            run(lane, body="/fix 1,2")
+        # The rendered pair is [high src/app.py, medium src/util.py]; model order 0,1
+        # is two findings in src/app.py and would compose a context.
+        assert "src/util.py" in str(exc.value), (
+            "the decline names the wrong files, so the reason is resolved in a different "
+            "order than the paths it decided on"
+        )
+
+    def test_the_range_check_counts_the_findings_and_not_their_order(self, lane):
+        # The order-invariant half, kept honest: rendered_findings is a permutation,
+        # so the past-the-end refusal must be unchanged by the switch. This read fed
+        # ONLY this check before the decline started reading a finding's content.
+        lane["review"] = self.review_for(self.ONE_FILE_WHEN_RENDERED)
+        with pytest.raises(pfc.Refused, match=r"\[4\] but the posted review has 3"):
+            run(lane, body="/fix 1,4")
+
+    def test_the_review_written_keeps_model_order(self, lane):
+        # review.json is the artifact as posted, and every downstream reader
+        # re-renders it. Sorting it here would make the file disagree with the
+        # artifact the run published, and the ordinals in commanded_index.json are
+        # rendered positions resolved against it.
+        lane["review"] = self.review_for(self.ONE_FILE_WHEN_RENDERED)
+        run(lane, body="/fix 1")
+        written = json.loads((lane["output"] / "review.json").read_text())
+        assert written == lane["review"]
+
+
 class TestTheDeclineChannelRepliesToExactlyTwoRefusals:
     """ADR-0014: a decline is a reply the command channel makes, and WHICH refusals
     get one is a security property rather than a preference.

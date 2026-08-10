@@ -24,7 +24,9 @@ The preconditions, and why each is this module's rather than a gate's:
   a model call to fail closed later, and this is the one place a commander sees why.
   One bad ordinal refuses the whole command: the commander asserted these findings
   take one remediation (ADR-0013), so the subset that resolves is not what they
-  asked for.
+  asked for. Resolved in RENDERED order (`artifact.rendered_findings`), the same
+  order `plan_loop` and `post.render` use, because `/fix 3` is the third finding of
+  the comment the commander read and `review.json` holds model order.
 
 The composed directory is prepare_context's, plus the two files that make the
 commanded finding derivable rather than supplied (ADR-0007's second addendum):
@@ -44,7 +46,7 @@ import sys
 from pathlib import Path
 from typing import cast
 
-from artifact import POLICY_PATH
+from artifact import POLICY_PATH, rendered_findings, severity_ranks
 from author_trust import is_trusted
 from canonicalize import read_harness_text
 from decline import emit as emit_decline
@@ -241,7 +243,16 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
             f"the posted review for {head_sha} is not one the verifier accepts ({exc}); no fix"
         ) from exc
 
-    findings = review["findings"]
+    # RENDERED order, the same resolution plan_loop.read_commanded_findings and
+    # post.render use: `/fix 3` is the third finding of the comment the commander
+    # read, and review.json holds model order. This read fed only the
+    # order-invariant range check below until the decline started reading a
+    # finding's CONTENT — after which model order names a different real finding
+    # whenever the model's order is not already sorted, and the decline fires on the
+    # wrong command in both directions. The harness reaches that case by its own
+    # advice: post.group_cross_reference composes a `/fix N,M` in rendered ordinals
+    # and tells the commander to type it verbatim.
+    findings = rendered_findings(review, severity_ranks(policy))
     # Every ordinal, and one out of range refuses the WHOLE command: the commander
     # asserted that these findings take one remediation, so honouring the subset
     # that happens to resolve would deliver a scope nobody named (ADR-0013).
