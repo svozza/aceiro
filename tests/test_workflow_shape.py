@@ -856,6 +856,107 @@ class TestTheDeclineLaneRepliesWithoutWideningTheCommandJob:
         )
 
 
+class TestTheDeclineIsWiredEndToEnd:
+    """The producers write job OUTPUTS and the poster reads ENVIRONMENT VARIABLES,
+    and the only thing joining the two is this workflow's `env:` block.
+
+    Nothing else could check that join, and a one-character typo in either name is
+    silent: the poster reads an empty value, `main()` refuses, and the decline becomes
+    a red run that posts nothing — the exact "declined to fix something and told
+    nobody" case ADR-0007's third addendum forbids, arriving through the mechanism
+    ADR-0014 built to prevent it. Verified reachable: renaming `decline_reason` to
+    `decline_rason` in the workflow left the whole suite green before this existed.
+
+    So both directions are asserted against decline.OUTPUT_ENV, which is the one
+    place the pairing is declared.
+    """
+
+    FIX = "ai-pr-fix.yml"
+
+    def poster(self):
+        text = (WORKFLOWS / self.FIX).read_text()
+        return next(s for s in parse_steps(text, "decline") if "decline.py" in s.get("run", ""))
+
+    def test_every_output_the_poster_needs_is_mapped_to_its_env_var(self):
+        import decline
+
+        poster = self.poster()
+        for output, env_var in decline.OUTPUT_ENV.items():
+            value = poster.get(f"env.{env_var}")
+            assert value is not None, (
+                f"the poster reads {env_var} but the workflow sets no env.{env_var}, so "
+                f"decline.py refuses and the commander is told nothing"
+            )
+            assert f"outputs.{output}" in value, (
+                f"env.{env_var} is {value!r}, which does not read outputs.{output} — the "
+                "producer writes that name, so the poster would see an empty string"
+            )
+
+    def test_every_mapped_env_var_reads_BOTH_producers(self):
+        # Two producers, and the decline fires on either (ADR-0014). A value reading
+        # only `command` leaves every AlreadyDelivered decline empty — and since that
+        # is the refusal a maintainer is most likely to want an answer to, it is the
+        # one that must not silently post a blank.
+        import decline
+
+        poster = self.poster()
+        for output, env_var in decline.OUTPUT_ENV.items():
+            value = poster[f"env.{env_var}"]
+            for producer in ("command", "stack"):
+                assert f"needs.{producer}.outputs.{output}" in value, (
+                    f"env.{env_var} does not read {producer}'s {output}, so a decline derived "
+                    f"by {producer} posts an empty value there"
+                )
+
+    def test_the_poster_reads_no_env_var_no_producer_writes(self):
+        # The reverse direction, which is what makes this a mapping rather than a
+        # checklist: an env var the workflow sets from an output nobody writes is a
+        # value that is always empty, and the poster refuses on it — so a decline that
+        # should have posted never does.
+        import decline
+
+        poster = self.poster()
+        declared = set(decline.OUTPUT_ENV.values()) | {decline.RUN_URL_ENV}
+        # GITHUB_TOKEN and PR_NUMBER come from the event and the runtime, not a producer.
+        from_the_event = {"GITHUB_TOKEN", "PR_NUMBER"}
+        for key in poster:
+            if not key.startswith("env."):
+                continue
+            name = key.removeprefix("env.")
+            assert name in declared | from_the_event, (
+                f"the workflow sets env.{name}, which decline.py declares no reader for; "
+                "either it is dead or the module reads a name nothing sets"
+            )
+
+    def test_the_flag_the_condition_reads_is_the_flag_the_writer_writes(self):
+        # The `if:` gates the whole job, so a mismatch here means the poster never
+        # runs at all — the loudest version of the same silence.
+        import decline
+
+        condition = job_condition((WORKFLOWS / self.FIX).read_text(), "decline")
+        for producer in ("command", "stack"):
+            assert f"needs.{producer}.outputs.{decline.DECLINED_OUTPUT} == 'true'" in condition, (
+                f"the decline's condition does not read {producer}'s "
+                f"{decline.DECLINED_OUTPUT!r} output as the writer spells it"
+            )
+
+    def test_both_producers_declare_every_output_the_poster_reads(self):
+        # A job cannot expose an output it does not declare in its own `outputs:`
+        # block — the value would be empty however correctly the step wrote it. This
+        # is the third place the same name has to appear, and the only one the two
+        # tests above cannot see.
+        import decline
+
+        text = (WORKFLOWS / self.FIX).read_text()
+        for producer in ("command", "stack"):
+            block = job_block(text, producer)
+            for output in (*decline.OUTPUT_ENV, decline.DECLINED_OUTPUT):
+                assert f"{output}:" in block, (
+                    f"job {producer!r} does not declare the output {output!r}, so it is empty "
+                    "downstream whatever the step wrote to GITHUB_OUTPUT"
+                )
+
+
 class TestRunsAreSerializedPerPullRequest:
     """Two runs for one PR share the sticky comment's marker and bot login, so
     without a per-PR group they contend for one comment and the loser writes

@@ -44,11 +44,34 @@ from pathlib import Path
 from github_api import fail
 from post import resolve_bot_login, upsert_comment
 
-# The outputs a producer job writes and this job reads. Declared as one set for the
-# same reason prepare_fix_context.STEP_OUTPUTS is: a writer emitting a subset leaves
-# the reader with empty strings, and a decline naming no reason or no head is a
-# comment that tells the commander nothing while looking like an answer.
-OUTPUTS = ("decline_reason", "decline_head_sha", "decline_ordinals")
+# The outputs a producer job writes, paired with the environment variable this job
+# reads each one as. ONE mapping rather than two lists, because the two ends are
+# joined only by the workflow YAML and nothing else could check the join: a typo in
+# either name leaves the reader with an empty string, and `main()` then refuses —
+# so the decline is a red run that posts nothing, which is exactly the "declined to
+# fix something and told nobody" case ADR-0007's third addendum forbids, arriving
+# through the mechanism built to prevent it. test_workflow_shape asserts the
+# workflow's `env:` block against this mapping in both directions.
+#
+# Declared as one set for the same reason prepare_fix_context.STEP_OUTPUTS is: a
+# writer emitting a subset leaves the reader with empty strings, and a decline naming
+# no reason or no head is a comment that tells the commander nothing while looking
+# like an answer.
+OUTPUT_ENV = {
+    "decline_reason": "REASON",
+    "decline_head_sha": "HEAD_SHA",
+    "decline_ordinals": "ORDINALS",
+}
+
+OUTPUTS = tuple(OUTPUT_ENV)
+
+# The flag the `decline` job's `if:` reads. Named here rather than spelled in the
+# writer, so the workflow's condition can be checked against the writer's output.
+DECLINED_OUTPUT = "declined"
+
+# Read from the run rather than from a producer, so it is not in OUTPUT_ENV: a
+# decline's footer links the run that POSTED it.
+RUN_URL_ENV = "RUN_URL"
 
 # The heredoc delimiter for a multi-line output value. GITHUB_OUTPUT's `name=value`
 # form ends at the first newline, so a reason containing one would truncate — and
@@ -160,7 +183,7 @@ def emit(reason: str, *, head_sha: str, ordinals: str) -> None:
         # LAST, so the flag the job's `if:` reads is only true once every value it
         # needs has been written. A decline job firing on a partial write would post
         # a comment with holes in it.
-        handle.write("declined=true\n")
+        handle.write(f"{DECLINED_OUTPUT}=true\n")
 
 
 def main() -> int:
@@ -170,7 +193,7 @@ def main() -> int:
     # is a comment that tells the commander nothing while looking like an answer —
     # and an empty ORDINALS would make the body claim a command nobody typed.
     values = {}
-    for name in ("REASON", "HEAD_SHA", "ORDINALS", "RUN_URL"):
+    for name in (*OUTPUT_ENV.values(), RUN_URL_ENV):
         value = os.environ.get(name, "")
         if not value:
             fail(
@@ -180,10 +203,10 @@ def main() -> int:
         values[name] = value
 
     body = render(
-        values["REASON"],
-        head_sha=values["HEAD_SHA"],
-        ordinals=values["ORDINALS"],
-        run_url=values["RUN_URL"],
+        values[OUTPUT_ENV["decline_reason"]],
+        head_sha=values[OUTPUT_ENV["decline_head_sha"]],
+        ordinals=values[OUTPUT_ENV["decline_ordinals"]],
+        run_url=values[RUN_URL_ENV],
     )
     # Ownership is marker AND the login the write token resolves to, unchanged —
     # anyone can paste the marker into their own comment.
