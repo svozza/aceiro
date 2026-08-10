@@ -1420,6 +1420,189 @@ class TestTheAllowGate:
         assert len(stacked) == 1
 
 
+
+# ------------------------------ the whole commanded set reaches the gate ---
+
+# Two findings on the two files the plan fixtures change, and a plan patching both.
+# A SECOND bundle rather than a flip of `artifact_dir`, because the existing tests
+# depend on that fixture being singular: they hardcode `findings[0]` and assert a
+# one-element patch list, so widening it would rewrite what they measure instead of
+# adding what is missing.
+TWO_FINDINGS = [
+    {"path": "src/app.py", "line": 2, "severity": "high", "group": 1,
+     "title": "load() breaks callers", "body": "the body"},
+    {"path": "src/util.py", "line": 1, "severity": "low", "group": 1,
+     "title": "check() takes an argument its caller does not pass",
+     "body": "the other body"},
+]
+
+
+def util_patch(step_id="s1"):
+    return {"id": step_id, "kind": "patch",
+            "args": {"path": "src/util.py", "old": "def check(path):\n",
+                     "new": "def check(path=None):\n"}}
+
+
+@pytest.fixture
+def plural_env(delivery_env):
+    """delivery_env with TWO commanded findings and a plan touching both files.
+
+    Two paths mean no suggestion can carry the fix, so this decides stacked_pr —
+    which is also ADR-0013's motivating case and stacked delivery's only reachable
+    trigger.
+    """
+    (delivery_env / "review.json").write_text(json.dumps({
+        "summary": "`load` gained a check its callers do not expect.",
+        "findings": TWO_FINDINGS,
+        "residual_risk": "",
+    }))
+    (delivery_env / "commanded_index.json").write_text(json.dumps({"indices": [0, 1]}))
+    (delivery_env / "plan.json").write_text(json.dumps(
+        {"steps": [patch(), util_patch(), push(), open_pr()]}))
+    return delivery_env
+
+
+class TestTheWholeCommandedSetReachesTheGate:
+    """The executor hands `verify_plan` the SET the command named, not its first
+    element — this module's own docstring: "The key is computed over the SET of
+    commanded findings (ADR-0013), so `/fix 3,1` and `/fix 1,3` are one command
+    while `/fix 1` and `/fix 1,3` are two."
+
+    The gate is NOT the gap. `check_commanded_scope`'s plurality has real coverage:
+    test_plan_verify.py's test_a_fix_missing_ANY_commanded_path_rejects parametrizes
+    over both missing paths and kills a `[:1]` narrowing inside the gate. What was
+    unasserted is the producer-to-consumer WIRING, the same shape as this branch's
+    recorded decline_reason/decline_rason gap and fixed the same way.
+
+    Why nothing caught it: the only `indices` fixture in this file was
+    `{"indices": [0]}` against a one-finding review.json, so `xs`, `xs[:1]`,
+    `reversed(xs)` and `(f(xs[0]),)` were indistinguishable across all 130 tests.
+    The two tests that LOOK like they pin the set changed only their syntax to the
+    plural shape, not their data.
+    """
+
+    def one_finding_key(self):
+        return stack.fix_key(
+            1, "reviewed-sha", TWO_FINDINGS[:1],
+            anchor_signatures(PLAN_DIFF, content_source=tree_source()))
+
+    def both_findings_key(self):
+        return stack.fix_key(
+            1, "reviewed-sha", TWO_FINDINGS,
+            anchor_signatures(PLAN_DIFF, content_source=tree_source()))
+
+    def test_the_dedup_key_is_over_both_findings(self, plural_env, stacked, monkeypatch):
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert stacked[0]["key"] == self.both_findings_key()
+
+    def test_the_key_DIFFERS_from_the_one_finding_key(self, plural_env, stacked, monkeypatch):
+        # This half is what makes the assertion above a SET assertion rather than a
+        # shape assertion: `fix_key(..., commanded_findings[:1], ...)` produces a
+        # well-formed key of the right type, and only the comparison with the
+        # narrowed key can tell them apart. ADR-0013: `/fix 1` and `/fix 1,3` are two
+        # commands, so refusing the second as a duplicate of the first would mean a
+        # commander who narrowed too far could never widen.
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert stacked[0]["key"] != self.one_finding_key(), (
+            "the delivered key is the FIRST commanded finding's key, so /fix 1 and /fix 1,2 "
+            "dedup as one command and the widening is refused as a duplicate"
+        )
+
+    def test_the_gate_receives_both_commanded_findings(self, plural_env, stacked, monkeypatch):
+        # The wiring itself, spied at the gate's own parameter. Nothing behind
+        # verify_plan re-checks this — the prover is finding-blind — so a narrowing
+        # here is the one mutation that genuinely opens the gate.
+        seen = []
+        real = execute_plan.verify_plan
+
+        def spy(*args, **kwargs):
+            seen.append(kwargs.get("commanded_findings"))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(execute_plan, "verify_plan", spy)
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        assert len(seen) == 1 and seen[0] is not None
+        assert [(f["path"], f["line"]) for f in seen[0]] == [
+            ("src/app.py", 2), ("src/util.py", 1),
+        ], (
+            "the gate quantifies over what it is HANDED, so a narrowed set means it admits "
+            "a plan that never touches the second commanded file"
+        )
+
+    def test_a_plan_missing_the_second_commanded_path_is_refused(
+            self, plural_env, stacked, monkeypatch, capsys):
+        # The consequence, end to end and behavioural rather than by inspection: with
+        # the set narrowed to its first element this plan VERIFIES, and half the
+        # commanded fix is delivered as though it were the whole of it.
+        (plural_env / "plan.json").write_text(json.dumps(
+            {"steps": [patch(), push(), open_pr()]}))
+        stub_pr(monkeypatch, pr_payload())
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        assert stacked == []
+        assert "src/util.py" in capsys.readouterr().err, (
+            "a plan touching only the first commanded file was delivered; the executor handed "
+            "the gate a narrowed set, and check_commanded_scope quantifies over what it is given"
+        )
+
+    def test_the_retraction_scope_carries_both_findings_in_ordinal_order(
+            self, plural_env, posted, monkeypatch):
+        # The suggestion path's half of the same wiring. Two findings in ONE file so
+        # the plan stays a single suggestion — the shape check_plan_cardinality
+        # permits — because scope is a fact about the COMMAND and not about how many
+        # files the delivery touched.
+        import suggest as suggest_module
+
+        same_file = [
+            TWO_FINDINGS[0],
+            {**TWO_FINDINGS[0], "line": 3, "severity": "low",
+             "title": "and its caller here"},
+        ]
+        (plural_env / "review.json").write_text(json.dumps({
+            "summary": "`load` gained a check its callers do not expect.",
+            "findings": same_file,
+            "residual_risk": "",
+        }))
+        (plural_env / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
+        stub_pr(monkeypatch, pr_payload())
+        execute_plan.main()
+        signatures = anchor_signatures(PLAN_DIFF, content_source=tree_source())
+        expected = tuple(suggest_module.finding_identity(f, signatures) for f in same_file)
+        assert len(expected) == 2 and expected[0] != expected[1], (
+            "the two findings hash to one key, so this fixture cannot tell a set of two from "
+            "a set of one"
+        )
+        assert posted[0]["commanded_finding_keys"] == expected, (
+            "the reconciler was handed a narrowed scope, so a live suggestion this command "
+            "DID speak for is read as somebody else's and left standing"
+        )
+
+    def test_the_decline_names_every_ordinal_the_commander_typed(
+            self, plural_env, stacked, monkeypatch, tmp_path):
+        # ADR-0009 addendum B's self-dating rule, plurally. A decline naming `1` for a
+        # `/fix 1,2` is a comment about a command nobody typed, and it is the state
+        # ADR-0014 exists to remove reached through the mechanism built to remove it.
+        def already(*args, **kwargs):
+            raise execute_plan.AlreadyDelivered("already delivered at #12")
+
+        monkeypatch.setattr(execute_plan, "deliver_stacked_pr", already)
+        stub_pr(monkeypatch, pr_payload())
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        written = output.read_text()
+        ordinals = written.split("decline_ordinals<<")[1].splitlines()[1]
+        assert ordinals == "1,2", (
+            f"the decline speaks for {ordinals!r}; the commander typed two ordinals and the "
+            "comment names a different command"
+        )
+
+
 class TestAnEmptyGateInputIsRefused:
     """A required env var that is present but EMPTY must fail closed.
 
