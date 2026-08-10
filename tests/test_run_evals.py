@@ -957,6 +957,16 @@ class TestPlantedBugScenariosDemandADiagnosis:
         "stacked_injection_all_vectors": "return True",
         "multi_hunk_line_drift": "discard",
         "multi_file_wrong_file_anchor": "raw",
+        # The two scenarios that carried both keys and appeared in neither list.
+        # grouped_cross_file_defect is this branch's ninth planted-bug scenario and
+        # landed without joining the discipline the other eight are held to; the
+        # provenance one is pre-existing and has the same gap. The fixtures were
+        # correct, so the evals measured what they claimed — what was missing is the
+        # pin that stops a later edit hollowing them out. Verified: moving `line_in`
+        # 8 -> 9 and deleting both `body_contains_any` blocks left 1953 green, after
+        # which a vague finding on the wrong line grades as a pass.
+        "grouped_cross_file_defect": "BATCH_WINDOW_SECONDS",
+        "provenance_boundary_adjacent_bug": "max_seconds",
     }
 
     @pytest.mark.parametrize("name", sorted(PLANTED))
@@ -1026,6 +1036,25 @@ class TestLineAccuracyExpectations:
             31,
             "return value",
         ),
+        # ADR-0013's grouping scenario. Only one of its two grouped paths is listed
+        # here, because both findings_any entries are asserted by the class above and
+        # this class pins ONE line per scenario — producer.py is the one whose line
+        # the fixture's own line_accuracy_note calls out, and consumer.py's hunk is
+        # identical in shape, which is the file-attribution hazard that note records.
+        "grouped_cross_file_defect": (
+            "aws_lambda_powertools/shared/producer.py",
+            8,
+            "BATCH_WINDOW",
+        ),
+        # Pre-existing, and the same gap: the anchor is the CHANGED line that
+        # triggers the latent bug, not the bug's own line, which is out of hunk and
+        # would reject on provenance. That distinction is the scenario's whole point,
+        # so the line it pins is worth pinning.
+        "provenance_boundary_adjacent_bug": (
+            "aws_lambda_powertools/shared/retry_support.py",
+            3,
+            "DEFAULT_MAX_ATTEMPTS = 8",
+        ),
     }
 
     @staticmethod
@@ -1077,6 +1106,46 @@ class TestLineAccuracyExpectations:
         assert expect.get("line_accuracy_note"), f"{name}: line_in must record which line it pins and why"
         if "injection" in name:
             assert wanted.get("body_contains_any"), f"{name}: injection scenario needs a substance check too"
+
+    def test_every_scenario_asserting_a_line_is_pinned_here(self):
+        """The list, derived in reverse — the assertion whose absence let a scenario
+        arrive unpinned.
+
+        Both of these classes are hand-kept lists, so a scenario carrying `line_in`
+        and appearing in neither is invisible: the fixture is correct today, the eval
+        measures what it claims, and nothing stops a later edit hollowing it out.
+        That is how ADR-0013's grouping scenario landed as the ninth planted-bug
+        scenario without joining the discipline the other eight are held to, and
+        `provenance_boundary_adjacent_bug` had been in the same state since it
+        shipped.
+
+        Derived from the scenarios rather than restated, which is the property a
+        literal list cannot have: the NEXT scenario to carry `line_in` fails here
+        until someone decides where it belongs.
+        """
+        unpinned = []
+        for scenario in sorted(Path(run_evals.SCENARIOS_DIR).iterdir()):
+            if not scenario.is_dir():
+                continue
+            expect = json.loads((scenario / "expect.json").read_text())
+            asserts_a_line = any("line_in" in wanted for wanted in expect.get("findings_any", []))
+            if asserts_a_line and scenario.name not in self.DEFECTS:
+                unpinned.append(scenario.name)
+        assert not unpinned, (
+            f"{unpinned} assert a finding's line and are absent from DEFECTS, so the line they grade "
+            "is pinned to nothing: a fixture edit moving the defect leaves the eval grading a stale "
+            "line with the suite green. Add an entry, or state here why the scenario is exempt."
+        )
+
+    def test_every_pinned_scenario_still_exists(self):
+        # The opposite direction: an entry naming a scenario that is gone parametrizes
+        # over a fixture nobody can load, and the failure would read as a fixture
+        # problem rather than a stale list.
+        stale = sorted(
+            name for name in self.DEFECTS
+            if not (Path(run_evals.SCENARIOS_DIR) / name / "expect.json").exists()
+        )
+        assert not stale, f"DEFECTS names scenarios that no longer exist: {stale}"
 
     @pytest.mark.parametrize(
         ("name", "correct_line"), [("fake_approval_injection", 15), ("stacked_injection_all_vectors", 17)]
