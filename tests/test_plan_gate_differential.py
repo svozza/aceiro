@@ -11,7 +11,6 @@ Requires the built prover (`npm run build`) and skips loudly without it; a
 silently-skipped differential is the failure mode this file exists to prevent.
 """
 
-import ast
 import json
 import subprocess
 import sys
@@ -735,123 +734,10 @@ def test_the_coverage_list_names_every_shipped_key():
     assert not stale, f"SINGLE_GATE_KEYS names keys policy.json does not have: {sorted(stale)}"
 
 
-# ------------------------------------------- the coverage assertion, REVERSED ---
-
-# The fix lane, being every module that runs between a `/fix` command and a
-# delivery. `group` must have NO reader in ANY of them (ADR-0013).
-#
-# prepare_fix_context composes the plan context, plan_loop derives the commanded
-# findings and builds the prompt, plan_verify is the gate. execute_plan and the
-# delivery modules are here for the same reason and a sharper one: they hold the
-# write token, so a reader there would be the group deciding what gets written.
-FIX_LANE_FILES = [
-    REPO_ROOT / "src" / "smtithy" / name for name in (
-        "prepare_fix_context.py", "plan_loop.py", "plan_verify.py",
-        "execute_plan.py", "route_delivery.py", "stack.py", "suggest.py",
-        "fix_command.py",
-    )
-]
-
-# The disclosure field, read from the policy rather than restated so a rename
-# cannot leave this assertion guarding a field that no longer exists.
-GROUP_FIELD = "group"
-
-
-def _fix_lane_readers(field: str) -> list[str]:
-    """Every fix-lane file whose CODE could read `field` off a finding.
-
-    Tokenized rather than grepped, in two directions, because both kinds of false
-    answer make this assertion lie.
-
-    False POSITIVES would make it unmaintainable, and there are two sources. The
-    ADRs and this repo's prose discuss the field constantly — including the sentence
-    explaining why nothing reads it — so comments and docstrings are excluded. And
-    `match.group(1)` and "concurrency group" are not readers of a finding's field:
-    an attribute access after `.` is excluded, which is what distinguishes
-    `re.Match.group` from a name bound to this field's value.
-
-    False NEGATIVES would make it worthless. A finding is a dict, so the way to read
-    the field is a subscript or a `.get` with a STRING key — which is why string
-    literals count wherever they appear in code, including a tuple of field names a
-    loop iterates. A bare name equal to the field counts too, since that is what a
-    local holding the value would be called.
-    """
-    import tokenize
-
-    found = []
-    for path in FIX_LANE_FILES:
-        with path.open("rb") as handle:
-            tokens = [
-                token for token in tokenize.tokenize(handle.readline)
-                if token.type not in (tokenize.COMMENT, tokenize.NL)
-            ]
-        # A STRING whose whole statement is that string is a docstring: it follows
-        # INDENT, NEWLINE or the file's ENCODING marker and nothing else.
-        docstring_after = (tokenize.INDENT, tokenize.NEWLINE, tokenize.ENCODING, tokenize.DEDENT)
-        for index, token in enumerate(tokens):
-            previous = tokens[index - 1] if index else None
-            if token.type == tokenize.STRING:
-                if previous is not None and previous.type in docstring_after:
-                    continue
-                try:
-                    value = ast.literal_eval(token.string)
-                except (ValueError, SyntaxError):
-                    continue
-                if value == field:
-                    found.append(path.name)
-                    break
-            elif token.type == tokenize.NAME and token.string == field:
-                if previous is not None and previous.string == ".":
-                    continue  # an attribute (match.group), not this field
-                found.append(path.name)
-                break
-    return found
-
-
-def test_the_group_field_has_NO_reader_in_the_fix_lane():
-    """ADR-0013's load-bearing condition, and the ADR says the disclosure should be
-    refused outright without it.
-
-    A group is a CLAIM that some findings are one defect, and whether the claim is
-    true is ADR-0005's unverifiable content question. So it is advisory prose to the
-    human choosing what to command, and what authorises a write is the ordinals that
-    human typed — never the group.
-
-    `/fix 1` must not expand to finding 1's group. The drift from advisory to
-    authorising is one convenience commit wide, and the resulting scope would be
-    MODEL-CHOSEN, which is the candidate ADR-0013 opens by refusing. This is
-    ADR-0004's policy-coverage assertion run in reverse: instead of "every key has a
-    reader", it is "this key has none", in the lane where a reader would matter.
-    """
-    readers = _fix_lane_readers(GROUP_FIELD)
-    assert not readers, (
-        f"the fix lane reads {GROUP_FIELD!r} in {readers}. A group is advisory prose to a "
-        "human; a reader in this lane makes it authorise a write, which is the "
-        "model-chosen scope ADR-0013 refuses. If a group must genuinely be read here, "
-        "that is an ADR decision and not a test to update."
-    )
-
-
-def test_the_reverse_assertion_can_actually_see_a_reader():
-    """The reverse coverage assertion is only worth anything if it FAILS on a real
-    reader, and a stripped-comment corpus is exactly where that can quietly stop
-    being true — an over-eager strip would leave it scanning nothing.
-
-    So it is calibrated against a field the lane demonstrably does read.
-    """
-    assert _fix_lane_readers("commanded_findings"), (
-        "the corpus this assertion scans no longer contains a field the fix lane "
-        "provably reads, so it would pass with any field at all"
-    )
-
-
-def test_the_group_field_is_the_one_the_policy_ships():
-    # Restated, this constant would keep guarding `group` after a rename, and the
-    # new field would have no assertion at all.
-    item_fields = json.loads(POLICY_PATH.read_text())["artifact_schema"]["findings"]["item_fields"]
-    assert GROUP_FIELD in item_fields, (
-        f"policy.json's findings carry no {GROUP_FIELD!r} field, so this assertion guards nothing"
-    )
+# ADR-0013's reverse coverage assertion — `group` has no reader in the fix lane —
+# was written here and lives in test_group_is_advisory.py. It is a pure-Python
+# token scan and this file skips without the built prover, so its reach depended
+# on a build it does not use.
 
 
 @pytest.mark.parametrize(
