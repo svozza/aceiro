@@ -545,6 +545,26 @@ class TestTheCommandNamesASetOfFindings:
          "title": "check() is unreachable", "body": "the other body"},
     ]
 
+    # A full artifact at `max_items`, so an ordinal of 10 is reachable. Titled by
+    # index, because the canonical-order assertion has to name WHICH finding resolved
+    # and a two-finding fixture cannot carry an index large enough to distinguish
+    # sorted order from insertion order.
+    #
+    # Already in severity order, so `rendered_findings` is the identity here and the
+    # assertion is about the ORDINAL sort alone. Rendered order is a separate property
+    # with its own tests; mixing the two would mean a failure could be either.
+    TEN_FINDINGS = [
+        {"path": path, "line": line, "severity": severity, "group": group,
+         "title": f"defect {index}", "body": "the body"}
+        for index, (path, line, severity, group) in enumerate([
+            ("src/app.py", 1, "critical", 1), ("src/app.py", 2, "critical", 1),
+            ("src/app.py", 3, "critical", 1), ("src/app.py", 4, "high", 2),
+            ("src/util.py", 1, "high", 2), ("src/util.py", 2, "high", 2),
+            ("src/app.py", 1, "medium", 3), ("src/app.py", 2, "medium", 3),
+            ("src/app.py", 3, "low", 4), ("src/app.py", 4, "low", 4),
+        ])
+    ]
+
     def context(self, tmp_path, *indices, findings=None):
         return TestPlanUserMessage().write_context(
             tmp_path, findings=findings or self.TWO_FINDINGS, indices=indices)
@@ -562,8 +582,20 @@ class TestTheCommandNamesASetOfFindings:
         # records the first as a comment's representative, so a resolution order
         # that varied with the file's spelling would vary the comment's marker
         # between two runs of one command.
-        findings = plan_loop.read_commanded_findings(self.context(tmp_path, 1, 0), POLICY)
-        assert [f["severity"] for f in findings] == ["high", "low"]
+        #
+        # The data is [9, 1], not (1, 0), and the difference is the whole assertion.
+        # `sorted(set(indices))` -> `list(set(indices))` left this file at 66 passed,
+        # because CPython's small-int set iteration happens to yield small values in
+        # order: list(set([1, 0])) IS [0, 1], so the old data could not distinguish
+        # the two. [9, 1] diverges — sorted gives [1, 9], insertion-ordered gives
+        # [9, 1] — and ordinals of 10 are legal under max_items: 10, so `/fix 10,2`
+        # is a real command rather than a contrived one.
+        findings = plan_loop.read_commanded_findings(
+            self.context(tmp_path, 9, 1, findings=self.TEN_FINDINGS), POLICY)
+        assert [f["title"] for f in findings] == ["defect 1", "defect 9"], (
+            "the ordinals resolved in the order the file spelled them rather than the canonical "
+            "one, so two runs of one command can record different representatives"
+        )
 
     def test_a_repeated_ordinal_resolves_to_one_finding(self, tmp_path):
         # The parse collapses duplicates, and this agrees rather than relying on it:
