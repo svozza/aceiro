@@ -1524,6 +1524,29 @@ class TestTheSpentWrapperStatesOnlyWhatItsRunEstablished:
         planted = f"{suggest.REVIEW_MARKER}\nlive\n{suggest.SUPERSEDED_MARKER}"
         assert not suggest.is_superseded({"body": planted})
 
+    def test_the_STAMP_is_read_from_line_one_only(self):
+        # The counterpart the sibling above has and this reader did not.
+        # delivered_stamp's own docstring says "From the marker line only, like every
+        # other marker here", and DELIVERED_RE's comment says "Read back from a
+        # position this module AUTHORS" — but nothing failed when the search was
+        # widened to the whole body.
+        #
+        # Under the whole-body read, a stamp anywhere below line 1 becomes that
+        # wrapper's recorded scope, and the spent body then states it as fact: "This
+        # review delivered suggestions for `src/victim.py` at `attacker-sha`, and it
+        # is spent." The scope of a spent artefact is exactly the claim ADR-0009's
+        # addendum B made self-dating about, so a position rule that holds by
+        # coincidence is not holding.
+        planted = (f"{suggest.REVIEW_MARKER}\nolder wrapper\n"
+                   f"{suggest.delivered_marker('attacker-sha', ['src/victim.py'])}")
+        assert suggest.delivered_stamp({"body": planted}) is None, (
+            "a stamp below the marker line was read as the wrapper's recorded scope, so the "
+            "spent body asserts a head and a path list this wrapper never delivered for"
+        )
+        # And the consequence, in the body a human reads: with no stamp on line 1 the
+        # wrapper predates the stamp, which the spent body must SAY rather than fill in.
+        assert "did not record the scope" in suggest.superseded_review_body({"body": planted})
+
     def test_a_spent_wrapper_is_still_ours(self):
         # Ownership must survive the rewrite, or the pass loses track of the wrappers
         # it spent and they accumulate un-minimized.
