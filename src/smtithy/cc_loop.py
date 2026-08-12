@@ -102,10 +102,21 @@ MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "30"))
 # same input succeeded on a re-run, which is what identifies this as a ceiling set
 # too close to normal variance rather than a size limit.
 #
+# 420 was the same mistake one level up, and 600 is measured against it. Two
+# consecutive production attempts on artel PR #61 -- 5 files, 181 diff lines, +82/-10,
+# 8.2 KB -- both died on this wall having made 8 and then 6 tool calls, emitting 72
+# output tokens in total. The session timeline is what identifies the cause: 79s
+# before the FIRST tool call, then two gaps of 166s and 158s on turns that produced
+# 3 to 9 output tokens each. A nine-token turn does not take two and a half minutes
+# of thinking; that is provider latency, and the diff was never the constraint. So
+# this ceiling has to absorb two such stalls and still leave time to review, which
+# 420 cannot and 600 can.
+#
 # tests/test_workflow_shape.py pins the arithmetic against the agent jobs'
 # timeout-minutes, since the two numbers live in different files and nothing else
-# connects them.
-WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "420"))
+# connects them. 600 x MAX_ATTEMPTS needs timeout-minutes >= 35; raising this
+# without moving those is what the pin exists to catch.
+WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "600"))
 
 # THREE, not four. Attempts defend against API errors, where a retry is cheap and
 # independent; a wall-clock timeout is not that kind of failure, so depth per

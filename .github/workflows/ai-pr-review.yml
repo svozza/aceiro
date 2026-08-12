@@ -201,7 +201,13 @@ jobs:
     # Must exceed cc_loop's own budget (WALL_CLOCK_SECONDS x MAX_ATTEMPTS plus
     # backoff) with room for setup; when the two were equal, GitHub killed the
     # step first and the generator's diagnosis was never written.
-    timeout-minutes: 25
+    #
+    # 35, tracking the budget's rise to 600s x 3: measured provider latency of
+    # 160s on turns emitting nine output tokens exhausted 420s twice on a five-file
+    # diff without the generator ever submitting. test_workflow_shape pins this
+    # against cc_loop.WALL_CLOCK_SECONDS, and it FAILED when the budget moved and
+    # this did not -- which is the whole reason that assertion exists.
+    timeout-minutes: 35
     permissions:
       contents: read
       pull-requests: read # PR metadata + SHA-anchored diff via API; never write

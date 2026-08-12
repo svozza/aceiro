@@ -1141,3 +1141,29 @@ class TestTheGeneratorBudgetFitsItsJob:
             "the wall-clock budget is still the development-loop default, which is "
             "measured to time out real reviews"
         )
+
+    def test_the_budget_absorbs_two_measured_provider_stalls(self):
+        """The floor 420 failed, stated as the measurement rather than a number.
+
+        Two consecutive production attempts on a 5-file, 181-line, 8.2 KB diff both
+        died on the 420s wall having emitted 72 output tokens between them. The
+        timeline is what names the cause: 79s before the first tool call, then gaps
+        of 166s and 158s on turns producing 3 to 9 output tokens. A nine-token turn
+        is not two and a half minutes of thinking, so the constraint was provider
+        latency and not the diff -- the same "ceiling too close to normal variance"
+        mistake the 150 -> 420 bump was made to fix, one level up.
+
+        So the budget must absorb TWO such stalls and still leave time to work.
+        Expressed as the arithmetic, not as `> 420`: if the stall figure is ever
+        re-measured the assertion moves with it, where a bare number would just be
+        the new value's echo.
+        """
+        import cc_loop
+
+        stall = 160  # measured, twice, on turns emitting single-digit output tokens
+        spawn = 79   # measured: time to the first tool call
+        assert cc_loop.WALL_CLOCK_SECONDS >= spawn + 2 * stall + 120, (
+            f"{cc_loop.WALL_CLOCK_SECONDS}s does not cover a {spawn}s spawn plus two "
+            f"measured {stall}s provider stalls plus two minutes of actual reviewing, "
+            "which is the shape that timed out twice in production"
+        )
