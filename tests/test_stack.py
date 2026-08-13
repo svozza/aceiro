@@ -539,6 +539,47 @@ class TestTheDelivery:
             deliver()
         assert not any(c[0] == "pull" for c in calls)
 
+    def test_a_forbidden_pull_request_is_a_refusal_naming_the_pushed_branch(
+            self, calls, monkeypatch):
+        """MEASURED IN PRODUCTION on artel PR #61: this escaped as 24 lines of urllib
+        stack, in the first stacked delivery ever to run for real.
+
+        403 here is a repository SETTING and not a scope — "Allow GitHub Actions to
+        create and approve pull requests" gates POST /pulls independently of the
+        `pull-requests: write` the job already holds, so the token has the scope and
+        the call is refused anyway. Nothing earlier can see it: the setting is not
+        readable with this job's permissions.
+
+        The branch and its commit already exist by this point, so the failure has to
+        name them — they are the state a commander must clean up before retrying, and
+        the traceback named neither. Same reasoning as the 422 above, one call along.
+        """
+        def forbidden(repo, **kwargs):
+            raise urllib.error.HTTPError(
+                f"https://api/repos/{repo}/pulls", 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(stack, "open_pull_request", forbidden)
+        with pytest.raises(stack.Refusal, match="smtithy/fix-7") as caught:
+            deliver()
+        message = str(caught.value)
+        assert "commit-sha" in message, (
+            "the pushed commit is not named, so the commander cannot tell what was left behind"
+        )
+        assert "Actions" in message, "the message does not name the setting that refused"
+
+    def test_a_non_403_from_open_pull_request_is_not_swallowed(self, calls, monkeypatch):
+        # Same boundary as create_ref's: only the permission case is a refusal. A 422
+        # here means something else entirely (no commits between base and head, say),
+        # and reporting it as a settings problem would send the commander to the wrong
+        # place.
+        def broken(repo, **kwargs):
+            raise urllib.error.HTTPError(
+                f"https://api/repos/{repo}/pulls", 422, "Unprocessable Content", {}, None)
+
+        monkeypatch.setattr(stack, "open_pull_request", broken)
+        with pytest.raises(urllib.error.HTTPError):
+            deliver()
+
 
 class TestFindingAnExistingFix:
     def existing(self, monkeypatch, prs):

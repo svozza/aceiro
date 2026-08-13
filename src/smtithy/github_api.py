@@ -426,6 +426,13 @@ def open_pull_request(repo: str, *, head: str, base: str, title: str, body: str)
     the executor holds. A default of "main" here would have implemented the absurd
     reading the addendum was written to forbid — merge the bug, then merge the fix,
     with the default branch knowingly broken in between.
+
+    403s when the repository forbids Actions from opening pull requests — a SETTING
+    ("Allow GitHub Actions to create and approve pull requests"), not a scope, so the
+    job holds `pull-requests: write` and the call is refused regardless.
+    stack.deliver_stacked_pr turns it into a Refusal naming the pushed branch and its
+    commit, the same way it turns create_ref's 422 into one: by this point the branch
+    exists, and a bare HTTPError reaches a commander as a traceback naming neither.
     """
     return cast("dict", api_json(
         f"/repos/{repo}/pulls",

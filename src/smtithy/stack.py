@@ -401,13 +401,38 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
         ) from exc
     print(f"created {branch!r} at {commit} ({len(blobs)} file(s) patched)")
 
-    pull_request = open_pull_request(
-        repo,
-        head=branch,
-        base=base,
-        title=open_pr["args"]["title"],
-        body=render_pr_body(open_pr["args"]["body"], key, metadata),
-    )
+    try:
+        pull_request = open_pull_request(
+            repo,
+            head=branch,
+            base=base,
+            title=open_pr["args"]["title"],
+            body=render_pr_body(open_pr["args"]["body"], key, metadata),
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code != 403:
+            raise
+        # The repository forbids Actions from opening pull requests, which is a
+        # SETTING and not a scope: "Allow GitHub Actions to create and approve pull
+        # requests" gates POST /pulls independently of the `pull-requests: write` this
+        # job already holds, so the token has the scope and the call is refused anyway.
+        #
+        # Reported as a Refusal for the reason the 422 above is: the branch and its
+        # commit already EXIST at this point, and a bare HTTPError reaches the
+        # commander as a traceback that names neither — so the one piece of state they
+        # have to clean up is the one thing the failure does not tell them. Measured in
+        # production on artel PR #61, where this escaped as 24 lines of urllib stack.
+        #
+        # Not caught earlier as a precondition: the setting is not readable with the
+        # permissions this job holds, and a delivery that checked it would be trusting
+        # a second reader of what the API itself decides at the call.
+        raise Refusal(
+            f"the repository does not permit GitHub Actions to open pull requests, so the "
+            f"fix was pushed to {branch!r} at {commit} and no follow-up pull request could "
+            "be opened for it. Enable 'Allow GitHub Actions to create and approve pull "
+            "requests' in Settings -> Actions -> General, then delete that branch and "
+            "re-issue the command"
+        ) from exc
     print(f"opened follow-up pull request #{pull_request.get('number')} "
           f"from {branch!r} into {base!r}")
     return pull_request
