@@ -21,9 +21,13 @@ commit) · **accepted** (a recorded trade, with the reason) · **superseded**.
 | F9 | low | `evals/run_evals.py:534-551` | `check_grouping` keys on path, not finding, so the two halves of the defect can be in different groups and the scenario passes | fixed (`44d03fe`) — computed over the findings on wanted paths, folded into the existing `shared`; the `constants.py` calibration decided and recorded in the fixture |
 | F10 | low | `test_run_evals.py` | The new eval fixture is absent from both meta-test pinning lists | fixed (`dbde1a8`) — `grouped_cross_file_defect` and `provenance_boundary_adjacent_bug` added to both, plus a reverse assertion deriving the coverage |
 
-All ten findings are addressed. The suite is **2019 passing** (from 1956), node is
-168, typecheck is clean and the differential corpus is 97 — down from 100 because
-three tests moved into `tests/test_group_is_advisory.py`, which holds 25.
+All ten findings are addressed. At the last remediation commit the suite was **2019
+passing** (from 1956), node 168, typecheck clean, differential 97 — down from 100
+because three tests moved into `tests/test_group_is_advisory.py`, which holds 25.
+
+Two further commits landed after the review's findings, remediating defects the
+PRODUCTION RUN found rather than the review. They take the suite to **2022**. See
+"What the production run found" below.
 
 ## The revert each fix was checked against
 
@@ -85,6 +89,67 @@ That makes three documents corrected this round rather than three checks stretch
 paragraph. Worth naming as a pattern — a claim outliving the code that justified it
 is this project's most common documentation defect, and the review process catches it
 reliably.
+
+## What the production run found
+
+**2026-08-13: stacked delivery ran in production for the first time** — `svozza/artel`
+PR **#62**, opened by `/fix 1,2` on PR #61, stacked onto #61's head branch. That
+closes ADR-0009 addendum C's central finding, which was not a caveat but a flat
+statement: "**Stacked delivery has no reachable trigger through `/fix` at all.** It is
+built, gated and covered by 44 unit tests and revert checks, and nothing the
+review-to-fix pipeline can produce reaches it."
+
+The route was the one ADR-0013 predicted rather than an engineered one — two commanded
+findings on distinct paths, so no suggestion can carry the fix and `decide_delivery`
+routes `stacked_pr`. Addendum C's warning about "engineering the trigger to fit the
+vehicle" was not paid.
+
+The defect was real and genuinely coordinated: `ProtocolVersion::supports(self, other,
+asker)` takes `asker` as the LOCAL side, and both call sites passed the side being
+asked *about* — inverting the compatibility check on each side of the handshake. One
+defect, two files, which a single-anchor Finding cannot express. artel's CI then passed
+on the delivered fix, **including its test job** — so the existing suite never covered
+the inversion in either direction, which is the honest measure of what the reviewer
+caught.
+
+Three defects the run found that no unit test had. This is the same pattern the
+previous production run set (four defects, recorded in `notes/next-work.md` §3d), and
+it is the argument for running the lane for real rather than trusting the suite.
+
+| What | Status |
+|---|---|
+| The 420s generator budget was too small, and NOT because of diff size | fixed (`5d64992`) — raised to 600s; both agent jobs' `timeout-minutes` to 35, which the arithmetic pin forced |
+| `POST /pulls` 403 escaped as a urllib traceback | fixed (`8e2526e`) — a typed `Refusal` naming the pushed branch, its commit and the setting |
+| artel needed `can_approve_pull_request_reviews: true` | consumer configuration, set 2026-08-13; not a harness change |
+
+**The budget finding is the instructive one.** Two consecutive attempts died on the
+420s wall without submitting, on a 5-file, 181-line, 8.2 KB diff. The timeline is what
+identified the cause: 79s before the FIRST tool call, then gaps of 166s and 158s on
+turns emitting three to nine output tokens each. A nine-token turn is not two and a
+half minutes of thinking — it was provider latency, and the diff was never the
+constraint. That is the same "ceiling too close to normal variance rather than a size
+limit" mistake `cc_loop`'s own comment records for the 150 → 420 bump, one level up.
+The new assertion states the measurement (spawn + two stalls + time to work) rather
+than the number, so it moves if the latency is re-measured. **If a third raise is ever
+needed, treat it as a symptom** — look at the 66,719 tokens of cache creation, not the
+ceiling.
+
+**The 403 finding is a repeat of a fixed shape, one call along.** Last round turned
+`create_ref`'s 422 into a `Refusal` because "a bare HTTPError reaches a commander as a
+traceback". `open_pull_request` had no such handler, and by the time it fires the branch
+and commit already exist — the state a commander must clean up is exactly what the
+traceback did not name. 403 there is a repository SETTING and not a scope: "Allow
+GitHub Actions to create and approve pull requests" gates `POST /pulls` independently
+of the `pull-requests: write` the job holds, which is why suggestions worked in
+production for months and this did not.
+
+Not deferred but worth naming, since the run demonstrated it: the delivered fix carries
+no test, and that is structural twice over. The frame condition refuses any patch to a
+file the pull request did not touch, and Rust integration tests live in a `tests/` tree
+this pull request never touched; and ADR-0001 means the harness cannot run a test it
+writes, so an untested test would be a claim wearing verification's clothes. The
+consequence — the harness finds defects the suite misses and cannot close the gap that
+let them through — is accepted, and a human still writes the pinning test.
 
 ## Two findings were REFUTED — do not re-file them
 
