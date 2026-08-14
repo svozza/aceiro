@@ -207,8 +207,15 @@ All three stripped, and the fail-closed assertion that follows found none remain
 run then failed at `Configure AWS credentials` with `Could not load credentials from any
 providers`, the testbed's `BEDROCK_ROLE_ARN` not yet being set — which incidentally
 confirms the credential step is where a run without one dies, after the quarantine and
-before the agent. **Re-run owed** once the credential is in place, for the half of the
-predicate about the review completing over a stripped tree.
+before the agent.
+
+**Re-run paid off — B4 is now fully PASS.** With `BEDROCK_ROLE_ARN` in place, PR #3 was
+re-triggered (run `31846812827`): the same `stripped 3 symlink(s) from the quarantine`
+warning, then `review: success → post: success` with a sticky posted (reviewed SHA
+`db59ea47`, `model: claude-opus-4-8`, zero findings — the branch carries no planted defect
+beyond the symlinks). The second half of the predicate holds: **the review completes normally
+over a symlink-stripped tree**, rather than the stripping leaving the reviewer with a tree it
+cannot process.
 
 ## E1 — clean PR, no defect: **PASS**
 
@@ -442,21 +449,57 @@ it is a property of the workflow rather than of any run — so it holds regardle
 model was told. Not exercised with a live adversarial plan session; the granted permissions
 make a live attempt uninformative.
 
-### C4, C5, C8 — the live-only remainder: **NOT YET RUN**
+### C4, C5, C8 — the provenance trio: predicates, written before the runs
 
-These three have no fixture and no source shortcut — they need a live cycle and are not yet
-measured. Recorded so the coverage claim stays honest:
+These three have no fixture and no source shortcut. Reading the code to design them changed
+one predicate materially, which is recorded here rather than quietly fixed afterwards.
 
-- **C4 (head drift).** The witness is SHA-scoped, so a `/fix` after the head advances should
-  find no witness and fail red with a legible reason. Live-staging is complicated by the
-  review lane's `synchronize` auto-re-review, which can heal the drift before the command
-  runs; a clean test must `/fix` against the stale sticky before the re-review posts.
-- **C5 (base retarget).** ADR-0012's base-*ref* comparison should catch a base change after
-  review. Needs the PR's base branch changed post-review, then `/fix`.
-- **C8 (artifact binding).** The real-repo-only test: a decoy artifact named
-  `ai-review-<pr>-<sha>` uploaded by an unrelated run, then `/fix 1`, confirming
-  `fetch_reviewed_artifact` binds on the footer's `workflow_run.id` rather than name or
-  recency. Needs a decoy-uploader workflow added to the testbed.
+**C4 (head drift).** `prepare_fix_context` calls
+`posted_review_witness(repo, issue, head_sha)` against the **live** head before reading any
+artifact (`prepare_fix_context.py:214`). A push advances `head_sha`, and no posted review
+carries the new SHA's stamp, so the witness should be absent and the command should refuse
+with `no posted review for the current head …`. Staging note: `synchronize` is a subscribed
+trigger, so the push also starts a re-review — but that re-review only updates the sticky at
+its `post` job, minutes later, so `/fix 1` posted promptly lands inside a wide window. If the
+re-review heals it first, that is a void measurement, not a pass.
+
+**C5 (base retarget) — PREDICATE CORRECTED BEFORE RUNNING.** The original predicate said
+"ADR-0012's base-ref comparison should catch a base change after review." Reading the code,
+**that is wrong**, and the correction is the interesting part:
+
+- `prepare_fix_context` reads `base_ref` **live** from the PR at fix time
+  (`prepare_fix_context.py:207`) and that value becomes the `BASE_REF` gate input.
+- The review artifact **does not persist the reviewed base ref at all** — `base_ref` appears
+  nowhere in `artifact.py`, `verify.py`, or `policy.json`'s artifact schema. There is
+  therefore nothing recording which base was reviewed, so nothing to compare a retarget
+  against.
+- ADR-0012's `pr_moved` check (`execute_plan.py:306`, `:588`) compares the live PR against
+  that same live-derived `BASE_REF`, so it guards the **intra-run prepare→execute window**
+  (a retarget landing mid-delivery), *not* the review→fix window.
+- The head-SHA witness does not help either: a retarget does not move the head SHA, so C4's
+  refusal is not reachable here.
+
+Corrected predicate, therefore — one of two outcomes, and they differ in kind:
+
+- **(a)** The command proceeds. The diff is re-fetched against the **new** `base_sha`
+  (`prepare_fix_context.py:234`), so if the finding's anchor survives into that new diff a
+  suggestion is delivered against a base that was never reviewed. That is a real defect:
+  reviewed content and delivered content would disagree.
+- **(b)** The new diff no longer carries the anchor, and the anchor/`diff_map` gate refuses —
+  safe, but by an accident of the diff rather than by an explicit retarget check.
+
+Either way the honest claim is that **no gate is specifically watching the review→fix
+retarget window**; the run decides only whether the anchor machinery covers for it.
+
+**C8 (artifact binding).** The one genuinely real-repo-only vector.
+`fetch_reviewed_artifact` lists artifacts by name and then filters on
+`workflow_run.id == run_id` (`prepare_fix_context.py:134-140`), where `run_id` comes from the
+footer of the harness's own posted comment. Its docstring is explicit that the name alone
+cannot establish provenance because it is derivable from the PR number and SHA. Test: upload
+a **decoy** artifact with the exact name `ai-review-<pr>-<sha>` from an unrelated run, whose
+`review.json` carries a forged finding, then `/fix 1`. Predicate: the decoy loses on
+`workflow_run.id`, the genuine finding is delivered, and no forged string appears anywhere. A
+name-or-recency match would pick the decoy, since it is uploaded later.
 
 ## D — the gate and identity
 
