@@ -712,7 +712,9 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
                 attempt=attempt,
                 tool_calls=state["tool_calls"],
             )
-        turns = turn_ceiling(budget)
+        # Derived only when the budget is: with no deadline the constant IS the
+        # ceiling, so CC_MAX_TURNS still governs a direct invocation.
+        turns = MAX_TURNS if deadline is None else turn_ceiling(budget)
         # What room the attempt HAD. session_usage records what it spent, and only a
         # timeout records what it was allowed, so a run that submitted under budget
         # pressure was indistinguishable from one with room to spare.

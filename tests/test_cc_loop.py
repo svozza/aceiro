@@ -724,6 +724,23 @@ class TestTheConsumersBudgetGovernsTheSession:
             cc_loop.MAX_TURNS
         )
 
+    def test_a_deadlineless_session_is_given_the_constant_and_not_a_derivation(
+        self, tmp_path, monkeypatch
+    ):
+        # Asserted on the SESSION, because build_options' own default is not what the
+        # loop passes: deriving the ceiling unconditionally left CC_MAX_TURNS with no
+        # effect at all -- turn_ceiling(900) is 46 against the constant's 45, close
+        # enough that nothing else would have noticed the knob was dead.
+        monkeypatch.delenv(cc_loop.DEADLINE_ENV, raising=False)
+        monkeypatch.setattr(cc_loop, "MAX_TURNS", 7)
+        query = fake_query([[result_message()]])
+        monkeypatch.setattr(cc_loop, "query", query)
+        cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+
+        assert query.calls[0].max_turns == 7
+        granted = next(e for e in transcript_events(tmp_path) if e["event"] == "attempt_budget")
+        assert granted["max_turns"] == 7 and granted["consumer_set"] is False
+
     @pytest.mark.parametrize("raw", ["", "  "])
     def test_an_empty_deadline_reads_as_absence(self, monkeypatch, raw):
         # Indistinguishable from unset at this layer; what catches a WORKFLOW that
