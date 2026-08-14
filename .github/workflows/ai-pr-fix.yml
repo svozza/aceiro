@@ -235,12 +235,18 @@ jobs:
     # backoff) with room for setup, or GitHub kills the step first and the
     # generator's diagnosis is never written.
     #
-    # 35, tracking the budget's rise to 600s x 3: measured provider latency of
-    # 160s on turns emitting nine output tokens exhausted 420s twice on a five-file
-    # diff without the generator ever submitting. test_workflow_shape pins this
-    # against cc_loop.WALL_CLOCK_SECONDS, and it FAILED when the budget moved and
-    # this did not -- which is the whole reason that assertion exists.
-    timeout-minutes: 35
+    # 50, tracking the budget's rise to 900s x 3. The earlier figures here credited
+    # provider latency for exhausting the budget; that reading came from a streaming
+    # usage snapshot and is corrected in cc_loop's WALL_CLOCK_SECONDS comment -- the
+    # wall clock is reasoning volume, ~30k output tokens for a five-file diff and
+    # ~45k when the reviewer explores harder. test_workflow_shape pins this against
+    # cc_loop.WALL_CLOCK_SECONDS, and it FAILED when the budget moved and this did
+    # not -- which is the whole reason that assertion exists.
+    #
+    # This is a ceiling, not a reservation: GitHub bills elapsed time, so raising it
+    # costs nothing until a run uses it. What it does cost is how long a genuinely
+    # wedged job takes to be killed.
+    timeout-minutes: 50
     permissions:
       contents: read
       pull-requests: read

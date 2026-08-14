@@ -1142,28 +1142,64 @@ class TestTheGeneratorBudgetFitsItsJob:
             "measured to time out real reviews"
         )
 
-    def test_the_budget_absorbs_two_measured_provider_stalls(self):
-        """The floor 420 failed, stated as the measurement rather than a number.
+    def test_the_turn_ceiling_does_not_bind_before_the_clock(self):
+        """The two ceilings are co-limits; only the clock has a measured rationale.
 
-        Two consecutive production attempts on a 5-file, 181-line, 8.2 KB diff both
-        died on the 420s wall having emitted 72 output tokens between them. The
-        timeline is what names the cause: 79s before the first tool call, then gaps
-        of 166s and 158s on turns producing 3 to 9 output tokens. A nine-token turn
-        is not two and a half minutes of thinking, so the constraint was provider
-        latency and not the diff -- the same "ceiling too close to normal variance"
-        mistake the 150 -> 420 bump was made to fix, one level up.
+        WALL_CLOCK_SECONDS and MAX_TURNS both bound how far the reviewer may
+        investigate, and either one failing ends the run with no artifact. Raising
+        the clock alone relocates the failure rather than fixing it: at 900s and the
+        measured ~29s per tool call, a review may make ~31 calls, which the previous
+        MAX_TURNS of 30 would have refused first -- with a different message and no
+        hint that the budget was no longer the constraint.
 
-        So the budget must absorb TWO such stalls and still leave time to work.
-        Expressed as the arithmetic, not as `> 420`: if the stall figure is ever
-        re-measured the assertion moves with it, where a bare number would just be
-        the new value's echo.
+        So the clock must be the binding constraint and the turn count a runaway
+        backstop above it. Stated as the arithmetic so re-measuring the per-call cost
+        moves the floor.
         """
         import cc_loop
 
-        stall = 160  # measured, twice, on turns emitting single-digit output tokens
-        spawn = 79   # measured: time to the first tool call
-        assert cc_loop.WALL_CLOCK_SECONDS >= spawn + 2 * stall + 120, (
-            f"{cc_loop.WALL_CLOCK_SECONDS}s does not cover a {spawn}s spawn plus two "
-            f"measured {stall}s provider stalls plus two minutes of actual reviewing, "
-            "which is the shape that timed out twice in production"
+        seconds_per_tool_call = 618 / 21  # measured on a production run
+        calls_the_clock_permits = cc_loop.WALL_CLOCK_SECONDS / seconds_per_tool_call
+        assert cc_loop.MAX_TURNS > calls_the_clock_permits, (
+            f"MAX_TURNS={cc_loop.MAX_TURNS} binds before the "
+            f"{cc_loop.WALL_CLOCK_SECONDS}s clock, which permits "
+            f"{calls_the_clock_permits:.0f} tool calls at the measured "
+            f"{seconds_per_tool_call:.0f}s each -- so a review would fail on the turn "
+            "ceiling and report the wrong constraint"
+        )
+
+    def test_the_budget_covers_a_review_that_explores_harder(self):
+        """The floor, stated as the measurement rather than as a number.
+
+        REPLACES an assertion that required the budget to absorb "two measured
+        provider stalls" of 160s. That framing was wrong: it read a per-event
+        `usage.output_tokens`, which is a streaming snapshot, and concluded turns
+        emitting three to nine tokens were stalling. Measured against the
+        ResultMessage, the same run emitted 29,533 output tokens with
+        duration_api_ms >= duration_ms -- all of the wall clock was the provider
+        generating, at 74 tok/s. Nothing stalled, so an assertion built on stalls
+        enforced a cause that does not exist.
+
+        What the budget actually bounds is reasoning volume, and the measurement is
+        two production runs on one pull request: one COMPLETED a review in 397s of
+        API time making 11 tool calls; one EXHAUSTED 600s making 21 tool calls and
+        had still not submitted, because a landed fix had removed the obvious defect
+        and the reviewer explored harder for one. So the budget must cover a review
+        that investigates at the higher rate.
+
+        Expressed as the arithmetic rather than as `> 600`, for the reason the
+        replaced assertion had right: if either figure is re-measured the floor moves
+        with it, where a bare number would only echo whatever was set.
+        """
+        import cc_loop
+
+        completed_api_seconds = 397  # a review that finished, from its ResultMessage
+        calls_when_it_fit = 11       # tool calls that review made
+        calls_when_it_did_not = 21   # tool calls the run that exhausted 600s made
+        floor = completed_api_seconds * calls_when_it_did_not / calls_when_it_fit
+        assert cc_loop.WALL_CLOCK_SECONDS >= floor, (
+            f"{cc_loop.WALL_CLOCK_SECONDS}s does not cover {floor:.0f}s, the measured "
+            f"cost of a {completed_api_seconds}s review scaled to the "
+            f"{calls_when_it_did_not}-tool-call exploration that exhausted 600s in "
+            "production without submitting"
         )

@@ -86,7 +86,19 @@ DISALLOWED_TOOLS = [
 
 # Both bounds fail closed: exceeding either yields no accepted submission, so
 # run() returns non-zero with no artifact.
-MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "30"))
+#
+# 45, and it must stay ABOVE what WALL_CLOCK_SECONDS permits, because these two are
+# CO-LIMITS on the same thing -- how far the reviewer may investigate -- and only
+# one of them has a measured rationale. Measured: a production run made 21 tool
+# calls in 618s, so a call costs ~29s, so a 900s budget permits ~31. At the previous
+# 30 the turn ceiling would have bound FIRST, and raising the clock alone would have
+# relocated the same failure to a different error message ("hit the 30-turn limit")
+# with no diagnostic hint that the budget was no longer the constraint.
+#
+# So the time budget is the binding constraint by construction and this stays a
+# runaway backstop. test_workflow_shape asserts that ordering; it fails if the clock
+# is raised without this, which is the mistake that assertion exists to catch.
+MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "45"))
 
 # PER ATTEMPT, and it must leave room for MAX_ATTEMPTS of them plus the backoff
 # inside the workflow's timeout-minutes. When this matched the job timeout, a
@@ -102,26 +114,54 @@ MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "30"))
 # same input succeeded on a re-run, which is what identifies this as a ceiling set
 # too close to normal variance rather than a size limit.
 #
-# 420 was the same mistake one level up, and 600 is measured against it. Two
-# consecutive production attempts on artel PR #61 -- 5 files, 181 diff lines, +82/-10,
-# 8.2 KB -- both died on this wall having made 8 and then 6 tool calls, emitting 72
-# output tokens in total. The session timeline is what identifies the cause: 79s
-# before the FIRST tool call, then two gaps of 166s and 158s on turns that produced
-# 3 to 9 output tokens each. A nine-token turn does not take two and a half minutes
-# of thinking; that is provider latency, and the diff was never the constraint. So
-# this ceiling has to absorb two such stalls and still leave time to review, which
-# 420 cannot and 600 can.
+# 420 and then 600 were each raised against a MISREAD measurement, and the reading
+# is corrected here because it was cited as the reason for both. Earlier comments
+# said the session emitted "3 to 9 output tokens" per turn and concluded the wall
+# clock was provider latency rather than work. Those figures came from an
+# AssistantMessage's `usage`, which is a STREAMING SNAPSHOT -- see
+# serialize_message. Measured against the ResultMessage on a real review, the
+# per-event figures sum to 148 against an actual 29,533 output tokens, and
+# duration_api_ms was 397,726 of a 396,325ms run: every millisecond was the
+# provider GENERATING, at 74 output tok/s. There is no latency anomaly, and the
+# 30-165s gaps between tool calls are the model thinking.
+#
+# So the real quantity this ceiling bounds is REASONING VOLUME. A review of a
+# five-file production diff cost ~30k output tokens (~400s). The run that
+# exhausted 600s made 21 tool calls where the run that fit made 11 -- it explored
+# harder because a previous fix had removed the obvious defect -- which at the same
+# throughput is ~45k tokens, ~650s. 900 covers that with headroom; 600 sat on the
+# boundary and lost.
+#
+# The cheaper lever was deliberately NOT taken: `effort` is unset, so the CLI
+# resolves it per model, and lowering it to buy budget trades review depth for
+# wall clock on a harness whose findings are meant to be actionable. Raising the
+# ceiling is the honest response once the cost is known to be work.
+#
+# A wall-clock timeout does NOT retry -- see the `timed_out` branch, which fails
+# the run on the attempt that hit it -- so MAX_ATTEMPTS defends against API errors
+# only. The pin below still reserves for all of them, whose worst case needs two
+# attempts to die by api_error at nearly the full wall clock; that has never been
+# observed (zero api_errors across 51 eval sessions and every production run),
+# while the failure that does occur uses one attempt's worth of a three-attempt
+# reserve.
 #
 # tests/test_workflow_shape.py pins the arithmetic against the agent jobs'
 # timeout-minutes, since the two numbers live in different files and nothing else
-# connects them. 600 x MAX_ATTEMPTS needs timeout-minutes >= 35; raising this
+# connects them. 900 x MAX_ATTEMPTS needs timeout-minutes >= 46; raising this
 # without moving those is what the pin exists to catch.
-WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "600"))
+#
+# CONSUMER-FACING GAP, not yet closed: this is reachable only as an environment
+# variable, which a caller of the reusable workflow cannot set, and the job's
+# timeout-minutes is the callee's. So this figure is every consumer's hard
+# ceiling, measured on one repository. A consumer whose reviews legitimately cost
+# more has no supported remedy. Revisit trigger for the dynamic budget: a timeout
+# AT this ceiling, or a tail past it in the `session_usage` records.
+WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "900"))
 
 # THREE, not four. Attempts defend against API errors, where a retry is cheap and
 # independent; a wall-clock timeout is not that kind of failure, so depth per
-# attempt is worth more than another shallow one. Three 7-minute attempts fit the
-# 25-minute job with headroom to spare, where four would cap each at 300s.
+# attempt is worth more than another shallow one. Three 15-minute attempts fit the
+# 50-minute job with headroom to spare, where four would cap each at 675s.
 MAX_ATTEMPTS = 3
 
 # Submissions are bounded separately from API-error attempts now that a
