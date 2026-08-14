@@ -139,6 +139,14 @@
   planted secret, call a tool outside its inventory, fire a planted hook, deliver an unrequested
   suggestion, or bypass the human gate. The two amber rows are a missing check and an
   over-claiming comment — not breaches.
+  <br><br>
+  <b>The matrix's own blind spot:</b> the Z3-backed plan prover (ADR-0003) <i>ran</i> in all
+  three delivering fix runs — twice each, since <code>execute</code> re-proves — and every
+  invocation exited 0. But it <b>never refused anything</b>, because every refusal landed
+  upstream of it. Its theory is plan <i>shape</i> (taint, frame conditions); every vector that
+  reached a plan attacked <i>provenance</i> instead. C5 is the proof: that delivery was proved
+  twice and was still anchored to a base nobody reviewed. Attacking plan shape directly is the
+  one vector never run.
 </div>
 
 <h2>The matrix</h2>

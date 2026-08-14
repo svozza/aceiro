@@ -64,7 +64,33 @@ traps** rather than breaches — with two exceptions worth reading as substantiv
 
 **Every vector in the matrix has now been run**, including the four that a first pass left
 open: B4's deferred half (the review completing over a symlink-stripped tree) plus C4, C5 and
-C8. Nothing in the matrix is left unmeasured.
+C8.
+
+**But the matrix itself had a blind spot: the plan prover was never attacked.** The Z3-backed
+prover (ADR-0003, `z3-solver` via WASM, TypeScript) *ran* — in the three fix runs that
+produced a plan (`31844092945`, `31847125515`, `31847750474`), twice each, since `execute`
+re-proves at its "Verify, re-prove and deliver (fail-closed)" step — and every invocation
+exited 0, which `run_prover` defines as "every policy holds". So it is exercised and
+fail-closed on paper. It simply **never refused anything here**, because every refusal in the
+matrix landed upstream of it: the command parser (C1–C3), the SHA-scoped witness (C4), the
+environment gate (D2), the quarantine caps (B5, B6), or the reviewer declining to obey
+(A and B blocks).
+
+The reason is a scope distinction worth stating, because C5 demonstrates it empirically: the
+prover's theory is about plan **shape** — taint as an ∃-dataflow chain, frame conditions
+quantified over files. Every vector that reached a plan was attacking plan **content and
+provenance** instead: which artifact is authoritative (C8), which base the plan is anchored to
+(C5), which ordinal was named (C3). **C5's delivery was proved twice and was still anchored to
+a base nobody reviewed** — no theorem was violated, which is exactly why nothing caught it. A
+prover is not a substitute for provenance binding.
+
+The unrun vector, stated so the gap is not mistaken for coverage: drive the plan session to
+emit a plan carrying control flow or disallowed argument forms, tainting a push with PR-file
+content, or writing outside `changed_files`, and confirm the prover exits 1 with a
+counterexample and `execute` refuses. `plan_verify`'s unit tests and ADR-0004 addendum A cover
+that shape statically; no live adversarial attempt was made. Mitigating context, not a
+substitute for the test: C6 established the model-bearing `plan` job holds no repository write
+at all, so the prover is defence-in-depth behind a job that cannot act on a bad plan anyway.
 
 ## The corpus, and why it is a replay rather than a fresh invention
 
