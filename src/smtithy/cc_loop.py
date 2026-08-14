@@ -369,16 +369,53 @@ def build_options(system_prompt: str, base_root: Path, pr_root: Path, server,
     )
 
 
+def _note_api_turn(message, state: dict) -> None:
+    """Record one AssistantMessage against the session's API-call accounting.
+
+    Deduplicated by `message_id` because the SDK yields one event per content
+    block, so counting events over-counts API calls by two to four times.
+    `cache_read_input_tokens` is taken as a PEAK rather than a sum: it is
+    cumulative over the conversation already, so summing the snapshots
+    multiple-counts the whole cached prefix on every turn.
+    """
+    message_id = getattr(message, "message_id", None)
+    if message_id is not None:
+        state["api_message_ids"].add(message_id)
+    usage = getattr(message, "usage", None) or {}
+    cache_read = usage.get("cache_read_input_tokens") or 0
+    if cache_read > state["cache_read_peak"]:
+        state["cache_read_peak"] = cache_read
+
+
 def serialize_message(message) -> str:
     """One JSONL line per SDK message, for the captured-stream artifact.
 
     The SDK consumes the CLI's raw stdout itself, so what we capture is its
     typed messages re-serialized. `default=str` because a message may carry
     non-JSON values; a lossy field beats a lost line when diagnosing.
+
+    `ts` is when the line was CAPTURED, not a field of the message, and it is
+    what makes the stream answer "where did the wall clock go": without it the
+    only timestamps are the transcript's tool_request records, so any turn that
+    ends without a tool call is invisible and the gap before it gets attributed
+    to whichever call happens to follow.
+
+    An AssistantMessage's `usage` is a STREAMING SNAPSHOT and MUST NOT be
+    summed. The SDK yields one event per content block, so a single API message
+    appears two to four times carrying the usage it had mid-generation, and
+    thinking text is stripped by the redaction pass — so the events of a turn
+    that emitted thousands of thinking tokens all read as two to nine
+    `output_tokens` with empty `thinking`. Summing them under-reported one real
+    run by 200x (148 against the ResultMessage's 29,533) and that arithmetic is
+    what produced a diagnosis of "provider latency" for what was ordinary
+    generation at 74 tok/s. Group by `message_id` to count real API calls, and
+    take totals from `session_usage` (below) or the ResultMessage. Never from
+    these.
     """
     record = {"type": type(message).__name__}
     if dataclasses.is_dataclass(message):
         record.update(dataclasses.asdict(message))
+    record["ts"] = time.time()
     return json.dumps(record, ensure_ascii=False, default=str)
 
 
@@ -399,12 +436,37 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
                     # are configured by different inputs, and configuration
                     # cannot say which one ran.
                     state["model"] = message.model
+                    _note_api_turn(message, state)
                     for block in message.content:
                         if isinstance(block, ToolUseBlock):
                             transcript.log("tool_request", round=attempt, tool=block.name, input=block.input)
                             state["tool_calls"] += 1
                 if isinstance(message, ResultMessage):
                     result = message
+                    # The aggregate, in the SMALL file. It is already in the
+                    # captured stream, but that stream is a few hundred KB of
+                    # redacted messages whose per-event usage reads as a
+                    # fraction of the truth, so the numbers that answer "was
+                    # this slow, and why" were effectively unfindable.
+                    # duration_api_ms against duration_ms is the one that
+                    # settles it: they were 397726 against 396325 on a real
+                    # run, so the wall clock was the provider generating, not
+                    # the harness waiting on anything local.
+                    usage = getattr(message, "usage", None) or {}
+                    transcript.log(
+                        "session_usage",
+                        round=attempt,
+                        duration_ms=getattr(message, "duration_ms", None),
+                        duration_api_ms=getattr(message, "duration_api_ms", None),
+                        num_turns=getattr(message, "num_turns", None),
+                        api_messages=len(state["api_message_ids"]),
+                        tool_calls=state["tool_calls"],
+                        output_tokens=usage.get("output_tokens"),
+                        cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                        cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                        total_cost_usd=getattr(message, "total_cost_usd", None),
+                        stop_reason=getattr(message, "stop_reason", None),
+                    )
     finally:
         # Redacted before being written, not after: the whole output_dir is
         # uploaded as a CI artifact, so writing the raw capture would route a
@@ -484,6 +546,13 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     state = {
         "round": 0, "repeated": 0, "last_fingerprint": None,
         "accepted": None, "abort_reason": None, "tool_calls": 0, "model": None,
+        # Counted by message_id rather than by event, for serialize_message's
+        # reason: one API message arrives as several events. This is the only
+        # turn count a session that DIES still has — a ResultMessage carries
+        # num_turns and a timed-out session has no ResultMessage at all, which
+        # is precisely the run whose cost needs accounting for.
+        "api_message_ids": set(),
+        "cache_read_peak": 0,
     }
     # An acceptance is a verdict the verifier already reached, so it outlives the
     # session that produced it: a later attempt cannot unmake it, and no ending
@@ -522,6 +591,8 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # its tool calls are counted against it alone.
         state["accepted"] = None
         state["tool_calls"] = 0
+        state["api_message_ids"] = set()
+        state["cache_read_peak"] = 0
         start_session_on(verify_fn)
         submit = make_tool(state)
         server = build_review_server(submit, server_name)
@@ -541,6 +612,18 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
                 round=attempt,
                 seconds=WALL_CLOCK_SECONDS,
                 tool_calls=state["tool_calls"],
+                # What the killed session spent, as far as it can be known
+                # WITHOUT a ResultMessage — which is the whole problem with
+                # this branch: the aggregate lives on a message that a session
+                # cut off by the wall clock never emits, so the run most in
+                # need of accounting was the one that recorded none. Turns and
+                # tool calls put a floor under "how much work was in flight";
+                # output tokens are deliberately absent rather than guessed,
+                # because the only per-event figures available are streaming
+                # snapshots and summing them is the error this instrumentation
+                # exists to stop.
+                api_messages=len(state["api_message_ids"]),
+                cache_read_peak=state["cache_read_peak"],
             )
         except ProcessError as exc:
             return fail(

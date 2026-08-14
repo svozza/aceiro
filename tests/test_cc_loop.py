@@ -702,6 +702,109 @@ class TestRunFailureModes:
         assert "without a result envelope" in reasons[0]["reason"]
 
 
+class TestSessionCostIsAccountedFor:
+    """Where the wall clock went, recorded in the SMALL file.
+
+    The aggregate has always been in the ResultMessage, but a per-event
+    `usage.output_tokens` is a streaming snapshot: one API message arrives as
+    several events, thinking text is stripped by redaction, and every event of a
+    turn that emitted thousands of thinking tokens reads as single digits.
+    Summing them under-reported a real run 200x and produced a diagnosis of
+    "provider latency" for generation running at a normal 74 tok/s. These tests
+    pin the figures that cannot be misread that way.
+    """
+
+    def test_the_aggregate_is_logged_from_the_result_message(self, tmp_path, monkeypatch):
+        # duration_api_ms beside duration_ms is the pair that answers "was the
+        # harness waiting on anything of its own?" -- so it must be recorded, not
+        # merely available in a few hundred KB of captured stream.
+        messages = [
+            AssistantMessage(content=[TextBlock(text="thinking hard")], model="m",
+                             message_id="msg_1", usage={"output_tokens": 4}),
+            result_message(
+                duration_ms=396325,
+                duration_api_ms=397726,
+                num_turns=12,
+                total_cost_usd=0.966,
+                usage={"output_tokens": 29533, "cache_creation_input_tokens": 22527,
+                       "cache_read_input_tokens": 122386},
+            ),
+        ]
+        run_loop(tmp_path, monkeypatch, [messages])
+        usage = [e for e in transcript_events(tmp_path) if e["event"] == "session_usage"]
+        assert len(usage) == 1
+        record = usage[0]
+        # The real total, NOT the 4 the single captured event advertised.
+        assert record["output_tokens"] == 29533
+        assert record["duration_ms"] == 396325
+        assert record["duration_api_ms"] == 397726
+        assert record["cache_read_input_tokens"] == 122386
+        assert record["total_cost_usd"] == 0.966
+
+    def test_api_calls_are_counted_by_message_id_not_by_event(self, tmp_path, monkeypatch):
+        # The SDK yields one event per content block, so three events sharing a
+        # message_id are ONE API call. Counting events is how a 12-call session
+        # reads as 31 and its per-call latency looks four times better than it is.
+        shared = [
+            AssistantMessage(content=[TextBlock(text="a")], model="m", message_id="msg_1"),
+            AssistantMessage(content=[TextBlock(text="b")], model="m", message_id="msg_1"),
+            AssistantMessage(content=[TextBlock(text="c")], model="m", message_id="msg_1"),
+            AssistantMessage(content=[TextBlock(text="d")], model="m", message_id="msg_2"),
+            result_message(),
+        ]
+        run_loop(tmp_path, monkeypatch, [shared])
+        record = [e for e in transcript_events(tmp_path) if e["event"] == "session_usage"][0]
+        assert record["api_messages"] == 2
+
+    def test_a_timed_out_session_still_accounts_for_what_it_spent(self, tmp_path, monkeypatch):
+        # The run most in need of accounting recorded none: the aggregate lives on
+        # a ResultMessage, and a session cut off by the wall clock never emits
+        # one. Two real 600s timeouts produced transcripts with no cost figures
+        # at all, which is why they were diagnosed by inference.
+        monkeypatch.setattr(cc_loop, "WALL_CLOCK_SECONDS", 1)
+
+        async def _query(prompt, options):
+            yield AssistantMessage(content=[TextBlock(text="a")], model="m", message_id="m1",
+                                   usage={"cache_read_input_tokens": 6882})
+            yield AssistantMessage(content=[TextBlock(text="b")], model="m", message_id="m1",
+                                   usage={"cache_read_input_tokens": 6882})
+            yield AssistantMessage(content=[ToolUseBlock(id="1", name="Grep", input={"pattern": "x"})],
+                                   model="m", message_id="m2",
+                                   usage={"cache_read_input_tokens": 27131})
+            await anyio.sleep(5)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 1
+        timeout = [e for e in transcript_events(tmp_path) if e["event"] == "wall_clock_timeout"][0]
+        # Two distinct message_ids from three events, and the peak rather than
+        # the 40894 their sum would give.
+        assert timeout["api_messages"] == 2
+        assert timeout["cache_read_peak"] == 27131
+        assert timeout["tool_calls"] == 1
+        # No token total is guessed for a session that never reported one.
+        assert "output_tokens" not in timeout
+
+
+class TestTheCapturedStreamIsTimestamped:
+    """Without a per-line `ts` the only timestamps are tool_request records, so a
+    turn that ends WITHOUT a tool call is invisible and the gap before it is
+    attributed to whichever call follows it."""
+
+    def test_every_captured_line_carries_a_capture_time(self, tmp_path, monkeypatch):
+        messages = [
+            AssistantMessage(content=[TextBlock(text="a")], model="m", message_id="m1"),
+            result_message(),
+        ]
+        run_loop(tmp_path, monkeypatch, [messages])
+        lines = (tmp_path / "cc_stream_1.jsonl").read_text().splitlines()
+        assert lines
+        stamps = [json.loads(line)["ts"] for line in lines]
+        assert all(isinstance(t, float) for t in stamps)
+        assert stamps == sorted(stamps)
+
+
 class TestCapturedStreamIsRedacted:
     """The whole output dir is uploaded as a CI artifact, so the captured
     stream must pass the same secret scan as the transcript. Asserted through
