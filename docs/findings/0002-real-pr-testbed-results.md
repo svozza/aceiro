@@ -590,9 +590,10 @@ trigger further workflow runs** — so the observation would be "no run fired", 
 distinguish the harness's bot rule from the platform's recursion rule. A clean live test
 needs a third-party App or Dependabot PR, which this testbed does not carry.
 
-## Finding: two smtithy documents contradict each other on the runtime environment
+## Finding: the runtime environment's contract contradicts the role template — which is not in the repo
 
-Found by reading both in one session, not by a run, and it costs a consumer real confusion.
+Found by reading, not by a run. Recorded carefully because the obvious framing is wrong: this
+is **not** two committed documents disagreeing, and looking for a repo file to fix will fail.
 
 The review workflow's setup contract is explicit that the two environments have different
 jobs, and that only one of them is protected (`ai-pr-review.yml@185cc26:31`):
@@ -602,29 +603,42 @@ jobs, and that only one of them is protected (`ai-pr-review.yml@185cc26:31`):
 #   ai-pr-review-runtime  no rules; exists to scope the OIDC subject claim
 ```
 
-`infra/oidc-role.yaml`'s `GitHubEnvironment` parameter **defaults to
-`ai-pr-review-runtime`** while its description states the bound environment:
+The role template's `GitHubEnvironment` parameter **defaults to `ai-pr-review-runtime`**
+while its description insists the bound environment:
 
 > must be an environment that actually has required reviewers -- binding to one that merely
 > carries secrets or a branch policy makes the gate resolve instantly with no human in the
 > loop, which is a fail-open the run reports as green.
 
-Both cannot be followed. A consumer who believes the template either adds required reviewers
-to `ai-pr-review-runtime` — earning a second approval click on every review, for a gate that
-already fired in `approve` — or reads their correct setup as a fail-open and goes looking for
-a hole that is not there. The testbed matched the workflow's contract (`ai-pr-review`:
-`required_reviewers` → `svozza`; `ai-pr-review-runtime`: no rules) and D1/D2 both behaved as
-the workflow documents, so **the workflow is right and the template's parameter description
-is wrong** for the two-environment architecture.
+Both cannot be followed, and the workflow is the one that is right: the testbed matched its
+contract (`ai-pr-review`: `required_reviewers` → `svozza`; `ai-pr-review-runtime`: no rules)
+and D1/D2 both behaved exactly as it documents. A consumer who believes the template instead
+either adds required reviewers to `ai-pr-review-runtime` — earning a second approval click on
+every review, for a gate that already fired in `approve` — or reads their correct setup as a
+fail-open and hunts a hole that is not there.
+
+**The complication.** `infra/` is **deliberately gitignored** (`.gitignore:21-25`: "Account-side
+infrastructure, kept out of the repo on purpose … Deploy from a local copy"), so
+`infra/oidc-role.yaml` has no git history and exists only as an untracked local copy — while
+`ai-pr-review.yml:36` and `evals.yml:310` both cite it as *the* setup step. So:
+
+- The contradiction is between a committed workflow comment and an **uncommitted local file**,
+  which is why it survived: no reviewer of the repo can see both halves at once.
+- A consumer cloning smtithy cannot follow the cited setup step at all, because the file it
+  names is not shipped. That half was already recorded in `notes/next-work.md`; what is new
+  here is that it is *intentional* (a gitignore rule with a rationale) rather than an
+  oversight, so the fix is a documentation decision — ship a sanitised template, or stop
+  citing a path that consumers will never have — not a missing-file bug.
 
 The substantive point behind the template's warning does survive, and is worth stating
 precisely: because the credential-bearing environment carries no protection of its own, what
 keeps the human in the loop is the `needs: approve` job dependency plus `environment_gate.py`
 — *not* the OIDC subject claim's environment binding. The claim binding scopes **which repo
 and environment** may assume the role; it does not itself withhold anything. A caller job
-that referenced `ai-pr-review-runtime` without `needs: approve` would satisfy the trust
-policy. That is a defence-in-depth gap in the *consumer's* workflow rather than in the
-harness, but the template's description is the wrong place to look for it.
+referencing `ai-pr-review-runtime` without `needs: approve` would satisfy the trust policy.
+That is a defence-in-depth gap in the *consumer's* caller rather than in the harness, and
+D2 is what stops it mattering: the assertion runs inside the gated job regardless of how the
+caller wired its `needs`.
 
 ## Finding 1: an early refusal reports a second, misleading failure
 
