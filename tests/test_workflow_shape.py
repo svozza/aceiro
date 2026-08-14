@@ -11,6 +11,7 @@ properties. Not a general YAML implementation: it reads step lists, step keys an
 scalar values, which is all the assertions below use.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,47 @@ def job_environment(text: str, job: str) -> str | None:
         if stripped.startswith("environment:"):
             return stripped[len("environment:"):].strip()
     return None
+
+
+def workflow_input(text: str, name: str) -> dict[str, str]:
+    """One `workflow_call` input's own scalar keys, as declared.
+
+    Block scalars (`description: >-`) collapse to their marker, since no assertion
+    here reads prose — `type` and `default` are what a consumer's value is bound by.
+    """
+    inputs_indent = None
+    input_indent = None
+    keys: dict[str, str] = {}
+    for raw in text.splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        current = len(raw) - len(raw.lstrip())
+        stripped = raw.strip()
+        if inputs_indent is None:
+            if stripped == "inputs:":
+                inputs_indent = current
+            continue
+        if current <= inputs_indent:
+            break  # past the inputs block (secrets:, permissions:, ...)
+        if input_indent is None:
+            if stripped == f"{name}:":
+                input_indent = current
+            continue
+        if current <= input_indent:
+            break  # the next input
+        key, _, value = stripped.partition(":")
+        keys[key.strip()] = value.strip()
+    return keys
+
+
+def github_env_writes(block: str) -> set[str]:
+    """Every name a job's steps export to $GITHUB_ENV.
+
+    The reverse direction of a wiring pin needs the whole set and not a membership
+    test: an exported name no module reads is either dead or a name something reads
+    under a different spelling, and both are silent.
+    """
+    return set(re.findall(r"([A-Z_][A-Z0-9_]*)=[^\n]*>> \"\$GITHUB_ENV\"", block))
 
 
 def untrusted_checkout_index(steps) -> int:
@@ -1067,65 +1109,185 @@ class TestSupplyChainPinning:
             )
 
 
-class TestTheGeneratorBudgetFitsItsJob:
-    """WALL_CLOCK_SECONDS x MAX_ATTEMPTS plus backoff must fit inside the agent
-    job's timeout-minutes, with room to spare.
+AGENT_JOBS = [("ai-pr-review.yml", "review"), ("ai-pr-fix.yml", "plan")]
 
-    The constraint cc_loop's own comment states: the budget is PER ATTEMPT and must
-    leave room for MAX_ATTEMPTS of them inside the workflow's timeout, because when
-    it matched the job timeout "a slow run was killed by GitHub mid-step and every
-    diagnostic was lost with it -- the transcript is only useful if the process
-    lives long enough to write it."
 
-    Asserted here rather than trusted, because the two numbers live in different
-    files: the budget in cc_loop.py, the job timeout in the workflows. Nothing
-    connected them, so either could move alone and the arithmetic silently stop
-    holding.
+class TestTheConsumerSetsTheGeneratorBudget:
+    """ADR-0015's wiring: ONE `workflow_call` input governs the agent job's
+    `timeout-minutes` AND the deadline cc_loop sizes each attempt from.
 
-    The headroom is not decoration. Between the job starting and the generator
-    running there is a checkout, a Python setup, a hash-pinned pip install and a
-    quarantine fetch, and after it the transcript and artifact upload. A budget that
-    consumes the whole job leaves the failure path -- the one that needs the
-    transcript most -- with nowhere to write.
+    The value crosses a job boundary, which YAML joins and nothing else checks —
+    renaming a `decline` output once left all 1,951 tests green while the poster read
+    nothing. And cc_loop TOLERATES an absent deadline, for the eval runners, so a
+    workflow that forgot the variable would not fail: it would quietly run every
+    consumer's review on the harness's own budget. Nothing at runtime distinguishes
+    those two cases.
     """
 
-    AGENT_JOBS = [("ai-pr-review.yml", "review"), ("ai-pr-fix.yml", "plan")]
-
-    def budget_seconds(self):
+    @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
+    def test_the_agent_job_timeout_is_the_consumers_input(self, workflow, job):
+        # A literal here is the defect ADR-0015 exists for: `timeout-minutes` on a
+        # called workflow's job is the CALLEE's, so the consumer has no remedy.
         import cc_loop
 
-        backoff = sum(
-            cc_loop.API_ERROR_BACKOFF_SECONDS * 2 ** (attempt - 1)
-            for attempt in range(1, cc_loop.MAX_ATTEMPTS)
-        )
-        return cc_loop.WALL_CLOCK_SECONDS * cc_loop.MAX_ATTEMPTS + backoff
-
-    @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
-    def test_the_whole_retry_budget_fits_the_job_timeout(self, workflow, job):
         block = job_block((WORKFLOWS / workflow).read_text(), job)
-        timeout = int(next(
-            line.split(":")[1] for line in block.splitlines() if "timeout-minutes" in line
-        ))
-        budget = self.budget_seconds()
-        assert budget < timeout * 60, (
-            f"{workflow}:{job} allows {timeout} min but the generator may spend "
-            f"{budget / 60:.1f} min; GitHub would kill the step mid-run and the "
-            "transcript would be lost with it"
+        line = next(line.strip() for line in block.splitlines() if "timeout-minutes" in line)
+        assert f"inputs.{cc_loop.TIMEOUT_INPUT}" in line, (
+            f"{workflow}:{job} sets {line!r}; the agent job's ceiling must read the "
+            f"{cc_loop.TIMEOUT_INPUT} input, or it is the harness's number and not the "
+            "consumer's"
         )
 
     @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
-    def test_at_least_two_minutes_of_headroom_remain(self, workflow, job):
-        # Setup and teardown are not free: checkout, setup-python, a hash-pinned
-        # pip install, the quarantine fetch, then the artifact upload. Exhausting
-        # the job leaves the failure path unable to report why it failed.
+    def test_both_workflows_declare_the_input_the_module_names(self, workflow, job):
+        import cc_loop
+
+        declared = workflow_input((WORKFLOWS / workflow).read_text(), cc_loop.TIMEOUT_INPUT)
+        assert declared, (
+            f"{workflow} declares no {cc_loop.TIMEOUT_INPUT} input, so `inputs.` reads "
+            "of it are empty and the job has no ceiling at all"
+        )
+        assert declared.get("type") == "number", (
+            f"{workflow}'s {cc_loop.TIMEOUT_INPUT} is type {declared.get('type')!r}; a "
+            "string would reach `timeout-minutes` unvalidated"
+        )
+        assert declared.get("default"), (
+            f"{workflow}'s {cc_loop.TIMEOUT_INPUT} has no default, so every existing "
+            "consumer's calls break on a required input"
+        )
+
+    def test_the_two_workflows_default_to_the_same_budget(self):
+        # Both lanes run the same generator loop over the same measurement, so two
+        # defaults would mean one was chosen by nobody. Also the figure the
+        # arithmetic below reads.
+        import cc_loop
+
+        defaults = {
+            workflow: workflow_input((WORKFLOWS / workflow).read_text(),
+                                     cc_loop.TIMEOUT_INPUT)["default"]
+            for workflow, _ in AGENT_JOBS
+        }
+        assert len(set(defaults.values())) == 1, (
+            f"the two agent jobs default to different budgets: {defaults}"
+        )
+
+    @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
+    def test_the_deadline_is_stamped_from_the_same_input(self, workflow, job):
+        # ONE number: a deadline computed from a second input or a constant is the
+        # coupling this replaced, moved somewhere new, and it drifts the same way.
+        import cc_loop
+
         block = job_block((WORKFLOWS / workflow).read_text(), job)
-        timeout = int(next(
-            line.split(":")[1] for line in block.splitlines() if "timeout-minutes" in line
-        ))
-        headroom = timeout * 60 - self.budget_seconds()
-        assert headroom >= 120, (
-            f"{workflow}:{job} leaves only {headroom / 60:.1f} min for checkout, install, "
-            "the quarantine fetch and the transcript upload"
+        assert cc_loop.DEADLINE_ENV in block, (
+            f"{workflow}:{job} never writes {cc_loop.DEADLINE_ENV}, so cc_loop falls "
+            "back to its own constants and the consumer's input governs the job "
+            "ceiling only"
+        )
+        # Scoped to the stamping STEP: the job's own `timeout-minutes` reads the
+        # input two lines up, so a job-wide window is satisfied by that alone.
+        write = next(line for line in block.splitlines() if cc_loop.DEADLINE_ENV in line)
+        step = block[block.rindex("- name:", 0, block.index(cc_loop.DEADLINE_ENV)):]
+        bound = re.findall(
+            r"([A-Z_][A-Z0-9_]*): \$\{\{ inputs\." + re.escape(cc_loop.TIMEOUT_INPUT) + r" \}\}",
+            step,
+        )
+        assert bound, (
+            f"{workflow}:{job} stamps the deadline in a step that never reads the "
+            f"{cc_loop.TIMEOUT_INPUT} input; the job ceiling and the generator's "
+            "deadline must be one number"
+        )
+        assert any(name in write for name in bound), (
+            f"{workflow}:{job} binds the input to {bound} and then computes the "
+            f"deadline from something else: {write.strip()!r}"
+        )
+
+    @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
+    def test_the_deadline_is_stamped_before_the_job_spends_anything(self, workflow, job):
+        # POSITION, not presence: stamped after setup, the consumer's number would
+        # start when setup ENDED, so the job and the generator would each be allowed
+        # the whole timeout and GitHub would kill the step with the transcript
+        # unwritten. Relocating the ADR-0006 gate step once left 56 tests green.
+        import cc_loop
+
+        block = job_block((WORKFLOWS / workflow).read_text(), job)
+        assert block.index(cc_loop.DEADLINE_ENV) < block.index("uses:"), (
+            f"{workflow}:{job} stamps the deadline after its first action, so setup "
+            "time lands on top of the consumer's budget instead of inside it"
+        )
+
+    @pytest.mark.parametrize(("workflow", "job"), AGENT_JOBS)
+    def test_the_job_exports_no_name_the_module_declares_no_reader_for(self, workflow, job):
+        # The reverse direction, which makes this a pairing rather than a checklist:
+        # an exported name cc_loop does not read is either dead or the same value
+        # misspelled, and the misspelling is silent — the module finds nothing under
+        # its own name and tolerates the absence exactly as designed.
+        import cc_loop
+
+        block = job_block((WORKFLOWS / workflow).read_text(), job)
+        assert github_env_writes(block) == {cc_loop.DEADLINE_ENV}, (
+            f"{workflow}:{job} exports {github_env_writes(block)} to $GITHUB_ENV; "
+            f"cc_loop declares a reader for {cc_loop.DEADLINE_ENV} alone"
+        )
+
+
+class TestTheGeneratorBudgetLeavesRoomForTheJob:
+    """What the arithmetic pin BECAME (ADR-0015).
+
+    It used to assert that WALL_CLOCK_SECONDS x MAX_ATTEMPTS plus backoff fits the
+    agent job's `timeout-minutes`, because those two numbers lived in different
+    files and nothing connected them. The input now IS the connection: it sets the
+    job ceiling and the deadline both, so a budget raised without the job following
+    is no longer expressible.
+
+    What still needs asserting is the reserve: each attempt is sized from the time
+    remaining, so left alone the generator spends the whole job and the failure path
+    has nowhere to write the transcript. The floor stays a MEASUREMENT — two
+    production runs on one pull request, one completing a review in 397s of API time
+    over 11 tool calls, one exhausting 600s over 21 without submitting.
+    """
+
+    # A review that completed, scaled to the exploration that did not: 758s.
+    COMPLETED_API_SECONDS = 397
+    CALLS_WHEN_IT_FIT = 11
+    CALLS_WHEN_IT_DID_NOT = 21
+
+    @property
+    def floor(self) -> float:
+        return self.COMPLETED_API_SECONDS * self.CALLS_WHEN_IT_DID_NOT / self.CALLS_WHEN_IT_FIT
+
+    def test_the_default_budget_covers_a_review_that_explores_harder(self):
+        # The consumer-facing half, and what stops the reserve growing until the
+        # default stops working.
+        import cc_loop
+
+        default_minutes = int(workflow_input(
+            (WORKFLOWS / AGENT_JOBS[0][0]).read_text(), cc_loop.TIMEOUT_INPUT
+        )["default"])
+        usable = default_minutes * 60 - cc_loop.POST_GENERATOR_RESERVE_SECONDS
+        assert usable >= self.floor, (
+            f"a {default_minutes}-minute default leaves {usable:.0f}s after the "
+            f"{cc_loop.POST_GENERATOR_RESERVE_SECONDS}s reserve, which does not cover the "
+            f"measured {self.floor:.0f}s of a review that explores harder"
+        )
+
+    def test_the_reserve_leaves_room_for_the_steps_after_the_generator(self):
+        # The bundle steps run `if: always()` precisely so a FAILED generator's
+        # transcript still lands, and uploading it is a network round trip.
+        import cc_loop
+
+        assert cc_loop.POST_GENERATOR_RESERVE_SECONDS >= 60, (
+            f"{cc_loop.POST_GENERATOR_RESERVE_SECONDS}s is not enough for the bundle "
+            "assembly and the artifact upload that follow the generator"
+        )
+
+    def test_an_attempt_too_small_to_use_is_not_started(self):
+        # So that a spent budget reports itself as one, rather than as a timeout from
+        # an attempt the loop knew could not submit.
+        import cc_loop
+
+        assert 0 < cc_loop.MIN_ATTEMPT_SECONDS < self.floor, (
+            "the minimum attempt must be positive and well below the cost of a real "
+            f"review; {cc_loop.MIN_ATTEMPT_SECONDS}s against a {self.floor:.0f}s floor"
         )
 
     def test_the_budget_is_not_the_original_development_value(self):
@@ -1142,30 +1304,48 @@ class TestTheGeneratorBudgetFitsItsJob:
             "measured to time out real reviews"
         )
 
-    def test_the_turn_ceiling_does_not_bind_before_the_clock(self):
-        """The two ceilings are co-limits; only the clock has a measured rationale.
+    # A repository whose reviews are more Grep than Read makes more calls in the same
+    # clock, so the ordering must hold at a per-call cost BELOW the measured one. 0.7
+    # is the margin the hand-set pair already had (45 turns against the ~31 that 900s
+    # buys), rather than a fresh number.
+    CHEAPER_CALLS = 0.7
 
-        WALL_CLOCK_SECONDS and MAX_TURNS both bound how far the reviewer may
-        investigate, and either one failing ends the run with no artifact. Raising
-        the clock alone relocates the failure rather than fixing it: at 900s and the
-        measured ~29s per tool call, a review may make ~31 calls, which the previous
-        MAX_TURNS of 30 would have refused first -- with a different message and no
-        hint that the budget was no longer the constraint.
+    def calls_permitted(self, budget: float) -> float:
+        import cc_loop
 
-        So the clock must be the binding constraint and the turn count a runaway
-        backstop above it. Stated as the arithmetic so re-measuring the per-call cost
-        moves the floor.
+        measured = cc_loop.MEASURED_TOOL_CALL_SECONDS / cc_loop.MEASURED_TOOL_CALLS
+        return budget / (measured * self.CHEAPER_CALLS)
+
+    def test_the_fallback_turn_ceiling_does_not_bind_before_the_fallback_clock(self):
+        """The two ceilings are co-limits and only the clock has a measured
+        rationale, so raising the clock alone relocates the failure: at 900s and ~29s
+        per call a review may make ~31, which the previous MAX_TURNS of 30 refused
+        first. This pair is the FALLBACK and is still set by hand, so its ordering is
+        asserted rather than derived.
         """
         import cc_loop
 
-        seconds_per_tool_call = 618 / 21  # measured on a production run
-        calls_the_clock_permits = cc_loop.WALL_CLOCK_SECONDS / seconds_per_tool_call
-        assert cc_loop.MAX_TURNS > calls_the_clock_permits, (
+        permitted = self.calls_permitted(cc_loop.WALL_CLOCK_SECONDS)
+        assert cc_loop.MAX_TURNS > permitted, (
             f"MAX_TURNS={cc_loop.MAX_TURNS} binds before the "
-            f"{cc_loop.WALL_CLOCK_SECONDS}s clock, which permits "
-            f"{calls_the_clock_permits:.0f} tool calls at the measured "
-            f"{seconds_per_tool_call:.0f}s each -- so a review would fail on the turn "
-            "ceiling and report the wrong constraint"
+            f"{cc_loop.WALL_CLOCK_SECONDS}s clock, which permits {permitted:.0f} tool "
+            "calls -- so a review would fail on the turn ceiling and report the wrong "
+            "constraint"
+        )
+
+    # The smallest attempt the loop will start, the two figures the fallback has
+    # held, what the default input buys after the reserve, and GitHub's own limit.
+    @pytest.mark.parametrize("budget", [90, 600, 900, 2820, 21600])
+    def test_the_derived_turn_ceiling_does_not_bind_before_the_clock_either(self, budget):
+        """The same ordering over the derivation, at every budget one input can
+        produce rather than at the one pair the constants were chosen for."""
+        import cc_loop
+
+        permitted = self.calls_permitted(budget)
+        assert cc_loop.turn_ceiling(budget) > permitted, (
+            f"a {budget}s attempt permits {permitted:.0f} tool calls, but its derived "
+            f"ceiling is {cc_loop.turn_ceiling(budget)} turns -- so the review would "
+            "fail on the turn count and report a constraint the consumer did not set"
         )
 
     def test_the_budget_covers_a_review_that_explores_harder(self):
@@ -1190,16 +1370,16 @@ class TestTheGeneratorBudgetFitsItsJob:
         Expressed as the arithmetic rather than as `> 600`, for the reason the
         replaced assertion had right: if either figure is re-measured the floor moves
         with it, where a bare number would only echo whatever was set.
+
+        Applied to the FALLBACK, which is the budget a run with no deadline gets —
+        the eval runners and local invocation. The consumer-facing half of the same
+        measurement is test_the_default_budget_covers_a_review_that_explores_harder.
         """
         import cc_loop
 
-        completed_api_seconds = 397  # a review that finished, from its ResultMessage
-        calls_when_it_fit = 11       # tool calls that review made
-        calls_when_it_did_not = 21   # tool calls the run that exhausted 600s made
-        floor = completed_api_seconds * calls_when_it_did_not / calls_when_it_fit
-        assert cc_loop.WALL_CLOCK_SECONDS >= floor, (
-            f"{cc_loop.WALL_CLOCK_SECONDS}s does not cover {floor:.0f}s, the measured "
-            f"cost of a {completed_api_seconds}s review scaled to the "
-            f"{calls_when_it_did_not}-tool-call exploration that exhausted 600s in "
+        assert cc_loop.WALL_CLOCK_SECONDS >= self.floor, (
+            f"{cc_loop.WALL_CLOCK_SECONDS}s does not cover {self.floor:.0f}s, the measured "
+            f"cost of a {self.COMPLETED_API_SECONDS}s review scaled to the "
+            f"{self.CALLS_WHEN_IT_DID_NOT}-tool-call exploration that exhausted 600s in "
             "production without submitting"
         )

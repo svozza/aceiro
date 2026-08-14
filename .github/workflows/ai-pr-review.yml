@@ -79,6 +79,21 @@ on:
         type: string
         required: false
         default: global.anthropic.claude-opus-4-8[1m]
+      agent-timeout-minutes:
+        description: >-
+          How long the review may take. This is the agent's WHOLE budget: it sets
+          the generator job's `timeout-minutes`, and the job's first step stamps a
+          deadline from it that cc_loop sizes each attempt's wall clock and turn
+          ceiling from (ADR-0015). Raise it if reviews of your repository
+          legitimately cost more — the wall clock bounds REASONING VOLUME, which
+          is a property of your repository and the diff under review, and 50 was
+          measured on one repository. A ceiling rather than a reservation: GitHub
+          bills elapsed time, so raising it costs nothing until a run uses it.
+          Whole minutes only. GitHub terminates any hosted-runner job at 6 hours
+          however this is set, and the generator clamps its deadline there.
+        type: number
+        required: false
+        default: 50
       comment-marker:
         description: Hidden HTML marker identifying this generator's sticky comment.
         type: string
@@ -198,27 +213,33 @@ jobs:
       )
     runs-on: ubuntu-latest
     environment: ai-pr-review-runtime
-    # Must exceed cc_loop's own budget (WALL_CLOCK_SECONDS x MAX_ATTEMPTS plus
-    # backoff) with room for setup; when the two were equal, GitHub killed the
-    # step first and the generator's diagnosis was never written.
-    #
-    # 50, tracking the budget's rise to 900s x 3. The earlier figures here credited
-    # provider latency for exhausting the budget; that reading came from a streaming
-    # usage snapshot and is corrected in cc_loop's WALL_CLOCK_SECONDS comment -- the
-    # wall clock is reasoning volume, ~30k output tokens for a five-file diff and
-    # ~45k when the reviewer explores harder. test_workflow_shape pins this against
-    # cc_loop.WALL_CLOCK_SECONDS, and it FAILED when the budget moved and this did
-    # not -- which is the whole reason that assertion exists.
-    #
-    # This is a ceiling, not a reservation: GitHub bills elapsed time, so raising it
-    # costs nothing until a run uses it. What it does cost is how long a genuinely
-    # wedged job takes to be killed.
-    timeout-minutes: 50
+    # The consumer's number, and the same one the generator's deadline is stamped
+    # from below (ADR-0015). Verified rather than assumed: jobs.<job_id>.timeout-minutes
+    # accepts the `inputs` context.
+    timeout-minutes: ${{ inputs.agent-timeout-minutes }}
     permissions:
       contents: read
       pull-requests: read # PR metadata + SHA-anchored diff via API; never write
       id-token: write
     steps:
+      # FIRST, so this job's own setup is spent inside the consumer's number rather
+      # than on top of it: cc_loop sizes each attempt from the time REMAINING. The
+      # variable's name is pinned against cc_loop.DEADLINE_ENV in both directions,
+      # a value crossing a job boundary being joined by YAML alone (ADR-0015).
+      - name: Stamp the generator deadline
+        env:
+          AGENT_TIMEOUT_MINUTES: ${{ inputs.agent-timeout-minutes }}
+        run: |
+          # A `number` input need not be a whole one, and the arithmetic below fails
+          # obscurely on a fraction. Refused where the value is read: the generator
+          # would receive a valid deadline computed from a nonsense input.
+          case "$AGENT_TIMEOUT_MINUTES" in
+            ''|*[!0-9]*)
+              echo "::error::agent-timeout-minutes must be a whole number of minutes, got '${AGENT_TIMEOUT_MINUTES}'" >&2
+              exit 1 ;;
+          esac
+          echo "SMTITHY_AGENT_DEADLINE=$(( $(date +%s) + AGENT_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
+
       - name: Checkout consumer trusted base SHA
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

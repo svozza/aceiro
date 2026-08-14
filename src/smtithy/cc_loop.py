@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import time
+from math import ceil
 from pathlib import Path
 
 import anyio
@@ -87,75 +88,31 @@ DISALLOWED_TOOLS = [
 # Both bounds fail closed: exceeding either yields no accepted submission, so
 # run() returns non-zero with no artifact.
 #
-# 45, and it must stay ABOVE what WALL_CLOCK_SECONDS permits, because these two are
-# CO-LIMITS on the same thing -- how far the reviewer may investigate -- and only
-# one of them has a measured rationale. Measured: a production run made 21 tool
-# calls in 618s, so a call costs ~29s, so a 900s budget permits ~31. At the previous
-# 30 the turn ceiling would have bound FIRST, and raising the clock alone would have
-# relocated the same failure to a different error message ("hit the 30-turn limit")
-# with no diagnostic hint that the budget was no longer the constraint.
-#
-# So the time budget is the binding constraint by construction and this stays a
-# runaway backstop. test_workflow_shape asserts that ordering; it fails if the clock
-# is raised without this, which is the mistake that assertion exists to catch.
+# The FALLBACK ceiling, for a run with no deadline; otherwise turn_ceiling() derives
+# it from the attempt's clock. The two are co-limits on how far the reviewer may
+# investigate and only the clock has a measured rationale, so the clock must bind
+# first -- exceeding this reports a constraint nobody chose. ADR-0015 has the
+# argument; test_workflow_shape asserts the ordering over the constant and the
+# derivation both.
 MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "45"))
 
-# PER ATTEMPT, and it must leave room for MAX_ATTEMPTS of them plus the backoff
-# inside the workflow's timeout-minutes. When this matched the job timeout, a
-# slow run was killed by GitHub mid-step and every diagnostic was lost with it:
-# the transcript is only useful if the process lives long enough to write it.
+# PER ATTEMPT, and likewise the FALLBACK: with a deadline set, attempt_budget()
+# sizes each attempt from the time left instead.
 #
-# 150s was the original value and it was wrong: a fast-feedback figure carried over
-# from a different repository and a simpler agent flow, never a measured production
-# budget. Measured here, it timed out a real review of a FOUR FILE, 5.5 KB diff --
-# because the ceiling bounds a whole agent SESSION (process spawn, model latency,
-# and every tool call the agent makes exploring the tree), not the diff. A reviewer
-# chasing one symbol across crates spends most of its budget on investigation. The
-# same input succeeded on a re-run, which is what identifies this as a ceiling set
-# too close to normal variance rather than a size limit.
+# What it bounds is REASONING VOLUME, not latency. 150, 420 and 600 were each set or
+# raised against a misread measurement -- a per-event `usage.output_tokens`, which is
+# a streaming snapshot (see serialize_message): a run reading as "3 to 9 output
+# tokens per turn" emitted 29,533, with duration_api_ms 397,726 of a 396,325ms run,
+# so every millisecond was the provider generating at a normal 74 tok/s. 900 covers
+# the ~45k tokens a review that explores harder spends; 600 sat on the boundary and
+# lost twice in production.
 #
-# 420 and then 600 were each raised against a MISREAD measurement, and the reading
-# is corrected here because it was cited as the reason for both. Earlier comments
-# said the session emitted "3 to 9 output tokens" per turn and concluded the wall
-# clock was provider latency rather than work. Those figures came from an
-# AssistantMessage's `usage`, which is a STREAMING SNAPSHOT -- see
-# serialize_message. Measured against the ResultMessage on a real review, the
-# per-event figures sum to 148 against an actual 29,533 output tokens, and
-# duration_api_ms was 397,726 of a 396,325ms run: every millisecond was the
-# provider GENERATING, at 74 output tok/s. There is no latency anomaly, and the
-# 30-165s gaps between tool calls are the model thinking.
+# `effort` is the cheaper lever and is deliberately not taken: it is unset, so the
+# CLI resolves it per model, and lowering it trades review depth for wall clock.
 #
-# So the real quantity this ceiling bounds is REASONING VOLUME. A review of a
-# five-file production diff cost ~30k output tokens (~400s). The run that
-# exhausted 600s made 21 tool calls where the run that fit made 11 -- it explored
-# harder because a previous fix had removed the obvious defect -- which at the same
-# throughput is ~45k tokens, ~650s. 900 covers that with headroom; 600 sat on the
-# boundary and lost.
-#
-# The cheaper lever was deliberately NOT taken: `effort` is unset, so the CLI
-# resolves it per model, and lowering it to buy budget trades review depth for
-# wall clock on a harness whose findings are meant to be actionable. Raising the
-# ceiling is the honest response once the cost is known to be work.
-#
-# A wall-clock timeout does NOT retry -- see the `timed_out` branch, which fails
-# the run on the attempt that hit it -- so MAX_ATTEMPTS defends against API errors
-# only. The pin below still reserves for all of them, whose worst case needs two
-# attempts to die by api_error at nearly the full wall clock; that has never been
-# observed (zero api_errors across 51 eval sessions and every production run),
-# while the failure that does occur uses one attempt's worth of a three-attempt
-# reserve.
-#
-# tests/test_workflow_shape.py pins the arithmetic against the agent jobs'
-# timeout-minutes, since the two numbers live in different files and nothing else
-# connects them. 900 x MAX_ATTEMPTS needs timeout-minutes >= 46; raising this
-# without moving those is what the pin exists to catch.
-#
-# CONSUMER-FACING GAP, not yet closed: this is reachable only as an environment
-# variable, which a caller of the reusable workflow cannot set, and the job's
-# timeout-minutes is the callee's. So this figure is every consumer's hard
-# ceiling, measured on one repository. A consumer whose reviews legitimately cost
-# more has no supported remedy. Revisit trigger for the dynamic budget: a timeout
-# AT this ceiling, or a tail past it in the `session_usage` records.
+# Reachable as an environment variable, which serves direct invocation only -- a
+# caller of a reusable workflow cannot inject env into the callee's jobs. What a
+# consumer sets is TIMEOUT_INPUT.
 WALL_CLOCK_SECONDS = int(os.environ.get("CC_WALL_CLOCK_SECONDS", "900"))
 
 # THREE, not four. Attempts defend against API errors, where a retry is cheap and
@@ -173,6 +130,104 @@ MAX_SUBMISSIONS = 4
 
 # Doubled per attempt, so the budget spans 1s + 2s + 4s of waiting.
 API_ERROR_BACKOFF_SECONDS = float(os.environ.get("CC_API_ERROR_BACKOFF_SECONDS", "1"))
+
+# The consumer's budget (ADR-0015). TIMEOUT_INPUT is a `workflow_call` input --
+# the only channel a caller of a reusable workflow has -- and it governs the agent
+# job's `timeout-minutes` and the deadline below from ONE number.
+#
+# The deadline crosses a job boundary, so it is joined by YAML and by nothing else:
+# this pairing gets decline.OUTPUT_ENV's treatment, asserted against both workflows
+# in both directions. That pin is what makes the tolerated-absent fallback safe, a
+# workflow that forgot the variable being indistinguishable at runtime from direct
+# invocation.
+TIMEOUT_INPUT = "agent-timeout-minutes"
+DEADLINE_ENV = "SMTITHY_AGENT_DEADLINE"
+
+# Held back for the steps after the generator, which assemble and upload the
+# bundle: a generator spending the whole job leaves the failure path nowhere to
+# write the transcript. Setup is NOT held back -- the deadline is stamped by the
+# job's first step, so setup is spent inside the consumer's number.
+POST_GENERATOR_RESERVE_SECONDS = 120
+
+# Twice the ~40s a whole pinned eval session costs, the smallest complete session
+# measured. Below it an attempt cannot reach a submission, so starting one reports
+# a timeout where the honest reason is a spent budget. Applied to a DERIVED budget
+# only: a remainder can be arbitrarily small, where a configured
+# CC_WALL_CLOCK_SECONDS is what an operator said the budget is.
+MIN_ATTEMPT_SECONDS = 90
+
+# One production run, kept as the measurement rather than as a rate so that
+# re-measuring moves everything derived from it.
+MEASURED_TOOL_CALLS = 21
+MEASURED_TOOL_CALL_SECONDS = 618
+
+# How far the turn ceiling stays above the calls the clock permits: the ratio the
+# hand-set pair already had (45 turns against the ~31 that 900s buys).
+TURN_HEADROOM = 1.5
+
+# GitHub kills any hosted-runner job at 6 hours whatever `timeout-minutes` says, and
+# both agent jobs are `runs-on: ubuntu-latest`, so a deadline past this is one the
+# platform will not honour -- the generator would be killed mid-attempt with the
+# transcript unwritten. Clamped rather than refused: a consumer over the platform's
+# limit still wants their reviews to run. The clamp measures from the generator's
+# start rather than the job's, so it is approximate by the setup duration; the
+# alternative is a second value crossing the job boundary.
+GITHUB_JOB_LIMIT_SECONDS = 6 * 60 * 60
+
+
+def session_deadline() -> float | None:
+    """When the generator must be finished, on the MONOTONIC clock, or None.
+
+    None means no deadline was set, which is direct invocation. A deadline that is
+    present and unreadable RAISES instead: absence is a caller that never had a
+    budget, garbage is broken wiring, and falling back there would run a consumer's
+    review on a budget they did not set and say nothing.
+
+    Converted to monotonic time once, here, because anyio.fail_after measures
+    against a monotonic clock and this arrives as a wall-clock epoch second.
+    """
+    raw = os.environ.get(DEADLINE_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        epoch = int(raw)
+    except ValueError:
+        raise Rejection(
+            f"{DEADLINE_ENV} is {raw!r}, which is not an epoch second. The agent job's "
+            f"first step computes it from the {TIMEOUT_INPUT} input, so a value that "
+            f"cannot be read means that wiring is broken; falling back to "
+            f"{WALL_CLOCK_SECONDS}s would hide it behind a budget nobody chose."
+        ) from None
+    remaining = min(epoch - time.time(), GITHUB_JOB_LIMIT_SECONDS)
+    return time.monotonic() + remaining
+
+
+def attempt_budget(deadline: float | None) -> float:
+    """The wall clock one attempt may spend, in seconds.
+
+    From time REMAINING rather than `timeout-minutes` divided by MAX_ATTEMPTS
+    (ADR-0015): a wall-clock timeout does not retry, so dividing reserves two thirds
+    of every job for a worst case never observed. Call it per attempt — an attempt
+    that ended early returns its unused time to the next.
+
+    May return less than MIN_ATTEMPT_SECONDS, or a negative value; what to do about
+    a budget too small to use is the caller's decision.
+    """
+    if deadline is None:
+        return float(WALL_CLOCK_SECONDS)
+    return deadline - time.monotonic() - POST_GENERATOR_RESERVE_SECONDS
+
+
+def turn_ceiling(budget_seconds: float) -> int:
+    """The turn limit for an attempt holding `budget_seconds` of wall clock.
+
+    Kept above what the clock permits, so the clock binds first and a review that
+    runs out of room reports the budget the consumer set. Proportional to a
+    consumer-supplied number, which ADR-0015 accepts because the turn count bounds
+    cost and runaway rather than what a review can reach.
+    """
+    calls_the_clock_permits = budget_seconds * MEASURED_TOOL_CALLS / MEASURED_TOOL_CALL_SECONDS
+    return max(1, ceil(calls_the_clock_permits * TURN_HEADROOM))
 
 
 # Errors that cannot succeed on a later attempt: a missing IAM action, a denied
@@ -390,13 +445,17 @@ def build_review_server(submit, name: str = "review") -> dict:
 
 
 def build_options(system_prompt: str, base_root: Path, pr_root: Path, server,
-                  server_name: str = "review", submit_tool: str = SUBMIT_TOOL) -> ClaudeAgentOptions:
+                  server_name: str = "review", submit_tool: str = SUBMIT_TOOL,
+                  max_turns: int | None = None) -> ClaudeAgentOptions:
+    """`max_turns` None means the module constant; drive_session passes the ceiling
+    derived from the attempt's own clock. Resolved in the body rather than as a
+    default argument so the constant stays live."""
     return ClaudeAgentOptions(
         system_prompt=system_prompt,
         mcp_servers={server_name: server},
         allowed_tools=[*READONLY_TOOLS, submit_tool],
         disallowed_tools=DISALLOWED_TOOLS,
-        max_turns=MAX_TURNS,
+        max_turns=MAX_TURNS if max_turns is None else max_turns,
         permission_mode="dontAsk",
         cwd=str(base_root),
         add_dirs=[str(base_root), str(pr_root)],
@@ -460,14 +519,18 @@ def serialize_message(message) -> str:
 
 
 async def _run_session(user_message: str, options: ClaudeAgentOptions, transcript: Transcript,
-                       state: dict, output_dir: Path, attempt: int, policy: dict) -> ResultMessage | None:
+                       state: dict, output_dir: Path, attempt: int, policy: dict,
+                       budget_seconds: float) -> ResultMessage | None:
     """One CLI session. Returns its ResultMessage, or None if the stream ended
     without one. The captured stream is written even when the session dies —
-    a partial stream is precisely the evidence a hang or crash leaves."""
+    a partial stream is precisely the evidence a hang or crash leaves.
+
+    `budget_seconds` is this attempt's clock, passed rather than read from the
+    module so a session cannot run on a budget the loop did not grant it."""
     lines: list[str] = []
     result = None
     try:
-        with anyio.fail_after(WALL_CLOCK_SECONDS):
+        with anyio.fail_after(budget_seconds):
             async for message in query(prompt=user_message, options=options):
                 lines.append(serialize_message(message))
                 if isinstance(message, AssistantMessage):
@@ -580,6 +643,12 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     except Rejection as exc:
         return fail(transcript, str(exc))
 
+    # Once, before the loop: the conversion to monotonic time is a startup fact.
+    try:
+        deadline = session_deadline()
+    except Rejection as exc:
+        return fail(transcript, str(exc))
+
     # The submission breaker is scoped to the RUN, not to a session: its budget
     # and its abort verdict are properties of the one artifact being produced,
     # so an api_error retry inherits them rather than being forgiven them.
@@ -627,6 +696,34 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         return 0
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        budget = attempt_budget(deadline)
+        if deadline is not None and budget < MIN_ATTEMPT_SECONDS:
+            # An artifact already verified is still the run's answer, as at every
+            # other ending here; otherwise the failure names the budget rather than
+            # letting a doomed attempt report a timeout it was started into.
+            if verified is not None:
+                return deliver(verified)
+            return fail(
+                transcript,
+                f"{budget:.0f}s of the review budget remain, which cannot reach a "
+                f"submission, so attempt {attempt} was not started. Raise the "
+                f"`{TIMEOUT_INPUT}` input on the calling workflow if reviews of this "
+                "repository need longer.",
+                attempt=attempt,
+                tool_calls=state["tool_calls"],
+            )
+        turns = turn_ceiling(budget)
+        # What room the attempt HAD. session_usage records what it spent, and only a
+        # timeout records what it was allowed, so a run that submitted under budget
+        # pressure was indistinguishable from one with room to spare.
+        transcript.log(
+            "attempt_budget",
+            round=attempt,
+            seconds=round(budget),
+            max_turns=turns,
+            consumer_set=deadline is not None,
+        )
+
         # What a restarted session does start over on: it may submit again, and
         # its tool calls are counted against it alone.
         state["accepted"] = None
@@ -637,11 +734,12 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         submit = make_tool(state)
         server = build_review_server(submit, server_name)
         options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
-                                server_name, submit_tool_name)
+                                server_name, submit_tool_name, turns)
 
         timed_out = False
         try:
-            result = anyio.run(_run_session, user_message, options, transcript, state, output_dir, attempt, policy)
+            result = anyio.run(_run_session, user_message, options, transcript, state, output_dir,
+                               attempt, policy, budget)
         except TimeoutError:
             # Recorded here and decided below: the session was cut off, but it may
             # already have got an artifact through the verifier, and this branch
@@ -650,7 +748,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
             transcript.log(
                 "wall_clock_timeout",
                 round=attempt,
-                seconds=WALL_CLOCK_SECONDS,
+                seconds=round(budget),
                 tool_calls=state["tool_calls"],
                 # What the killed session spent, as far as it can be known
                 # WITHOUT a ResultMessage — which is the whole problem with
@@ -707,7 +805,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         if result is not None and result.subtype == "error_max_turns" and verified is None:
             return fail(
                 transcript,
-                f"agent hit the {MAX_TURNS}-turn limit without calling {tool_display_name}",
+                f"agent hit the {turns}-turn limit without calling {tool_display_name}",
                 num_turns=result.num_turns,
                 tool_calls=state["tool_calls"],
             )
@@ -717,9 +815,12 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # breaker gate so an exhausted budget still outranks it.
         if timed_out:
             if verified is None:
+                # Names the input when the budget was the consumer's, because this
+                # is the one failure that reports itself and the remedy is theirs.
+                remedy = f"; raise the `{TIMEOUT_INPUT}` input" if deadline is not None else ""
                 return fail(
                     transcript,
-                    f"wall-clock timeout after {WALL_CLOCK_SECONDS}s on attempt {attempt}",
+                    f"wall-clock timeout after {budget:.0f}s on attempt {attempt}{remedy}",
                     tool_calls=state["tool_calls"],
                 )
             return deliver(verified)

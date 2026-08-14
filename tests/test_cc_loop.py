@@ -9,6 +9,7 @@ in production it runs in this process either way.
 
 import json
 import shutil
+import time
 from pathlib import Path
 
 import anyio
@@ -702,6 +703,165 @@ class TestRunFailureModes:
         assert "without a result envelope" in reasons[0]["reason"]
 
 
+class TestTheConsumersBudgetGovernsTheSession:
+    """ADR-0015: both ceilings come from the deadline the agent job stamped.
+
+    The consumer sets ONE number; each attempt's clock is the time left less the
+    reserve, and its turn ceiling is derived from that clock so the clock binds
+    first. Absence and garbage are deliberately different — no deadline is direct
+    invocation, an unreadable one is broken wiring.
+    """
+
+    def deadline_in(self, seconds: int) -> str:
+        return str(int(time.time()) + seconds)
+
+    def test_no_deadline_falls_back_to_the_module_constants(self, monkeypatch):
+        # The eval runners and every local invocation reach this branch.
+        monkeypatch.delenv(cc_loop.DEADLINE_ENV, raising=False)
+        assert cc_loop.session_deadline() is None
+        assert cc_loop.attempt_budget(None) == cc_loop.WALL_CLOCK_SECONDS
+        assert cc_loop.build_options("p", REPO_ROOT, SCENARIO / "pr_root", None).max_turns == (
+            cc_loop.MAX_TURNS
+        )
+
+    @pytest.mark.parametrize("raw", ["", "  "])
+    def test_an_empty_deadline_reads_as_absence(self, monkeypatch, raw):
+        # Indistinguishable from unset at this layer; what catches a WORKFLOW that
+        # emptied it is test_workflow_shape's pairing.
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, raw)
+        assert cc_loop.session_deadline() is None
+
+    @pytest.mark.parametrize("raw", ["50 minutes", "50.0", "later", "0x400"])
+    def test_an_unreadable_deadline_refuses_rather_than_falling_back(self, monkeypatch, raw):
+        # Falling back would run the review on the harness's budget while the
+        # consumer's input said otherwise, and report nothing.
+        from verify import Rejection
+
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, raw)
+        with pytest.raises(Rejection, match=cc_loop.DEADLINE_ENV):
+            cc_loop.session_deadline()
+
+    def test_the_deadline_is_converted_to_the_clock_the_timeout_measures(self, monkeypatch):
+        # Handing the epoch on unconverted is a budget of ~1.8 billion seconds, a
+        # timeout that can never fire, and the other timeout tests set the constant
+        # instead so none of them would notice.
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(1000))
+        assert cc_loop.session_deadline() == pytest.approx(time.monotonic() + 1000, abs=5)
+
+    def test_an_attempt_gets_the_time_remaining_less_the_reserve(self, monkeypatch):
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(1000))
+        budget = cc_loop.attempt_budget(cc_loop.session_deadline())
+        assert budget == pytest.approx(1000 - cc_loop.POST_GENERATOR_RESERVE_SECONDS, abs=5)
+
+    def test_a_deadline_past_githubs_own_job_limit_is_clamped(self, monkeypatch):
+        # `timeout-minutes` is the consumer's; GitHub's six-hour job limit is not, so
+        # past it the platform kills the job with the transcript unwritten.
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(20 * 60 * 60))
+        remaining = cc_loop.session_deadline() - time.monotonic()
+        assert remaining == pytest.approx(cc_loop.GITHUB_JOB_LIMIT_SECONDS, abs=5)
+
+    def test_the_session_is_given_the_derived_clock_and_ceiling(self, tmp_path, monkeypatch):
+        # End to end: what the loop computed is what the session runs under.
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(2000))
+        query = fake_query([[result_message()]])
+        monkeypatch.setattr(cc_loop, "query", query)
+        cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+
+        expected = 2000 - cc_loop.POST_GENERATOR_RESERVE_SECONDS
+        granted = next(e for e in transcript_events(tmp_path) if e["event"] == "attempt_budget")
+        assert granted["seconds"] == pytest.approx(expected, abs=5)
+        assert granted["consumer_set"] is True
+        # Proportional to the clock, not the constant beside it.
+        assert granted["max_turns"] == cc_loop.turn_ceiling(expected)
+        assert query.calls[0].max_turns == granted["max_turns"]
+        assert granted["max_turns"] > cc_loop.MAX_TURNS
+
+    def test_one_attempt_may_use_nearly_the_whole_job(self, tmp_path, monkeypatch):
+        # A wall-clock timeout does not retry, so reserving two thirds of the job for
+        # api_errors near the full clock -- never observed -- constrained the failure
+        # that does occur.
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(2000))
+        query = fake_query([[result_message()]])
+        monkeypatch.setattr(cc_loop, "query", query)
+        cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+
+        granted = next(e for e in transcript_events(tmp_path) if e["event"] == "attempt_budget")
+        assert granted["seconds"] > 2000 / cc_loop.MAX_ATTEMPTS, (
+            "the attempt was rationed against the retry count rather than given the "
+            "time actually remaining"
+        )
+
+    def test_an_attempt_that_died_early_returns_its_time_to_the_next(self, tmp_path, monkeypatch):
+        # The other half: each attempt is sized when it STARTS, which is what makes
+        # three fast api_error attempts still fit.
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(2000))
+        streams = [
+            [result_message(terminal_reason="api_error", result="API Error: 503")],
+            [result_message()],
+        ]
+        run_loop(tmp_path, monkeypatch, streams)
+        budgets = [e["seconds"] for e in transcript_events(tmp_path)
+                   if e["event"] == "attempt_budget"]
+        assert len(budgets) == 2
+        assert budgets[1] < budgets[0], (
+            "the second attempt was given the same budget as the first, so the clock "
+            "is being read once rather than per attempt"
+        )
+
+    def test_a_budget_too_small_to_use_starts_no_session(self, tmp_path, monkeypatch):
+        # Starting it anyway spends the reserve and then reports a timeout, where the
+        # honest reason is a spent budget and the remedy is the consumer's.
+        monkeypatch.setenv(
+            cc_loop.DEADLINE_ENV, self.deadline_in(cc_loop.POST_GENERATOR_RESERVE_SECONDS)
+        )
+        query = fake_query([[result_message()]])
+        monkeypatch.setattr(cc_loop, "query", query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+
+        assert code == 1
+        assert not (tmp_path / "review.json").exists()
+        assert query.calls == [], "a session was started into a budget it cannot submit in"
+        reason = next(e["reason"] for e in transcript_events(tmp_path)
+                      if e["event"] == "run_failed")
+        assert cc_loop.TIMEOUT_INPUT in reason, (
+            f"the failure does not name the input a consumer would raise: {reason!r}"
+        )
+
+    def test_a_configured_constant_is_not_second_guessed(self, tmp_path, monkeypatch):
+        # The floor applies to a DERIVED remainder only: a configured
+        # CC_WALL_CLOCK_SECONDS is what an operator said the budget is. The eval
+        # harness's short-budget runs depend on this, as do this file's timeout cases.
+        monkeypatch.delenv(cc_loop.DEADLINE_ENV, raising=False)
+        monkeypatch.setattr(cc_loop, "WALL_CLOCK_SECONDS", 1)
+        query = fake_query([[result_message()]])
+        monkeypatch.setattr(cc_loop, "query", query)
+        cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert len(query.calls) == 1, "a directly-configured budget was refused as too small"
+
+    def test_a_timeout_on_a_consumer_budget_names_the_input(self, tmp_path, monkeypatch):
+        # The one failure that reports itself, so it must report the remedy too.
+        monkeypatch.setattr(cc_loop, "POST_GENERATOR_RESERVE_SECONDS", 0)
+        monkeypatch.setattr(cc_loop, "MIN_ATTEMPT_SECONDS", 1)
+        # Three rather than one: `int(time.time())` drops a fraction of a second, so
+        # a one-second deadline can land under the floor and refuse to start instead.
+        monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(3))
+
+        async def _query(prompt, options):
+            await anyio.sleep(5)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 1
+        reason = next(e["reason"] for e in transcript_events(tmp_path)
+                      if e["event"] == "run_failed")
+        assert "wall-clock timeout" in reason and cc_loop.TIMEOUT_INPUT in reason
+        # The seconds recorded are the attempt's own, not the module constant.
+        timeout = next(e for e in transcript_events(tmp_path)
+                       if e["event"] == "wall_clock_timeout")
+        assert timeout["seconds"] < cc_loop.WALL_CLOCK_SECONDS
+
+
 class TestSessionCostIsAccountedFor:
     """Where the wall clock went, recorded in the SMALL file.
 
@@ -1214,7 +1374,7 @@ class TestTheStreamCaptureCannotMaskTheSessionsFailure:
             with pytest.raises(TimeoutError, match="wall clock"):
                 anyio.run(
                     cc_loop._run_session, "prompt", object(), transcript,
-                    {"model": None, "tool_calls": 0}, tmp_path, 1, POLICY,
+                    {"model": None, "tool_calls": 0}, tmp_path, 1, POLICY, 60,
                 )
         finally:
             monkeypatch.undo()
