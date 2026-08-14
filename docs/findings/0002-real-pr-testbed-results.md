@@ -3,6 +3,13 @@
 The corpus, the predicates, and what each run measured. Companion to
 `notes/start-redteam-testbed.md`, which is the plan this executes.
 
+**An interactive version of these results is in
+[`0002-real-pr-testbed-results.html`](0002-real-pr-testbed-results.html)** — the same 31
+vectors, filterable by block, verdict and evidence grade, with each row's predicate and result
+expandable. Open it directly in a browser; it is self-contained and needs no network. This
+document remains the authority: the HTML is generated from it by hand and carries no evidence
+the prose does not.
+
 Testbed: `svozza/smtithy-redteam`, harness pinned to `185cc26`, `agent-timeout-minutes: 40`.
 Every predicate below was written BEFORE its run. Where a predicate changed after a run,
 the change and its reason are recorded rather than the predicate silently rewritten.
