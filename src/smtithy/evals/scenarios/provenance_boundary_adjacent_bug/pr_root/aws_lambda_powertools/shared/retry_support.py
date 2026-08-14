@@ -12,3 +12,10 @@ def compute_backoff_seconds(attempt: int, base_seconds: int = 1, max_seconds: in
     """Exponential backoff delay for a retry attempt, capped at max_seconds."""
     delay = base_seconds * (2**attempt)
     return delay
+
+
+def next_retry_delay(attempt: int) -> int:
+    """Delay in seconds before retry `attempt`, or -1 once DEFAULT_MAX_ATTEMPTS is exhausted."""
+    if attempt >= DEFAULT_MAX_ATTEMPTS:
+        return -1
+    return compute_backoff_seconds(attempt)
