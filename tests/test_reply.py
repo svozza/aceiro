@@ -271,36 +271,58 @@ class TestTheEmittedOutputs:
         )
         assert "delimiter" in capsys.readouterr().err
 
-    def test_no_policy_legal_path_can_suppress_the_reply(self):
-        """The guard above runs over CONTRIBUTOR content, so the delimiter must be a
-        string the contributor cannot write.
+    # Every untrusted alphabet a reply reason interpolates. The undeliverable
+    # reason carries the commanded PATHS (contributor-authored,
+    # path_must_be_changed_file); the stranded reason carries the plan's BRANCH
+    # NAME (generator-authored, ADR-0018, both the pushed name and the branch
+    # open_pr opens from). A grammar joining this list must join this test, or a
+    # value in it that can spell the delimiter suppresses the reply.
+    INTERPOLATED_GRAMMARS = [
+        ("finding path",
+         lambda policy: policy["artifact_schema"]["findings"]["item_fields"]["path"]["pattern"],
+         "src/a{c}b.py"),
+        ("push_branch name",
+         lambda policy: policy["plan"]["step_kinds"]["push_branch"]["args"]["name"]["pattern"],
+         "smtithy/a{c}b"),
+        ("open_pr branch",
+         lambda policy: policy["plan"]["step_kinds"]["open_pr"]["args"]["branch"]["pattern"],
+         "smtithy/a{c}b"),
+    ]
 
-        The undeliverable reason interpolates the commanded paths, and a finding's
-        path must name a file the pull request touched
-        (`path_must_be_changed_file`) — so the contributor authors the alphabet. The
-        delimiter was `SMTITHY_DECLINE_EOF`, and the policy path pattern admits it as
-        a substring, so `src/SMTITHY_DECLINE_EOF.py` refused the emit and left the
-        commander with no comment: the "declined and told nobody" state ADR-0014
-        exists to prevent, reached through the mechanism built to prevent it and
-        fully self-serve, since the contributor controls both the fork-ness and the
-        filename.
+    @pytest.mark.parametrize("label,pattern_of,template",
+                             INTERPOLATED_GRAMMARS,
+                             ids=[g[0] for g in INTERPOLATED_GRAMMARS])
+    def test_no_legal_value_of_an_interpolated_grammar_can_suppress_the_reply(
+            self, label, pattern_of, template):
+        """The guard above runs over UNTRUSTED content, so the delimiter must be a
+        string none of the interpolated grammars can write.
+
+        Measured for the path half: the delimiter was `SMTITHY_DECLINE_EOF`, the
+        policy path pattern admits it as a substring, so `src/SMTITHY_DECLINE_EOF.py`
+        refused the emit and left the commander with no comment — the "declined and
+        told nobody" state ADR-0014 exists to prevent, reached through the mechanism
+        built to prevent it, and self-serve since the contributor controls both the
+        fork-ness and the filename. The branch grammars joined the alphabet when
+        ADR-0018 put the plan-authored branch name into the stranded reason: a
+        hostile diff steering the plan session's branch choice must not be able to
+        spell the delimiter either.
 
         Asserted against the PATTERN rather than against a list of guesses, and in
-        the direction that matters: it is not that these spellings are refused,
-        it is that NO legal path can contain the delimiter at all.
+        the direction that matters: it is not that known spellings are refused, it
+        is that NO legal value can contain the delimiter at all.
         """
         import re
 
-        pattern = POLICY["artifact_schema"]["findings"]["item_fields"]["path"]["pattern"]
+        pattern = pattern_of(POLICY)
         for character in reply._DELIMITER:
-            if re.fullmatch(pattern, f"src/a{character}b.py"):
+            if re.fullmatch(pattern, template.format(c=character)):
                 continue
             break
         else:
             pytest.fail(
-                f"every character of {reply._DELIMITER!r} is legal in a path, so a contributor can "
-                "name a file after the delimiter and suppress their own reply — the state "
-                "ADR-0014 exists to prevent, through the mechanism built to prevent it"
+                f"every character of {reply._DELIMITER!r} is legal in a {label}, so an "
+                "untrusted author can spell the delimiter and suppress the reply — the "
+                "state ADR-0014 exists to prevent, through the mechanism built to prevent it"
             )
 
     @pytest.mark.parametrize("hostile", [

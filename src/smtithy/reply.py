@@ -143,19 +143,22 @@ NOT_A_FAILURE = (
 def render(reason: str, *, kind: str, head_sha: str, ordinals: str, run_url: str) -> str:
     """The reply comment's body. Harness-authored prose, every sentence of it.
 
-    Nothing MODEL-controlled reaches this comment: a reply names a fact about the
-    CHANNEL, and there is no field in it a generator writes. That is one of the
-    three reasons ADR-0014 refuses a `decline` plan step — it would put a harness
-    limitation into model-authored prose.
+    No model RUNS to produce this comment — that is one of the three reasons
+    ADR-0014 refuses a `decline` plan step; it would put a harness limitation into
+    model-authored prose.
 
-    Harness-authored is not the same as harness-derived, and the difference matters
-    for anyone reasoning from this docstring. The undeliverable `reason` interpolates
-    the commanded PATHS, and a path is CONTRIBUTOR content: schema-constrained, and
-    verified to name a file the pull request touched, but its text is not ours. It is
-    placed in a code span the way the finding's own path already is, and the schema
-    pattern admits no backtick, so nothing in it composes markdown structure. What it
-    cannot be called is a field no untrusted party influences. The receipt's reason
-    interpolates the follow-up pull request's number and URL, which GitHub minted.
+    But harness-authored is not the same as harness-derived, and the difference
+    matters for anyone reasoning from this docstring. The undeliverable `reason`
+    interpolates the commanded PATHS, and a path is CONTRIBUTOR content:
+    schema-constrained, and verified to name a file the pull request touched, but
+    its text is not ours. The stranded reason (ADR-0018) interpolates the branch
+    name, which is GENERATOR content: plan-authored, prefix-confined and
+    pattern-constrained, but chosen by a model session that read the contributor's
+    diff. Both alphabets admit no backtick, so nothing in either composes markdown
+    structure, and neither can express the output delimiter — asserted against the
+    PATTERNS in test_reply. The receipt's reason interpolates the follow-up pull
+    request's number and URL, which GitHub minted. What none of them can be called
+    is a field no untrusted party influences.
 
     Self-dating, per ADR-0009's addendum B: the body carries the head SHA and the
     ordinals it spoke for, so it never claims a currency a later run must correct.
@@ -217,13 +220,14 @@ def emit(reason: str, *, kind: str, head_sha: str, ordinals: str) -> None:
     A value carrying the heredoc delimiter is REFUSED rather than escaped: it could
     close the block early and have its remainder read as more outputs.
 
-    That guard is **load-bearing on contributor content**, not defence in depth. The
+    That guard is **load-bearing on untrusted content**, not defence in depth. The
     reason is harness PROSE, but the undeliverable reason interpolates the commanded
-    PATHS, and a finding's path must name a file the pull request touched
-    (`path_must_be_changed_file`, enforced at verify.py) — so a contributor authors
-    the alphabet this check runs over. A path that contained the delimiter refused the
-    emit and left the commander with no comment at all, which is why _DELIMITER
-    carries characters the path grammar cannot express.
+    PATHS (contributor-authored, `path_must_be_changed_file`) and the stranded reason
+    interpolates the plan's BRANCH NAME (generator-authored, ADR-0018) — so a
+    contributor and a model each author part of the alphabet this check runs over. A
+    value that contained the delimiter refused the emit and left the commander with
+    no comment at all, which is why _DELIMITER carries characters neither the path
+    grammar nor the branch grammar can express.
 
     Refusing rather than escaping stays: an escape is a fail-open answer to a value
     that should not exist, and a red run remaining red is the point. Closing the
