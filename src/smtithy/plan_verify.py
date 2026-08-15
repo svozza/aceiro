@@ -44,6 +44,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 
 from canonicalize import strip_invisible
 from verify import (
@@ -100,8 +101,10 @@ class Step:
     """One parsed plan step — the value parse_plan returns and the only input
     a later phase accepts, so a phase cannot receive model output the schema
     phase never proved (ADR-0017). In src/ only the parser constructs Steps;
-    tests build them by hand as fixtures. Per-kind key safety (that a patch
-    step's args carry "path") is the parser's guarantee, not the type's."""
+    tests build them by hand as fixtures. Per-kind arg shape (that a patch
+    step's args carry "path", and that it is a string) is the parser's
+    guarantee, not the type's — readers that know their kind's spec cast
+    their args reads to the scalar type the policy declares."""
 
     id: str
     kind: str
@@ -474,14 +477,14 @@ def apply_patch_steps(anchored: list[tuple[int, Step]], content_source) -> dict[
     """
     applied: dict[str, bytes] = {}
     for index, step in anchored:
-        path = step.args["path"]
+        path = cast(str, step.args["path"])
         where = f"plan.steps[{index}].args.old"
         try:
             original = content_source(path)
         except OSError as exc:
             raise Rejection(f"{where}: cannot read {path!r} at the reviewed SHA: {exc}")
         pending = applied.get(path, original)
-        old_bytes = step.args["old"].encode("utf-8")
+        old_bytes = cast(str, step.args["old"]).encode("utf-8")
 
         at_reviewed_sha = count_occurrences(original, old_bytes)
         if at_reviewed_sha == 0:
@@ -502,7 +505,7 @@ def apply_patch_steps(anchored: list[tuple[int, Step]], content_source) -> dict[
                 f"{where}: matches {path!r} {occurrences} times once the earlier steps in this "
                 "plan have applied; an ambiguous anchor cannot be applied"
             )
-        applied[path] = pending.replace(old_bytes, step.args["new"].encode("utf-8"), 1)
+        applied[path] = pending.replace(old_bytes, cast(str, step.args["new"]).encode("utf-8"), 1)
     return applied
 
 
@@ -532,7 +535,7 @@ def check_write_class_targets(steps: tuple[Step, ...], policy_plan: dict, head_b
     for index, step in enumerate(steps):
         if arg_name := BRANCH_ARGS.get(step.kind):
             where = f"plan.steps[{index}].args.{arg_name}"
-            branch = step.args[arg_name]
+            branch = cast(str, step.args[arg_name])
             # Segment-wise, so `smtithy-evil/x` cannot pass as `smtithy/`, and a
             # `..` segment cannot climb out of the namespace it matched.
             if not branch.startswith(prefix) or ".." in branch.split("/"):
@@ -603,14 +606,14 @@ def check_commanded_scope(steps: tuple[Step, ...], commanded_findings: list[dict
     """
     if not commanded_findings:
         return
-    paths = {step.args["path"] for step in steps if step.kind in ANCHORED_KINDS}
+    paths = {cast(str, step.args["path"]) for step in steps if step.kind in ANCHORED_KINDS}
     if not paths:
         return
     # Sorted and deduplicated so the message is stable and names each missing file
     # once, however many commanded findings share it.
-    missing = sorted({
+    missing = sorted(cast("set[str]", {
         finding.get("path") for finding in commanded_findings
-    } - paths)
+    }) - paths)
     if missing:
         raise Rejection(
             f"plan: the commanded finding(s) are on {missing} but the fix touches "
@@ -653,7 +656,7 @@ def check_plan_containment(steps: tuple[Step, ...], diff_text: str, changed_file
     # on why a denylist is acceptable here despite allowlisting being the rule
     # everywhere else).
     for index, step in anchored:
-        path = step.args["path"]
+        path = cast(str, step.args["path"])
         pattern = matches_denylist(path, policy_plan["path_denylist"])
         if pattern is not None:
             raise Rejection(f"plan.steps[{index}].args.path: {path!r} is on the policy path denylist ({pattern!r})")
@@ -694,7 +697,8 @@ def check_plan_containment(steps: tuple[Step, ...], diff_text: str, changed_file
         )
     plan_bytes = 0
     for index, step in anchored:
-        changed_lines = _line_count(step.args["old"]) + _line_count(step.args["new"])
+        old, new = cast(str, step.args["old"]), cast(str, step.args["new"])
+        changed_lines = _line_count(old) + _line_count(new)
         if changed_lines > policy_plan["max_changed_lines"]:
             raise Rejection(
                 f"plan.steps[{index}]: {changed_lines} changed lines exceeds max_changed_lines "
@@ -703,7 +707,7 @@ def check_plan_containment(steps: tuple[Step, ...], diff_text: str, changed_file
         # UTF-8 bytes, not code points: the budget bounds what reaches the file,
         # and a file holds bytes. Measured in code points a 3-byte code point
         # would cost a third of its real size.
-        changed_bytes = len(step.args["old"].encode("utf-8")) + len(step.args["new"].encode("utf-8"))
+        changed_bytes = len(old.encode("utf-8")) + len(new.encode("utf-8"))
         if changed_bytes > policy_plan["max_changed_bytes"]:
             raise Rejection(
                 f"plan.steps[{index}]: {changed_bytes} changed bytes exceeds max_changed_bytes "
@@ -738,7 +742,7 @@ def check_plan_containment(steps: tuple[Step, ...], diff_text: str, changed_file
         # Already proved readable and unambiguously anchored by the applier above,
         # so this cannot fail where that succeeded.
         original = content_source(path)
-        old_bytes = step.args["old"].encode("utf-8")
+        old_bytes = cast(str, step.args["old"]).encode("utf-8")
 
         # Placement (ADR-0009 addendum: "`old` IS the anchored line"). GitHub's
         # suggestion block replaces the commented line range, not the text in
@@ -775,7 +779,7 @@ def check_plan_containment(steps: tuple[Step, ...], diff_text: str, changed_file
         # keeps the step shape closed), so its extent is derived from the anchor
         # and every line it spans must be in the hunk set — the same provenance
         # the addressed line already got, applied to the whole replaced range.
-        end_line = start_line + _line_count(step.args["old"]) - 1
+        end_line = start_line + _line_count(cast(str, step.args["old"])) - 1
         for spanned in range(start_line, end_line + 1):
             if spanned not in hunks.get(path, set()):
                 raise Rejection(
@@ -791,7 +795,7 @@ def check_plan_containment(steps: tuple[Step, ...], diff_text: str, changed_file
         # denylist and secrets are not the bytes committed. Exempt where `old`
         # ends the file unterminated too, because then there is no following line
         # to join to and the two models agree.
-        new = step.args["new"]
+        new = cast(str, step.args["new"])
         if new and not new.endswith("\n") and old_bytes.endswith(b"\n"):
             raise Rejection(
                 f"{where.replace('.old', '.new')}: drops the line terminator `old` carried, which "
@@ -873,7 +877,7 @@ def check_plan_cardinality(steps: tuple[Step, ...], policy_plan: dict) -> None:
     by_path: dict[str, list[str]] = {}
     for step in steps:
         if step.kind == "suggest":
-            by_path.setdefault(step.args["path"], []).append(step.id)
+            by_path.setdefault(cast(str, step.args["path"]), []).append(step.id)
     for path, ids in by_path.items():
         if len(ids) > 1:
             raise Rejection(
@@ -1022,10 +1026,10 @@ def check_plan_markdown(steps: tuple[Step, ...], policy: dict) -> None:
     for index, step in enumerate(steps):
         if step.kind == "suggest":
             check_note_carries_no_suggestion(
-                step.args["note"], f"plan.steps[{index}].args.note"
+                cast(str, step.args["note"]), f"plan.steps[{index}].args.note"
             )
             check_suggestion_new_survives_markdown(
-                step.args["new"], f"plan.steps[{index}].args.new"
+                cast(str, step.args["new"]), f"plan.steps[{index}].args.new"
             )
 
 
@@ -1058,7 +1062,7 @@ def check_plan_secrets(steps: tuple[Step, ...], policy: dict) -> None:
     )]
     for step in steps:
         if step.kind in ANCHORED_KINDS:
-            texts.append(step.args["old"] + step.args["new"])
+            texts.append(cast(str, step.args["old"]) + cast(str, step.args["new"]))
     # Keeping the raw forms alongside means stripping can only ADD matches: it
     # cannot fuse two innocent runs into a false negative.
     texts.extend(strip_invisible(text) for text in list(texts))

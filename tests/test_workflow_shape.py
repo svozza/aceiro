@@ -1027,6 +1027,22 @@ class TestOtherWorkflowsStayCorrect:
             "switching it to pull_request_target would put its cache in the base scope"
         )
 
+    def test_the_type_checker_is_its_own_job_beside_the_test_job(self):
+        # ADR-0017: ty is a compiled artifact acceptable only as a CI-only dev
+        # tool, so it gets its own job — folding it into test_verifier as a step
+        # would put the binary in the job whose contract is deterministic pytest,
+        # and folding pytest into it would do the reverse.
+        text = (WORKFLOWS / "quality_check.yml").read_text()
+        assert job_names(text) == ["test_verifier", "typecheck"]
+        typecheck = parse_steps(text, "typecheck")
+        commands = " ".join(value for step in typecheck for value in step.values())
+        assert "ty check" in commands
+        assert "pytest" not in commands
+        verifier = parse_steps(text, "test_verifier")
+        assert "ty" not in " ".join(
+            value for step in verifier for value in step.values() if "run" in step
+        ).split()
+
     def test_ai_pr_review_keys_its_cache_on_the_trusted_harness(self):
         steps = parse_steps((WORKFLOWS / "ai-pr-review.yml").read_text(), "review")
         for step in steps:

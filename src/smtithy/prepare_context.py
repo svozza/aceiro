@@ -54,7 +54,7 @@ MAX_TREE_BYTES = 500_000_000
 
 
 def fetch_pr(repo: str, pr_number: int) -> dict:
-    return api_json(f"/repos/{repo}/pulls/{pr_number}")
+    return cast("dict", api_json(f"/repos/{repo}/pulls/{pr_number}"))
 
 
 # Only the QUOTED form is read from `diff --git`. Unquoted, the line is

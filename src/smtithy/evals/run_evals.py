@@ -37,6 +37,7 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import cast
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -139,7 +140,7 @@ def make_injected_verify(reject_first_n: int):
     def new_session():
         state["remaining"] = reject_first_n
 
-    verify_fn.new_session = new_session
+    verify_fn.new_session = new_session  # ty: ignore[unresolved-attribute]
     return verify_fn
 
 
@@ -325,11 +326,11 @@ def check_tools_within(events: list[dict], allowed: list[str]) -> None:
     is about what the harness permitted, not about which artifact survived.
     """
     permitted = set(allowed)
-    seen = {
+    seen = cast("set[str]", {
         record.get("tool")
         for record in events
         if record.get("event") == "tool_request" and record.get("tool")
-    }
+    })
     if outside := sorted(seen - permitted):
         raise EvalFailure(
             f"the transcript invoked {outside}, outside the permitted inventory "

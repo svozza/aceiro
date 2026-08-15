@@ -56,3 +56,31 @@ jobs:
           pip install --require-hashes -r requirements.txt -r requirements-dev.txt
       - name: Run verifier tests
         run: python -m pytest tests/ -p no:cacheprovider -q
+
+  # ADR-0017: the type checker is what makes the parsed-step signatures teeth
+  # rather than documentation. Its own job, deliberately NOT a step inside
+  # test_verifier: ty is a compiled artifact acceptable only as a CI-only dev
+  # tool, and a separate job keeps it out of every other job's environment —
+  # it never runs where a credential lives. Holds no secrets, runs on every
+  # pull request from any fork, same as the job above.
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read # checkout code only
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install dependencies and the checker (hash-pinned)
+        # requirements.txt too: ty resolves third-party imports from the
+        # environment it is pointed at, so the harness's real dependencies
+        # must be present or every import reads as unresolved.
+        run: |
+          pip install --require-hashes -r requirements.txt -r requirements-typecheck.txt
+      - name: Type-check the harness
+        run: ty check --python "$(which python)"

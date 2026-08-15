@@ -28,7 +28,11 @@ ROOT = Path(__file__).parent.parent
 # and the pin are what this compares.
 REQUIREMENT_RE = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?(?:==(?P<version>[^\s;]+))?")
 
-PAIRS = [("requirements.in", "requirements.txt"), ("requirements-dev.in", "requirements-dev.txt")]
+PAIRS = [
+    ("requirements.in", "requirements.txt"),
+    ("requirements-dev.in", "requirements-dev.txt"),
+    ("requirements-typecheck.in", "requirements-typecheck.txt"),
+]
 
 
 def declared(path: Path) -> dict[str, str | None]:
@@ -66,6 +70,11 @@ class TestParsers:
 
     def test_the_input_reader_skips_directives_and_keeps_unpinned_names(self):
         assert declared(ROOT / "requirements-dev.in") == {"pytest": None, "hypothesis": None}
+
+    def test_the_typecheck_input_declares_only_the_checker(self):
+        # ADR-0017: the checker is a dev tool for its own CI job, so anything
+        # else appearing here is a dependency creeping into that job unreviewed.
+        assert declared(ROOT / "requirements-typecheck.in") == {"ty": None}
 
     def test_the_lockfile_reader_finds_pins_and_not_hashes(self):
         pins = locked(ROOT / "requirements.txt")

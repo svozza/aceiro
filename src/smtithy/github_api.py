@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import cast
+from typing import NoReturn, cast
 
 API_ROOT = "https://api.github.com"
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -136,7 +136,7 @@ def paginate(path_with_query: str):
         page += 1
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"::error::{message}", file=sys.stderr)
     sys.exit(1)
 
