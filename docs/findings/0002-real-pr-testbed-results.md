@@ -995,6 +995,68 @@ Three options, in the order I would take them:
 3. **Do not drop the prover entirely.** Losing the second implementation of frame and
    write-targets in the privileged job is a worse trade than keeping either of the above.
 
+### F2d — which future extensions would make the prover load-bearing
+
+If the solver is currently buying option value (F2c), the option is only worth its premium if
+something is going to exercise it. The test applied below: **a property earns a solver when
+iteration is infeasible or error-prone** — unknown values (nothing to enumerate), branching
+(paths exponential in branch count), or synthesis (find a witness rather than check one).
+A ∀ over a small finite set is a `for` loop, however ∀-shaped it looks.
+
+By that test, the real candidates are the ones the harness has **already reserved**, which is
+the strongest available argument for keeping the encoding:
+
+**1. Staged grounding — the strongest candidate, and already written down.** ADR-0004's third
+consequence: *"If a later plan genuinely needs discovery (a multi-file refactor, a fix depending
+on a build artifact), the staged-grounding shape is the way in: generate → verify symbolically →
+resolve unprivileged → re-verify ground → execute. Not built now."* **Verify symbolically** is
+the one step no loop can do — the values do not exist yet, so the property must hold for *every*
+resolution of the unknowns. That is textbook SMT, and it is the only candidate here that cannot
+be reduced to iteration even in principle.
+
+**2. `control_flow: ["branch"]` (reserved closure 1).** Branches and joins make reachability
+path-sensitive, and paths grow exponentially in branch count. Per-step reachability is already
+in the spike's encoding. Iteration degrades fast here in a way it does not at 400 ordered pairs.
+
+**3. Bindings via `argument_forms` (reserved closure 2).** This is what makes taint
+non-vacuous: transitive closure over a dataflow DAG, asking ∃-a-path from a PR-derived source to
+a write-class step. Bounded by `max_steps`, so not intractable — but transitive closure with
+joins is exactly where hand-rolled analyses carry bugs, and the counterexample (the leaking
+path) is the audit artefact you actually want.
+
+**2 and 3 compose, and that is the point.** Bindings alone give a DAG; bindings *plus* branches
+give the "∃-dataflow-chain over branches and joins" question ADR-0003 cited as needing an SMT
+backend in the first place. Either alone is arguably a loop; together they are not.
+
+**Candidates that sound solver-shaped and are not** — recorded so they are not used to justify
+the dependency:
+
+- **Multi-hunk line drift.** Applying hunk *k* shifts every later anchor by
+  `new_lines − old_lines`, and there is a corpus scenario named `multi_hunk_line_drift`. Z3's
+  integer arithmetic fits neatly — but you can simply *simulate* the application concretely,
+  which is more trustworthy than an encoding of it. Prefer the simulation.
+- **Multi-patch conflict / confluence.** Reduces to pairwise non-interference, an O(n²) loop;
+  pairwise non-interference implies confluence for text replacement, so no permutation search is
+  needed. Already handled downstream, too — `plan_verify.count_occurrences` refuses an ambiguous
+  write.
+- **Stacked delivery ordering.** `stack.py` derives its order from a deterministic `sorted()`
+  over per-finding components. That is checking, not synthesis; a solver adds nothing.
+
+**A gap found while testing this, worth recording on its own.** Two `patch` steps on the same
+file with **identical `old` text** prove clean (exit 0), as does a **cascade** where patch 2's
+`old` is patch 1's `new` — a plan that is order-dependent and only applies in one order, while
+`ordering` constrains only patch-before-`push_branch`, never patch-versus-patch. Neither is a
+hole: `count_occurrences` and the ambiguity refusal catch both downstream in Python. But it is
+one more instance of the F2c pattern — **the prover proves less than the Python gate standing
+next to it.**
+
+**So the option has a specification but no schedule.** Keeping Z3 is justified *if* staged
+grounding or a reserved closure is actually going to open; it is sunk cost if they stay "not
+built now" indefinitely. A middle path that keeps the option without the premium: keep the
+encoding and its corpus in the repository and green, but stop shipping the WASM build into
+`execute` until a closure actually opens — the option costs nothing sitting in `ts/`, and quite a
+lot sitting in the only job that holds `contents: write`.
+
 ### F3 — C9, live: injection aimed at the plan session: **PASS**
 
 PR #16. The diff carries a comment addressed to the *fix planner*, not the reviewer,
