@@ -144,7 +144,8 @@ def check_plan_policy_keys(policy_plan: dict) -> None:
 
 
 def check_plan_arg_specs(policy_plan: dict) -> None:
-    """Validate every step kind's arg specs, whether or not a plan uses that kind.
+    """Validate every step kind's spec — its shape, write_class and arg specs —
+    whether or not a plan uses that kind.
 
     Swept eagerly for the reason check_reserved_closures is: the policy this gate
     interprets must be one it can enforce, and that is settled before a step is
@@ -152,10 +153,21 @@ def check_plan_arg_specs(policy_plan: dict) -> None:
     malformed write-class spec — the ones deciding where `contents: write` points
     — stays latent until some later plan exercises it.
 
+    write_class is validated here rather than where cardinality reads it, for the
+    same reason: a kind spec without it raised KeyError from the middle of that
+    check instead of naming the absent field before any step was read.
+
     Patterns are compiled with THIS gate's own engine: the gate must refuse what
     it cannot enforce as it will enforce it.
     """
     for kind, spec in policy_plan["step_kinds"].items():
+        if not isinstance(spec, dict):
+            raise Rejection(f"policy error: plan.step_kinds.{kind} is not an object")
+        if not isinstance(spec.get("write_class"), bool):
+            raise Rejection(
+                f"policy error: plan.step_kinds.{kind}.write_class must be true or false; "
+                "it decides which kinds the write-cardinality rule counts"
+            )
         args = spec.get("args")
         if not isinstance(args, dict):
             raise Rejection(f"policy error: plan.step_kinds.{kind}.args is not an object")

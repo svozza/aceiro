@@ -467,6 +467,28 @@ class TestSpecsAreValidatedEagerly:
     to discover the policy does not load.
     """
 
+    def test_a_kind_spec_missing_write_class_is_a_policy_error(self):
+        # check_plan_cardinality indexes spec["write_class"] for every kind, so a
+        # spec without it raised KeyError from the middle of that check rather
+        # than naming the absent field — the missing-key failure
+        # check_plan_policy_keys already refuses at the top level.
+        policy = copy.deepcopy(PLAN_POLICY)
+        del policy["step_kinds"]["label"]["write_class"]
+        with pytest.raises(Rejection, match="policy error.*write_class"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_a_non_boolean_write_class_is_a_policy_error(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["push_branch"]["write_class"] = "yes"
+        with pytest.raises(Rejection, match="policy error.*write_class"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
+    def test_a_kind_spec_that_is_not_an_object_is_a_policy_error(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["label"] = ["write_class", "args"]
+        with pytest.raises(Rejection, match="policy error.*not an object"):
+            check_plan_schema({"steps": [patch_step()]}, policy)
+
     def test_a_pattern_the_enforcer_cannot_compile_is_a_policy_error(self):
         # `\p{L}` is legal in most regex dialects (JS included) and a
         # PatternError to Python's re — the shape of pattern most likely to
