@@ -411,6 +411,45 @@ class TestTheDelivery:
         with pytest.raises(stack.AlreadyDelivered, match="12"):
             deliver()
 
+    def test_the_refusal_says_when_the_existing_pull_request_is_closed(self, monkeypatch, calls):
+        # Measured in finding 0002's close-out: the dedup spans every PR state on
+        # purpose (a closed fix is a maintainer's decision), so the reply named a
+        # CLOSED pull request as "already exists" — which reads as deliverable
+        # evidence — while the remedy lived only in a docstring. The message must
+        # carry the state and whose move reopening is.
+        monkeypatch.setattr(
+            stack, "find_existing_fix",
+            lambda *a, **k: {"number": 12, "html_url": "u", "state": "closed",
+                             "merged_at": None},
+        )
+        with pytest.raises(stack.AlreadyDelivered, match="closed without being merged") as caught:
+            deliver()
+        assert "reopening" in str(caught.value)
+
+    def test_the_refusal_says_when_the_existing_pull_request_is_merged(self, monkeypatch, calls):
+        # A merged fix is also state "closed", and telling its commander to reopen
+        # it would be advice GitHub refuses: the state note has to split on
+        # merged_at, not on state alone.
+        monkeypatch.setattr(
+            stack, "find_existing_fix",
+            lambda *a, **k: {"number": 12, "html_url": "u", "state": "closed",
+                             "merged_at": "2026-08-15T00:00:00Z"},
+        )
+        with pytest.raises(stack.AlreadyDelivered, match="merged, so the fix has already landed"):
+            deliver()
+
+    def test_an_open_pull_request_earns_no_state_note(self, monkeypatch, calls):
+        # And the note must not fire when there is nothing to note — including a
+        # listing that carries no state field at all, where claiming "closed"
+        # would be an invented fact.
+        for existing in ({"number": 12, "html_url": "u", "state": "open", "merged_at": None},
+                         {"number": 12, "html_url": "u"}):
+            monkeypatch.setattr(stack, "find_existing_fix", lambda *a, _e=existing, **k: _e)
+            with pytest.raises(stack.AlreadyDelivered) as caught:
+                deliver()
+            assert "closed" not in str(caught.value)
+            assert "merged" not in str(caught.value)
+
     def test_one_blob_per_patched_path(self, calls):
         deliver(applied={"src/app.py": b"a\n", "src/util.py": b"b\n"},
                 steps=patch_plan("src/app.py", "src/util.py"))

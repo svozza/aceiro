@@ -386,10 +386,27 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
     # Before any write: ADR-0007's refusal must land before a branch exists, or a
     # duplicate command leaves an orphan on its way to being refused.
     if existing := find_existing_fix(repo, base, key, bot_login=bot_login):
+        # The message reaches the commander as a reply (ADR-0018), and the dedup
+        # spans every PR state on purpose — so a closed match must say it is
+        # closed, or "already exists" reads as deliverable evidence while the
+        # remedy (reopening is the maintainer's move) stays in a docstring.
+        # Measured in finding 0002's close-out, where the reply named a closed
+        # pull request without saying so.
+        if existing.get("state") == "closed":
+            state_note = (
+                " That pull request is merged, so the fix has already landed."
+                if existing.get("merged_at") else
+                " That pull request is closed without being merged: closing a fix is a "
+                "maintainer's decision this command does not overrule, so reopening it "
+                "is yours."
+            )
+        else:
+            state_note = ""
         raise AlreadyDelivered(
-            f"a follow-up pull request for this finding at this head already exists: "
-            f"#{existing.get('number')} ({existing.get('html_url')}). ADR-0007 deduplicates on "
-            "(pull request, head SHA, finding), so this command is already delivered."
+            f"A follow-up pull request for this finding at this head already exists: "
+            f"#{existing.get('number')} ({existing.get('html_url')}).{state_note} "
+            "ADR-0007 deduplicates on (pull request, head SHA, finding), so this command "
+            "is already delivered."
         )
 
     # The reviewed COMMIT's tree, because /git/trees takes a tree SHA. This is also
@@ -416,7 +433,7 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
         # neither branch nor commit, and dropped GitHub's own "Reference already
         # exists" body on the floor.
         raise StrandedDelivery(
-            f"branch {branch!r} already exists in {repo}, so this fix was already pushed "
+            f"Branch {branch!r} already exists in {repo}, so this fix was already pushed "
             f"(possibly without its pull request); the commit built for it is {commit}. "
             "Delete the branch or close its follow-up pull request to retry"
         ) from exc
@@ -450,7 +467,7 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
         # permissions this job holds, and a delivery that checked it would be trusting
         # a second reader of what the API itself decides at the call.
         raise StrandedDelivery(
-            f"the repository does not permit GitHub Actions to open pull requests, so the "
+            f"The repository does not permit GitHub Actions to open pull requests, so the "
             f"fix was pushed to {branch!r} at {commit} and no follow-up pull request could "
             "be opened for it. Enable 'Allow GitHub Actions to create and approve pull "
             "requests' in Settings -> Actions -> General, then delete that branch and "
