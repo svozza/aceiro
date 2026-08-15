@@ -502,13 +502,17 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
     for index, step in enumerate(plan["steps"]):
         kind = step["kind"]
         if arg_name := BRANCH_ARGS.get(kind):
-            branch = step["args"][arg_name]
+            args = step.get("args")
             where = f"plan.steps[{index}].args.{arg_name}"
+            # As with the undeclared kind in _iter_plan_markdown: the schema
+            # phase pins args to an object carrying this key with a literal
+            # string value, so any other shape here means that phase is not
+            # wired in. Refuse rather than crash past it (KeyError on the
+            # missing key, AttributeError on .startswith).
+            if not isinstance(args, dict) or arg_name not in args:
+                raise Rejection(f"{where}: missing, so there is no branch name to confine")
+            branch = args[arg_name]
             if not isinstance(branch, str):
-                # As with the undeclared kind in _iter_plan_markdown: the schema
-                # phase pins this to a literal string first, so a non-string here
-                # means that phase is not wired in. Refuse rather than let a dict
-                # reach .startswith as an AttributeError.
                 raise Rejection(f"{where}: expected a branch name, got {type(branch).__name__}")
             # Segment-wise, so `smtithy-evil/x` cannot pass as `smtithy/`, and a
             # `..` segment cannot climb out of the namespace it matched.
@@ -523,7 +527,12 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
                     "the harness never pushes to the contributor's branch (ADR-0009 addendum)"
                 )
         elif kind == "label":
-            name = step["args"]["name"]
+            args = step.get("args")
+            if not isinstance(args, dict) or "name" not in args:
+                raise Rejection(
+                    f"plan.steps[{index}].args.name: missing, so there is no label to check"
+                )
+            name = args["name"]
             if name not in allowed_labels:
                 raise Rejection(
                     f"plan.steps[{index}].args.name: label {name!r} is not on the policy "
@@ -934,8 +943,16 @@ def _iter_plan_markdown(plan: dict, policy: dict):
                 f"plan.steps[{index}].kind: {kind!r} is not a declared step kind "
                 f"({', '.join(sorted(step_kinds))})"
             )
+        args = step.get("args")
         for arg_name in plan_markdown_args(step_kinds[kind]["args"], kind):
-            yield f"plan.steps[{index}].args.{arg_name}", step["args"][arg_name]
+            # Same reading as the kind above: schema pins args to the declared
+            # keys first, so a missing one here is the same unwired phase.
+            if not isinstance(args, dict) or arg_name not in args:
+                raise Rejection(
+                    f"plan.steps[{index}].args.{arg_name}: missing, though the policy marks "
+                    "it markdown-bearing"
+                )
+            yield f"plan.steps[{index}].args.{arg_name}", args[arg_name]
 
 
 # The info string that makes a fenced block APPLIABLE rather than quoted. Read as

@@ -104,6 +104,15 @@ class TestPlanShape:
         with pytest.raises(Rejection, match="exceeds max_steps"):
             check_plan_schema({"steps": steps}, PLAN_POLICY)
 
+    def test_verify_plan_enforces_id_uniqueness(self):
+        # Driver-level for the reason test_verify_plan_enforces_ordering is, and
+        # with more riding on it: no phase after schema reads ids, so this is the
+        # one schema property whose unwiring ADMITS the plan rather than crashing
+        # or refusing a later phase. The plan is otherwise fully valid.
+        plan = {"steps": [anchored_patch("s0"), push_step("s0"), open_pr_step("s2")]}
+        with pytest.raises(Rejection, match="duplicate id 's0'"):
+            verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
+
 
 class TestStepShape:
     def test_unknown_kind_rejects_whole_plan_and_names_the_universe(self):
@@ -1719,6 +1728,26 @@ class TestPlanMarkdownAndSecrets:
                           open_pr_step("s2")]}
         with pytest.raises(Rejection, match="expected a branch name, got dict"):
             check_write_class_targets(plan, PLAN_POLICY, None)
+
+    def test_a_push_step_missing_its_branch_arg_is_refused_rather_than_raising_keyerror(self):
+        # The other half of the guard above: schema pins the args OBJECT and its
+        # key set before this phase reads either.
+        plan = {"steps": [anchored_patch("s0"),
+                          {"id": "s1", "kind": "push_branch", "args": {}},
+                          open_pr_step("s2")]}
+        with pytest.raises(Rejection, match="missing, so there is no branch name"):
+            check_write_class_targets(plan, PLAN_POLICY, None)
+
+    def test_a_label_step_missing_its_name_is_refused_rather_than_raising_keyerror(self):
+        plan = {"steps": [anchored_patch("s0"), {"id": "s1", "kind": "label", "args": {}}]}
+        with pytest.raises(Rejection, match="missing, so there is no label"):
+            check_write_class_targets(plan, PLAN_POLICY, None)
+
+    def test_a_markdown_bearing_arg_missing_is_refused_rather_than_raising_keyerror(self):
+        plan = self.full_plan()
+        del plan["steps"][2]["args"]["body"]
+        with pytest.raises(Rejection, match=r"args\.body: missing, though the policy marks"):
+            check_plan_markdown(plan, self.full_policy())
 
     def test_an_undeclared_kind_is_refused_rather_than_raising_keyerror(self):
         # This phase indexes step_kinds by the step's own kind. check_plan_schema
