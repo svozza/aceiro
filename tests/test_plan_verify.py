@@ -1938,7 +1938,9 @@ class TestTheF1CorpusIsStillRefused:
          r"label_allowlist"),
         ("cardinality: two push_branch steps",
          lambda: TestTheF1CorpusIsStillRefused.chain(
-             anchored_patch("s0"), push_step("s1"), push_step("s3", name="smtithy/other"),
+             # Both name the branch open_pr opens from, so the branch-agreement
+             # check cannot also be crossed: the count is the case's ONE line.
+             anchored_patch("s0"), push_step("s1"), push_step("s3"),
              open_pr_step("s2")),
          r"2 push_branch steps"),
         ("cardinality: suggest alongside a write chain",
