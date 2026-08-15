@@ -44,7 +44,7 @@ the evidence each verdict rests on is quoted inline.
 | D3–D4 | `pull_request_target` end-to-end; concurrency | observed | PASS, one measurement hazard |
 | D5 | bot authorship | source + empirical lookup | PASS today, not by an explicit rule |
 | F0 | where the prover runs | live | **once, in `execute`** — the `plan` job cannot prove |
-| F1 | 16 crafted plans, one per policy | live | **PASS — 16/16 refused** |
+| F1 | 20 crafted plans, one per policy | live | **PASS — 20/20 refused** |
 | F2 | taint reachability | live + source | **unreachable by construction** (5 live policies, not 6) |
 | F2a | can taint be switched on? | live | **no** — reservation gate refuses widened policy; verdict line is vacuous |
 | F2b | what enforces §20's property instead | source | range-restriction, not flow-tracing; markdown excludes `link`/`image` |
@@ -777,10 +777,22 @@ CI.** The single proof is still correctly placed — after the artifact round-tr
 delivery, fail-closed on both failure modes — but a reader auditing the pipeline for
 defence-in-depth will count two proofs and find one.
 
-### F1 — the crafted sweep: **PASS, 16/16 refused**
+### F1 — the crafted sweep: **PASS, 20/20 refused**
 
-Baseline first: the genuine C8 plan proves clean, all six policies `holds`, exit 0. Then one
-violating plan per policy, each crossing a single line where possible.
+Baseline first: the genuine C8 plan proves clean, all six policies `holds`, exit 0. Then twenty
+violating plans, each crossing a single line where possible. **All twenty were refused**, but
+*which* component refused them is the load-bearing detail, so it is tallied rather than
+summarised:
+
+| decided by | count | attacks |
+|---|---|---|
+| **Z3** (`ordering`, `frame`) | **6** | 2 orderings, 4 frame/denylist |
+| plain TypeScript, no solver (`write_targets`, `cardinality`, `bounds`) | **9** | branch prefix, label, 3 cardinality, 4 bounds |
+| the **schema**, before the prover ran at all (exit 2) | **4** | `max_steps`, a binding, `kind: if`, `kind: exfiltrate` |
+| *(void — refused for an unintended reason, re-run properly)* | 1 | an invalid step id in my own fixture |
+
+(An earlier draft of this document said "16/16". That was my miscount across the two rounds;
+the corrected tally is above.)
 
 **Refused by the prover (exit 1, `DISPROVED`, counterexample on stdout):**
 
@@ -908,6 +920,80 @@ means ≤400 ordered pairs; the frame's file domain is interned from `changed_fi
 own paths), so both are decidable by iteration. What Z3 buys here is a uniform encoding and
 free counterexample extraction, not tractability — worth knowing before citing the solver as
 evidence of rigour.
+
+### F2c — is the solver earning its keep? On today's policy, not as a solver
+
+The question this block was really asked to settle. Stated as a verdict rather than a hint,
+with the evidence that supports it and the counter-case that survives.
+
+**What the solver decides today, and how hard those decisions are.** Only two of the six
+policies call Z3, and both quantify over *finite, enumerated* domains:
+
+- `ordering` — ∀ over pairs of steps, and `max_steps` is 20, so at most 400 pairs. A double
+  loop.
+- `frame` — ∀ over files, but the domain is interned from `changed_files` ∪ the plan's own
+  paths. A set membership test plus glob matching for the denylist.
+
+Neither is intractable, and neither is even awkward. The ∀-shape that ADR-0003's §2.5 threshold
+keys on is real, but a ∀ over 400 pairs is a `for` loop, not a solver problem.
+
+**And the frame property is already implemented without a solver, in the same job.**
+`plan_verify.check_plan_containment` does it in one line —
+
+```python
+if path not in changed:
+    raise Rejection(f"plan.steps[{index}].args.path: {path!r} is not a file this PR touched")
+```
+
+— and its own docstring names the relationship: *"the Python re-verification of what
+proveFrame proves."* `check_write_class_targets` likewise mirrors `proveWriteTargets`. Both the
+Python gate and the prover run inside `execute`, at the single step
+`Verify, re-prove and deliver (fail-closed)`, so the stated rationale ("the executor trusts no
+other job") does not distinguish them — they share a process boundary. What the duplication
+actually buys is **N-version redundancy**: two independent implementations of the same property,
+which does catch encoding bugs. That is a real benefit, but it is a different benefit from the
+one ADR-0003 claims.
+
+**And the empirical tally goes the same way.** Of 20 crafted violations, Z3 decided **6**. The
+non-solver checks in the same file decided **9**, and the schema rejected **4** before the
+prover was reached. The component that refused the most attacks in this block is the one that
+does no proving at all.
+
+**The counter-case, which does survive:**
+
+- **N-version redundancy in a privileged path.** `execute` is the only job holding
+  `contents: write`. Two independent implementations of frame and write-targets is a defensible
+  thing to want there.
+- **Counterexample extraction is free and genuinely good.** `patch p_probe_secrets_py
+  probe/secrets.py: not a file this PR touched`, and ordering naming both offending indices.
+  Hand-rolled checks tend to report "rejected" and stop.
+- **Optionality.** If the plan language ever grows bindings or branches, the encoding is built
+  and tested. Retrofitting a prover is harder than carrying one.
+
+**What it costs, stated so the trade is visible:** a second language in the harness (ADR-0003
+concedes this — prover TypeScript, harness Python); a `z3-solver` WASM dependency plus
+`Set up Node` and `Install and build the prover` steps *inside the job that holds the write
+credential*; three-way exit semantics carrying a documented hazard (a crashed prover must not
+arrive as a disproof); and ~85 ms of WASM load plus queries per run.
+
+**Verdict.** The solver is currently paying for **optionality and N-version redundancy, not for
+decidability**. That is a legitimate purchase, but it is a much weaker claim than "§20 needs an
+SMT backend", and the harness should say the weaker thing. Every control that actually refused
+something in this exercise was cheaper than the prover: the command parser, the SHA-scoped
+witness, the environment gate, the quarantine caps, the schema, and the Python gates.
+
+Three options, in the order I would take them:
+
+1. **Keep it, restate the justification.** Cheapest, honest. ADR-0004 already says the remit is
+   frame and ordering; what is missing is that taint is vacuous rather than merely deferred, and
+   that the two live policies are finite-domain.
+2. **Keep the prover, drop Z3.** Reimplement `ordering` and `frame` as plain TypeScript — a
+   double loop and a set test — preserving the counterexample output and the N-version
+   redundancy against the Python gate. This *removes a WASM dependency and a build step from the
+   only job that can write to the repository*, which is a security improvement as well as a
+   simplification.
+3. **Do not drop the prover entirely.** Losing the second implementation of frame and
+   write-targets in the privileged job is a worse trade than keeping either of the above.
 
 ### F3 — C9, live: injection aimed at the plan session: **PASS**
 
