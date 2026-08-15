@@ -492,6 +492,12 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
         if arg_name := BRANCH_ARGS.get(kind):
             branch = step["args"][arg_name]
             where = f"plan.steps[{index}].args.{arg_name}"
+            if not isinstance(branch, str):
+                # As with the undeclared kind in _iter_plan_markdown: the schema
+                # phase pins this to a literal string first, so a non-string here
+                # means that phase is not wired in. Refuse rather than let a dict
+                # reach .startswith as an AttributeError.
+                raise Rejection(f"{where}: expected a branch name, got {type(branch).__name__}")
             # Segment-wise, so `smtithy-evil/x` cannot pass as `smtithy/`, and a
             # `..` segment cannot climb out of the namespace it matched.
             if not branch.startswith(prefix) or ".." in branch.split("/"):
@@ -907,6 +913,15 @@ def _iter_plan_markdown(plan: dict, policy: dict):
     step_kinds = policy["plan"]["step_kinds"]
     for index, step in enumerate(plan["steps"]):
         kind = step["kind"]
+        if kind not in step_kinds:
+            # check_plan_schema refuses this first, so reaching here means that
+            # phase is no longer wired into the driver. Refusing rather than
+            # raising KeyError keeps the same reading of an unknown kind — reject
+            # the whole plan — for a caller who runs this phase on its own.
+            raise Rejection(
+                f"plan.steps[{index}].kind: {kind!r} is not a declared step kind "
+                f"({', '.join(sorted(step_kinds))})"
+            )
         for arg_name in plan_markdown_args(step_kinds[kind]["args"], kind):
             yield f"plan.steps[{index}].args.{arg_name}", step["args"][arg_name]
 

@@ -19,8 +19,10 @@ from plan_verify import (  # noqa: E402
     apply_patch_steps,
     check_plan_cardinality,
     check_plan_containment,
+    check_plan_markdown,
     check_plan_ordering,
     check_plan_schema,
+    check_write_class_targets,
     glob_to_regexp,
     matches_denylist,
     tree_content_source,
@@ -1686,6 +1688,26 @@ class TestPlanMarkdownAndSecrets:
 
     def test_a_full_plan_verifies_end_to_end(self):
         self.run(self.full_plan())
+
+    def test_a_non_string_branch_is_refused_rather_than_raising_attributeerror(self):
+        # Same class as the undeclared kind below, found the same way: the schema
+        # phase pins this arg to a literal string, so a dict here means that phase
+        # is not wired in — and it reached str.startswith as an AttributeError.
+        plan = {"steps": [anchored_patch("s0"), push_step("s1", name={"$ref": "s0.output"}),
+                          open_pr_step("s2")]}
+        with pytest.raises(Rejection, match="expected a branch name, got dict"):
+            check_write_class_targets(plan, PLAN_POLICY, None)
+
+    def test_an_undeclared_kind_is_refused_rather_than_raising_keyerror(self):
+        # This phase indexes step_kinds by the step's own kind. check_plan_schema
+        # refuses an undeclared one first, so the only way here is that phase not
+        # being wired into the driver — found by mutation-testing exactly that
+        # (the F1 corpus below), where it raised KeyError instead of refusing.
+        # Fails closed either way; a Rejection is the auditable half.
+        plan = self.full_plan()
+        plan["steps"].insert(0, {"id": "c0", "kind": "if", "args": {"cond": "tests_pass"}})
+        with pytest.raises(Rejection, match=r"'if' is not a declared step kind"):
+            check_plan_markdown(plan, self.full_policy())
 
     def test_a_suggestion_plan_verifies_end_to_end(self):
         self.run(self.suggest_plan())
