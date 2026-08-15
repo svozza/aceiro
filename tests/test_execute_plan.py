@@ -63,12 +63,22 @@ def label(step_id="s7"):
     return {"id": step_id, "kind": "label", "args": {"name": "ai-remediation"}}
 
 
+def parsed(*steps):
+    """The dict fixtures as hand-built Steps (the convenience ADR-0017 reserves
+    to tests). The dict spelling stays because the same fixtures also serialise
+    into plan.json for the main() cases, where the parser does the constructing.
+    """
+    from plan_verify import Step
+
+    return tuple(Step(id=s["id"], kind=s["kind"], args=s["args"]) for s in steps)
+
+
 # ------------------------------------------------------- decide_delivery ---
 
 
 class TestDecideDelivery:
     def test_a_single_file_single_region_suggestion_delivers_as_suggestions(self):
-        delivery = decide_delivery([suggest("s0")])
+        delivery = decide_delivery(parsed(suggest("s0")))
         assert delivery.mode == "suggestions"
         assert delivery.path == "src/app.py"
 
@@ -86,63 +96,63 @@ class TestDecideDelivery:
         # it" is not a delivery mechanism (see the mixed-kinds arm, refused on
         # exactly that ground).
         with pytest.raises(Refusal, match="2 suggest steps"):
-            decide_delivery([suggest("s0"), suggest("s1", line=3)])
+            decide_delivery(parsed(suggest("s0"), suggest("s1", line=3)))
 
     def test_label_alongside_suggestions_is_fine(self):
         # label is a side effect, not a fix step; it must not confuse the
         # decision in either direction.
-        assert decide_delivery([suggest(), label()]).mode == "suggestions"
+        assert decide_delivery(parsed(suggest(), label())).mode == "suggestions"
 
     def test_patch_chain_delivers_as_stacked_pr(self):
-        delivery = decide_delivery([patch(), push(), open_pr()])
+        delivery = decide_delivery(parsed(patch(), push(), open_pr()))
         assert delivery.mode == "stacked_pr"
         assert delivery.path is None
 
     def test_multi_file_patches_still_one_stacked_pr(self):
         steps = [patch("s0"), patch("s1", path="src/util.py", old="def check(path):\n"),
                  push(), open_pr()]
-        assert decide_delivery(steps).mode == "stacked_pr"
+        assert decide_delivery(parsed(*steps)).mode == "stacked_pr"
 
     def test_no_fix_step_refuses(self):
         # The label-only hole: such a plan verifies today; the executor is
         # where it must fail visibly rather than no-op (chunk D designs the
         # honest decline channel).
         with pytest.raises(Refusal, match="no fix step"):
-            decide_delivery([label()])
+            decide_delivery(parsed(label()))
 
     def test_write_chain_alone_refuses(self):
         with pytest.raises(Refusal, match="no fix step"):
-            decide_delivery([push(), open_pr()])
+            decide_delivery(parsed(push(), open_pr()))
 
     def test_mixed_suggest_and_patch_refuses(self):
         # Unreachable for a plan the prompt shaped, refused anyway: "the
         # verifier must have caught it" is not a delivery mechanism.
         with pytest.raises(Refusal, match="mixed"):
-            decide_delivery([suggest("s0"), patch("s1"), push(), open_pr()])
+            decide_delivery(parsed(suggest("s0"), patch("s1"), push(), open_pr()))
 
     def test_suggestions_spanning_files_refuse(self):
         # ADR-0009's atomicity rule: per-file suggestions of a coordinated
         # fix can be half-applied. A multi-file fix is patch steps or nothing.
         with pytest.raises(Refusal, match="span 2 files"):
-            decide_delivery([suggest("s0"), suggest("s1", path="src/util.py")])
+            decide_delivery(parsed(suggest("s0"), suggest("s1", path="src/util.py")))
 
     def test_suggestions_with_a_write_chain_refuse(self):
         with pytest.raises(Refusal, match="nothing to push"):
-            decide_delivery([suggest(), push(), open_pr()])
+            decide_delivery(parsed(suggest(), push(), open_pr()))
 
     def test_patch_without_push_refuses(self):
         # Verifies (ordering is vacuous with no write step) but has no
         # delivery: nothing would carry the patch anywhere.
         with pytest.raises(Refusal, match="exactly one push_branch and one open_pr"):
-            decide_delivery([patch()])
+            decide_delivery(parsed(patch()))
 
     def test_patch_without_open_pr_refuses(self):
         with pytest.raises(Refusal, match=r"got 1 and 0"):
-            decide_delivery([patch(), push()])
+            decide_delivery(parsed(patch(), push()))
 
     def test_two_write_chains_refuse(self):
         with pytest.raises(Refusal, match=r"got 2 and 2"):
-            decide_delivery([patch(), push("s2"), open_pr("s3"), push("s4"), open_pr("s5")])
+            decide_delivery(parsed(patch(), push("s2"), open_pr("s3"), push("s4"), open_pr("s5")))
 
 
 # --------------------------------------------------- pr_snapshot / fork ---
@@ -545,7 +555,7 @@ class TestMain:
         # executor re-decides rather than trusting that a gate ran -- and is
         # asserted directly so removing it cannot go unnoticed.
         with pytest.raises(Refusal, match="no fix step"):
-            decide_delivery([push("s0"), open_pr("s1")])
+            decide_delivery(parsed(push("s0"), open_pr("s1")))
 
     def test_moved_head_fails_after_the_decision(self, main_env, monkeypatch, capsys):
         stub_pr(monkeypatch, pr_payload(head="moved-sha"))
@@ -674,7 +684,7 @@ class TestSuggestionDelivery:
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
         assert len(posted) == 1
-        assert [s["id"] for s in posted[0]["steps"]] == ["s0"]
+        assert [s.id for s in posted[0]["steps"]] == ["s0"]
         assert "delivered 1 suggestion" in capsys.readouterr().out
 
     def test_the_run_exits_zero_once_delivered(self, delivery_env, posted, monkeypatch):
@@ -689,7 +699,7 @@ class TestSuggestionDelivery:
         (delivery_env / "plan.json").write_text(json.dumps({"steps": [suggest(), label()]}))
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
-        assert [s["kind"] for s in posted[0]["steps"]] == ["suggest"]
+        assert [s.kind for s in posted[0]["steps"]] == ["suggest"]
 
     def test_the_review_is_bound_to_the_reviewed_head_sha(self, delivery_env, posted, monkeypatch):
         stub_pr(monkeypatch, pr_payload())

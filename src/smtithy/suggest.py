@@ -42,8 +42,11 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping, Sequence
+from typing import cast
 
 from diff_map import normalize_signature_line
+from plan_verify import Step
 from github_api import (
     delete_review_comment,
     minimize_review,
@@ -117,7 +120,8 @@ def owned_finding_key(comment: dict, bot_login: str) -> str | None:
     return match.group(1) if match else None
 
 
-def suggestion_fingerprint(step_args: dict, signatures: dict[tuple[str, int], str] | None = None) -> str:
+def suggestion_fingerprint(step_args: Mapping[str, str | int],
+                           signatures: dict[tuple[str, int], str] | None = None) -> str:
     """Stable identity for one suggestion, computed by the executor.
 
     Keyed on the code the suggestion is anchored to — `path` plus the anchor
@@ -148,9 +152,9 @@ def suggestion_fingerprint(step_args: dict, signatures: dict[tuple[str, int], st
     hunk — but identity must degrade rather than crash, and `old` is the one thing
     always in hand.
     """
-    path, line = step_args["path"], step_args["line"]
+    path, line = cast(str, step_args["path"]), cast(int, step_args["line"])
     anchored = "\x00".join(
-        normalize_signature_line(part) for part in step_args["old"].split("\n")
+        normalize_signature_line(part) for part in cast(str, step_args["old"]).split("\n")
     )
     signature = (signatures or {}).get((path, line))
     parts = [path, anchored] if signature is None else [path, signature, anchored]
@@ -342,7 +346,7 @@ def replaced_line_count(old: str) -> int:
     return old.count("\n") + (0 if old.endswith("\n") else 1) if old else 0
 
 
-def comment_anchor(step: dict) -> dict:
+def comment_anchor(step: Step) -> dict:
     """Where one suggestion's comment attaches: the lines `old` replaces.
 
     GitHub replaces the ADDRESSED RANGE with the suggestion block's lines, while
@@ -360,15 +364,15 @@ def comment_anchor(step: dict) -> dict:
     (which 422s on an added line), and a suggestion replaces new-side content by
     definition.
     """
-    args = step["args"]
-    end = args["line"] + replaced_line_count(args["old"]) - 1
-    anchor = {"path": args["path"], "line": end, "side": "RIGHT"}
-    if end > args["line"]:
-        anchor |= {"start_line": args["line"], "start_side": "RIGHT"}
+    line = cast(int, step.args["line"])
+    end = line + replaced_line_count(cast(str, step.args["old"])) - 1
+    anchor: dict[str, str | int] = {"path": cast(str, step.args["path"]), "line": end, "side": "RIGHT"}
+    if end > line:
+        anchor |= {"start_line": line, "start_side": "RIGHT"}
     return anchor
 
 
-def render_suggestion(step: dict, fingerprint: str, metadata: dict,
+def render_suggestion(step: Step, fingerprint: str, metadata: dict,
                       finding_key: str | None = None) -> str:
     """One verified suggest step as a review-comment body.
 
@@ -384,16 +388,16 @@ def render_suggestion(step: dict, fingerprint: str, metadata: dict,
     requirement, which ADR-0009 extends to this comment) — inside it they would
     render as code the reader skips rather than as the disclosure they are.
     """
-    args = step["args"]
-    marker = fence_marker(args["new"])
+    new = cast(str, step.args["new"])
+    marker = fence_marker(new)
     # The terminator belongs to the closing fence, not to the content: `new` is
     # line-oriented, so emitting "a\n" verbatim before the closer would suggest a
     # trailing empty line the plan never described. An EMPTY new is the deletion
     # suggestion and contributes no line at all, which is what distinguishes it
     # from "\n" — one empty line, a line of the contributor's file either way.
     block = [f"{marker}suggestion"]
-    if args["new"]:
-        block.append(args["new"][:-1] if args["new"].endswith("\n") else args["new"])
+    if new:
+        block.append(new[:-1] if new.endswith("\n") else new)
     block.append(marker)
     # Both markers on line 1: the fingerprint identifies the SUGGESTION, the
     # finding key identifies the COMMAND that may retract it.
@@ -404,7 +408,7 @@ def render_suggestion(step: dict, fingerprint: str, metadata: dict,
         first_line,
         NOT_A_HUMAN_REVIEW,
         "",
-        args["note"],
+        cast(str, step.args["note"]),
         "",
         *block,
         "<sub>🤖 model: `{model}` · policy: `{policy}` · reviewed SHA: `{sha}` · "
@@ -662,7 +666,7 @@ def comment_content(body: str) -> str:
     return "\n".join(lines[1:-1]).strip()
 
 
-def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
+def reconcile_suggestions(repo: str, pr_number: int, steps: Sequence[Step],
                           signatures: dict[tuple[str, int], str], metadata: dict,
                           *, bot_login: str, head_sha: str,
                           commanded_finding_keys: tuple[str, ...] | None) -> None:
@@ -723,7 +727,7 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
     all_comments = list(review_comments(repo, pr_number))
     ours = [(fingerprint, c) for c in all_comments if (fingerprint := owned_fingerprint(c, bot_login))]
     replied_ids = human_replied_ids(all_comments, bot_login)
-    wanted = {suggestion_fingerprint(step["args"], signatures): step for step in steps}
+    wanted = {suggestion_fingerprint(step.args, signatures): step for step in steps}
     live = {fingerprint for fingerprint, _ in ours}
 
     # What each comment RECORDS is one finding's key (ADR-0013: the marker stays per
@@ -755,7 +759,7 @@ def reconcile_suggestions(repo: str, pr_number: int, steps: list[dict],
             # later run would have to correct — which matters because `/fix` is
             # commanded and there may BE no later run.
             review_body(head_sha=head_sha,
-                        paths=[step["args"]["path"] for _, step in fresh]),
+                        paths=[cast(str, step.args["path"]) for _, step in fresh]),
             [comment_anchor(step) | {
                 "body": render_suggestion(step, fingerprint, metadata, recorded_key)}
              for fingerprint, step in fresh],

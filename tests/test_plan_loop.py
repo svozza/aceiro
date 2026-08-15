@@ -858,9 +858,12 @@ class TestThePromptAgreesWithTheDeliveryDecision:
     """
 
     def suggest_steps(self, *paths):
+        # Hand-built Steps: the fixture convenience ADR-0017 reserves to tests.
+        from plan_verify import Step
+
         return [
-            {"id": f"s{index}", "kind": "suggest",
-             "args": {"path": path, "line": 2, "old": "a", "new": "b", "note": "n"}}
+            Step(id=f"s{index}", kind="suggest",
+                 args={"path": path, "line": 2, "old": "a", "new": "b", "note": "n"})
             for index, path in enumerate(paths)
         ]
 
