@@ -529,10 +529,13 @@ The fixture cannot show the token a real run holds; the pinned workflow can. The
 write`** and nothing more (`ai-pr-fix.yml@185cc26:253`). It has **no write to the
 repository at all**, so injected content that convinces the plan session to *want* to touch
 `.github/workflows/`, push outside `smtithy/`, or apply a label cannot act on that wish —
-there is no write credential in the job that runs the model. `contents: write` exists in
-exactly one job, `execute` (`:597`), which **runs no model** and applies only what already
-passed `plan_verify` and the `path_denylist` / `branch_prefix` / empty `label_allowlist`
-gates (unit-tested). Token isolation, not model restraint, is the load-bearing control, and
+there is no write credential in the job that runs the model. **`contents: write` exists in
+exactly one job, `stack` (`:597`)** — not `execute`, which holds `contents: read` +
+`pull-requests: write` (`:490`) because it delivers inline suggestions rather than commits.
+Neither runs a model, and both apply only what already passed `plan_verify` and the
+`path_denylist` / `branch_prefix` / empty `label_allowlist` gates (unit-tested).
+(Corrected 2026-08-15 — I read the permissions at `:597` and attributed them to the preceding
+job. The workflow says it plainly at `:31`: "stack -> … the only contents:write".) Token isolation, not model restraint, is the load-bearing control, and
 it is a property of the workflow rather than of any run — so it holds regardless of what the
 model was told. Not exercised with a live adversarial plan session; the granted permissions
 make a live attempt uninformative.
@@ -1017,8 +1020,9 @@ does no proving at all.
 **The counter-case, which does survive:**
 
 - **N-version redundancy in a privileged path.** `execute` is the only job holding
-  `contents: write`. Two independent implementations of frame and write-targets is a defensible
-  thing to want there.
+  `pull-requests: write`, and `stack` — the job that actually holds `contents: write` — builds
+  the prover too. Two independent implementations of frame and write-targets is a defensible
+  thing to want in either.
 - **Counterexample extraction is free and genuinely good.** `patch p_probe_secrets_py
   probe/secrets.py: not a file this PR touched`, and ordering naming both offending indices.
   Hand-rolled checks tend to report "rejected" and stop.
@@ -1110,7 +1114,77 @@ grounding or a reserved closure is actually going to open; it is sunk cost if th
 built now" indefinitely. A middle path that keeps the option without the premium: keep the
 encoding and its corpus in the repository and green, but stop shipping the WASM build into
 `execute` until a closure actually opens — the option costs nothing sitting in `ts/`, and quite a
-lot sitting in the only job that holds `contents: write`.
+lot sitting in two delivery jobs, one of which (`stack`) holds `contents: write`.
+
+### F2e — an independent review of this block, and what it corrected
+
+The F block was my own reading of the code, so it was put through a second opinion: GPT-5.6
+via Codex on Bedrock, given the same files and asked to verify or refute six claims and to say
+where they were wrong. It found one factual error, one hole in my reasoning, and one omission.
+Every correction below was reproduced before being accepted.
+
+**1. I had the wrong job. `execute` does NOT hold `contents: write`.**
+
+| job | permissions |
+|---|---|
+| `plan` (`:253`) | `contents: read`, `pull-requests: read`, `id-token: write` |
+| `execute` (`:490`) | `contents: read`, **`pull-requests: write`** |
+| `stack` (`:597`) | **`contents: write`**, `pull-requests: write` |
+
+`execute` delivers inline suggestions, which needs `pull-requests: write` and no more;
+`stack` pushes a branch and opens a pull request, so it is the only `contents: write` job —
+and `ai-pr-fix.yml:31` says exactly that. I read the permissions block at `:597` and attributed
+it to the job above it. The consequence for the recommendation is real but partial: **both**
+`execute` (`:527`) and `stack` (`:647`) set up Node and build the prover, so "this puts a WASM
+dependency in the write-capable job" survives — it just has to name `stack`.
+
+**2. Taint CAN be switched on by editing policy, so "the second lock is permanent" was wrong.**
+
+F2a claimed the bindings barrier made taint unreachable no matter what a policy declared. It
+does not. Declare the source kind as **write-class** —
+`read_pr_file: {write_class: true}` — and the source step is itself a write-class step, so it
+lands in `violations` and is asserted tainted with no propagation required. Reproduced:
+
+```
+taint: VIOLATED (109.1ms)
+  0: read_pr_file (rd) tainted  <- the leak
+```
+
+So there is **one removable barrier** (the undeclared source kind), and the bindings barrier
+blocks only *propagation* — not the case where the source is the write. Nothing in the loader
+forbids that combination. The honest statement is that taint is dormant because of what the
+shipped policy declares, not because it is sealed.
+
+**3. Dropping `z3-solver` does not remove the TypeScript build step.** The CLI is TypeScript
+and `npm run build` is `tsc`, so `Set up Node` and the build stay. What goes is the WASM
+dependency and its install — smaller than I implied.
+
+**4. `ordering` is duplicated in Python too, which I missed.** I had frame and write-targets;
+`plan_verify.check_plan_ordering` is documented as *"The Python twin of ts/plan/prove.ts
+proveOrdering, and semantics must stay identical to it"*, and `verify_plan` calls it right
+before containment. So **both** live Z3-backed properties already have non-solver Python
+implementations in the same flow. That strengthens F2c's conclusion while correcting its facts.
+
+**5. My staged-grounding claim was overstated.** I wrote that verifying over values that do not
+exist yet "cannot be done by iteration". Symbolic verification admits abstract interpretation,
+bounded enumeration, SAT, and constraint propagation; unknown values do not by themselves
+require SMT. SMT becomes compelling only when the future policy brings rich constraints,
+branching path conditions, or large value domains. ADR-0004 sketches an architecture, not a
+proof that Z3 is necessary — so staged grounding is the strongest *available* argument for
+keeping it, but weaker than I made it.
+
+**6. And one point I missed entirely, which cuts the same way as F2c.** The frame encoding
+declares quantified uninterpreted functions and then manually closes and enumerates the domain
+— *more* trusted encoding code than a membership property needs. That is precisely the risk
+ADR-0003 names about itself ("the solver's answer is no more trustworthy than the encoding
+behind it"), and it argues for the direct implementation rather than against it.
+
+**The reviewer's own recommendation went further than mine:** remove Z3 now, implement all six
+results as direct TypeScript checks, preserve the CLI result and exit contracts and the
+differential corpus, revise ADR-0003 — and do not keep a dormant synthetic taint policy in
+production, moving it to an experimental module until an admitted schema genuinely needs
+symbolic reasoning. Given corrections 4 and 6, that is a stronger position than the one F2c
+reached, and the grill session should treat it as the proposal on the table.
 
 ### F3 — C9, live: injection aimed at the plan session: **PASS**
 
