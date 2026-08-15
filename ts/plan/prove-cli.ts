@@ -77,7 +77,16 @@ async function main(): Promise<number> {
   let disproved = false;
   let undecided = false;
   for (const result of results) {
-    const verdict = result.holds ? 'holds' : result.undecided ? 'UNDECIDED' : 'VIOLATED';
+    // `n/a` is a HOLDING verdict, so it cannot change the exit code — but printing
+    // it as `holds` would let an unfalsifiable policy read as a proved one, which
+    // is the whole reason the state exists. The reason travels with it.
+    const verdict = result.holds
+      ? result.inapplicable
+        ? `n/a — ${result.reason ?? 'not applicable under this policy'}`
+        : 'holds'
+      : result.undecided
+        ? 'UNDECIDED'
+        : 'VIOLATED';
     console.log(`${result.policy}: ${verdict} (${result.ms.toFixed(1)}ms)`);
     if (!result.holds) {
       if (result.undecided) undecided = true;

@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -19,18 +19,22 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, 'prove-cli.js');
 const POLICY_PATH = join(HERE, '..', '..', 'src', 'smtithy', 'policy.json');
 
-function run(plan: unknown, changedFiles: unknown): ReturnType<typeof spawnSync> {
-  return runText(JSON.stringify(plan), changedFiles);
+function run(plan: unknown, changedFiles: unknown, policyPath?: string): ReturnType<typeof spawnSync> {
+  return runText(JSON.stringify(plan), changedFiles, policyPath);
 }
 
 /** The plan as TEXT, for the cases where its JSON spelling is the point. */
-function runText(planText: string, changedFiles: unknown): ReturnType<typeof spawnSync> {
+function runText(
+  planText: string,
+  changedFiles: unknown,
+  policyPath: string = POLICY_PATH,
+): ReturnType<typeof spawnSync> {
   const dir = mkdtempSync(join(tmpdir(), 'prove-cli-'));
   writeFileSync(join(dir, 'plan.json'), planText);
   writeFileSync(join(dir, 'changed.json'), JSON.stringify(changedFiles));
   return spawnSync(
     process.execPath,
-    [CLI, '--plan', join(dir, 'plan.json'), '--changed-files', join(dir, 'changed.json'), '--policy', POLICY_PATH],
+    [CLI, '--plan', join(dir, 'plan.json'), '--changed-files', join(dir, 'changed.json'), '--policy', policyPath],
     { encoding: 'utf8' },
   );
 }
@@ -49,7 +53,36 @@ describe('prove-cli', () => {
     assert.equal(result.status, 0, String(result.stdout) + String(result.stderr));
     assert.match(String(result.stdout), /ordering: holds/);
     assert.match(String(result.stdout), /frame: holds/);
+  });
+
+  it('reports taint as n/a under the shipped policy, and still exits 0', () => {
+    // The shipped policy declares no read_pr_file, so no plan under it can taint
+    // anything. That is not the same claim as `holds`, and must not print as one:
+    // ADR-0004's opening argument is that every literal in a plan is ALREADY
+    // PR-derived, so `holds` is the reassuring misreading of a vacuous query.
+    const result = run(WELL_FORMED, ['src/a.py']);
+    assert.equal(result.status, 0, String(result.stdout) + String(result.stderr));
+    assert.match(String(result.stdout), /taint: n\/a — no read_pr_file kind in this policy/);
+    assert.doesNotMatch(String(result.stdout), /taint: holds/);
+  });
+
+  it('reports taint as holds when the policy DOES declare the source kind', () => {
+    // The other side of the same coin: with a source kind declared the query is
+    // real, so the verdict is a proof about this plan and says so. Guards against
+    // `n/a` becoming the permanent answer if the vocabulary ever grows.
+    const policy = JSON.parse(readFileSync(POLICY_PATH, 'utf8'));
+    policy.plan.step_kinds['read_pr_file'] = {
+      write_class: false,
+      args: { path: { type: 'string', min_length: 1, max_length: 500 } },
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'prove-cli-policy-'));
+    const path = join(dir, 'policy.json');
+    writeFileSync(path, JSON.stringify(policy));
+
+    const result = run(WELL_FORMED, ['src/a.py'], path);
+    assert.equal(result.status, 0, String(result.stdout) + String(result.stderr));
     assert.match(String(result.stdout), /taint: holds/);
+    assert.doesNotMatch(String(result.stdout), /taint: n\/a/);
   });
 
   it('exits 1 with a counterexample when the frame is violated', () => {

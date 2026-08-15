@@ -43,6 +43,16 @@ export interface ProofResult {
    * counterexample is evidence about the PLAN, an undecided query is an
    * operational failure of the RUN. */
   readonly undecided?: true;
+  /** The policy cannot be violated under this POLICY VOCABULARY, so no plan was
+   * examined. `holds` stays true — nothing is wrong, and the exit code must not
+   * change — but the audit log has to distinguish "proved for this plan" from
+   * "unfalsifiable by construction", because only the first is assurance. See
+   * `reason`. */
+  readonly inapplicable?: true;
+  /** Why an `inapplicable` policy was not evaluated. Read by the CLI, which
+   * renders it beside the verdict: a bare `n/a` invites the same misreading as a
+   * bare `holds`. */
+  readonly reason?: string;
 }
 
 /** Knobs the corpus needs and the policy cannot express.
@@ -356,6 +366,10 @@ export async function proveFrame(
   };
 }
 
+/** The one kind taint originates from. A policy that does not declare it cannot
+ * describe a plan in which anything is tainted, whatever its argument_forms. */
+const TAINT_SOURCE_KIND = 'read_pr_file';
+
 /**
  * Taint: no write-class step may take data derived from PR content.
  *
@@ -365,6 +379,13 @@ export async function proveFrame(
  * Encoded anyway, in its general transitive form, so the ∀-paths machinery is
  * exercised from the first commit; `bindings` lets the corpus construct the
  * violation the schema forbids and check that this reports it.
+ *
+ * A policy that declares no `read_pr_file` therefore reports `inapplicable`
+ * rather than `holds`: with no source node, no plan under it can taint anything,
+ * and "unfalsifiable by construction" is not the same claim as "proved". Reading
+ * the two as one credits the harness with an analysis it did not perform —
+ * ADR-0004's opening argument says every literal in a plan is ALREADY PR-derived,
+ * so the reassuring reading is the false one.
  */
 export async function proveTaint(
   plan: Plan,
@@ -372,6 +393,21 @@ export async function proveTaint(
   bindings: readonly SyntheticBinding[] = [],
   options?: ProofOptions,
 ): Promise<ProofResult> {
+  // Before the solver: a policy without the source kind decides this, and no
+  // plan needs examining. Also keeps the reported ms honest — there is no query.
+  if (!Object.hasOwn(policy.step_kinds, TAINT_SOURCE_KIND)) {
+    const started = performance.now();
+    return {
+      holds: true,
+      inapplicable: true,
+      policy: 'taint',
+      ms: performance.now() - started,
+      reason:
+        `no ${TAINT_SOURCE_KIND} kind in this policy, so no plan under it can taint ` +
+        'anything; nothing was examined',
+    };
+  }
+
   const { Context } = await z3();
   const Z3 = Context(CONTEXT_NAME);
   const { Solver, Bool, Or, Not } = Z3;
@@ -384,7 +420,7 @@ export async function proveTaint(
   // Transitive closure, unrolled over the bounded plan: a step is tainted if it
   // reads PR content, or if any argument binds to a tainted earlier step.
   for (const [index, step] of plan.steps.entries()) {
-    const readsPr = step.kind === 'read_pr_file';
+    const readsPr = step.kind === TAINT_SOURCE_KIND;
     const inherited = bindings
       .filter((binding) => binding.to === index)
       .map((binding) => tainted[binding.from])
