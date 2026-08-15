@@ -5,5 +5,5 @@ import os
 
 
 def config_path(root: str) -> str:
-    """Absolute path to the config file under *root*."""
+    """Path to the config file under *root*."""
     return os.path.join(root, "config.toml")
