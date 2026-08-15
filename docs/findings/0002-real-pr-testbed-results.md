@@ -1757,3 +1757,46 @@ is a log line plus a red tick. Both are fixed by the same thing — a comment on
 request — which strengthens the case for handling it in one ADR pass rather than patching the 403
 alone. It also explains why this went unnoticed in production: artel #62's stacked delivery was
 watched live by the person who commanded it.
+
+# Finding 2, closed: the reply channel measured live (2026-08-15, pin `02de23b`)
+
+[ADR-0018](../adr/0018-the-command-channel-replies-with-the-commands-terminal-state.md)
+answered finding 2 — the channel widened to the command's terminal state, the `decline` job
+renamed `reply`, the post-push refusals raised as `StrandedDelivery`, and the marker keyed
+per-command. This section is the live measurement: six probes on the same-file scenario's
+PR #17 plus one control, every one against the harness at `02de23b`. All six passed, and the
+whole cycle played out on **one comment**, upserted in place.
+
+| probe | staged how | run | result |
+|---|---|---|---|
+| AlreadyDelivered replies | re-issue `/fix 1,2` with PR #18 open | 31911257825 | **PASS** — first live decline from `stack`: comment names and links #18, marker `smtithy:reply:<head>:1,2`, run red |
+| Stranded 422 | close #18, strip its marker, branch standing | 31911715292 | **PASS** — same comment upserts to the 422 text: branch, dangling commit `1a6395f`, remedy |
+| The receipt | delete branch, re-issue | 31911831792 | **PASS** — green run end to end; comment converges to "🤖 AI fix delivered", naming #19 with URL; no "not a run that broke" sentence on the delivered kind |
+| Convergence | re-issue with #19 open | 31911960718 | **PASS** — receipt upserts back to AlreadyDelivered naming the SAME #19; still one comment |
+| Stranded 403 | close+strip #19, delete branch, setting OFF | 31912127106 | **PASS** — the original finding-2 shape now speaks: branch, commit `c6826f3`, the setting to enable, retry steps; run red |
+| Control (suggestion lane) | `/fix 1` on PR #16 | 31912285356 | **PASS** — `execute` green, `reply` **skipped**, zero reply comments: the suggestion delivery is its own receipt |
+
+Every stack-side reply kind ADR-0018 names is therefore observed live, plus the criterion's
+negative half (a suggestion success stays silent) and decision 6's convergence (each command's
+one comment always shows its current terminal state). The untrusted-commander silence remains
+the declared unmeasurable (one GitHub account), unchanged by this pass since nothing upstream
+of trust resolution changed.
+
+Three observations from the staging, recorded so the probes read honestly:
+
+- **The first 422 attempt measured AlreadyDelivered instead, by design.** `find_existing_fix`
+  spans every PR state — "a maintainer who CLOSED a fix has made a decision, and a repeat
+  command must not overrule it" — so a closed #18 still dedups. The 422's documented window
+  (a ref with no marker-carrying pull request) was staged by stripping the marker from the
+  closed PR's body, which simulates exactly the state a 403 strands. Not a defect; the probe
+  design was wrong, not the harness.
+- **The AlreadyDelivered reply does not say the PR it names is closed.** "A follow-up pull
+  request … already exists: #18" read fine while #18 was open and slightly misleads once it
+  is closed — the remedy (reopening is the maintainer's decision) is in a docstring, not in
+  the comment. A wording follow-up, not a behaviour one.
+- **Cosmetic:** the composed reason renders "This command has already been delivered. a
+  follow-up pull request…" — the producer prefixes a sentence onto the exception text, so
+  the joined text starts lowercase. Same class as the message concatenation in the 403 text.
+
+Testbed left restored: the setting re-enabled, the orphan branch deleted, the stripped markers
+put back on #18 and #19 (both closed), and PR #17 carrying the reply comment as evidence.
