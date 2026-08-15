@@ -508,21 +508,23 @@ class TestTheDelivery:
             deliver(steps=steps)
         assert calls == []
 
-    def test_an_existing_branch_is_a_refusal_naming_it(self, calls, monkeypatch):
+    def test_an_existing_branch_is_a_stranded_delivery_naming_it(self, calls, monkeypatch):
         # The docstring promises "a re-run refuses at create_ref with a message
         # naming that branch". GitHub answers 422 there, and a bare HTTPError is
-        # neither Refusal nor AlreadyDelivered — execute_plan caught neither, so the
-        # run ended in a traceback naming no branch and dropping GitHub's own
-        # "Reference already exists" body. Reachable through the deliberately-open
-        # window between create_ref and open_pull_request, where a ref exists with
-        # no pull request carrying the marker for find_existing_fix to see.
+        # neither StrandedDelivery nor AlreadyDelivered — execute_plan caught
+        # neither, so the run ended in a traceback naming no branch and dropping
+        # GitHub's own "Reference already exists" body. Reachable through the
+        # deliberately-open window between create_ref and open_pull_request, where a
+        # ref exists with no pull request carrying the marker for find_existing_fix
+        # to see. StrandedDelivery, so the commander gets a reply naming the
+        # standing branch (ADR-0018) — a PRIOR run's; this run pushed nothing.
         def exists(repo, branch, sha):
             raise urllib.error.HTTPError(
                 f"https://api/repos/{repo}/git/refs", 422, "Unprocessable Content",
                 {}, None)
 
         monkeypatch.setattr(stack, "create_ref", exists)
-        with pytest.raises(stack.Refusal, match="smtithy/fix-7") as caught:
+        with pytest.raises(stack.StrandedDelivery, match="smtithy/fix-7") as caught:
             deliver()
         assert "commit-sha" in str(caught.value), "the orphaned commit is not named"
         assert not any(c[0] == "pull" for c in calls)
@@ -559,13 +561,24 @@ class TestTheDelivery:
                 f"https://api/repos/{repo}/pulls", 403, "Forbidden", {}, None)
 
         monkeypatch.setattr(stack, "open_pull_request", forbidden)
-        with pytest.raises(stack.Refusal, match="smtithy/fix-7") as caught:
+        with pytest.raises(stack.StrandedDelivery, match="smtithy/fix-7") as caught:
             deliver()
         message = str(caught.value)
         assert "commit-sha" in message, (
             "the pushed commit is not named, so the commander cannot tell what was left behind"
         )
         assert "Actions" in message, "the message does not name the setting that refused"
+
+    def test_a_stranded_delivery_is_not_a_refusal(self):
+        # ADR-0018's taxonomy, pinned where the classes live. Refusal promises
+        # "raised before any write, so a refused plan leaves nothing behind", and
+        # the two post-push raises were the only ones breaking that promise. And
+        # the subclass relation is the silent-regression path: were StrandedDelivery
+        # a Refusal, a lost except arm in execute_plan would swallow it into the
+        # reply-less fail() — recreating finding 0002's orphan-plus-silence
+        # invisibly, instead of as a loud traceback.
+        assert not issubclass(stack.StrandedDelivery, stack.Refusal)
+        assert not issubclass(stack.AlreadyDelivered, stack.Refusal)
 
     def test_a_non_403_from_open_pull_request_is_not_swallowed(self, calls, monkeypatch):
         # Same boundary as create_ref's: only the permission case is a refusal. A 422

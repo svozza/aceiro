@@ -69,13 +69,13 @@ from artifact import redact_line
 from diff_map import anchor_signatures
 from github_api import api_json, fail, is_fork, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
-from decline import emit as emit_decline
-from decline import ordinals_of
+from reply import emit as emit_reply
+from reply import ordinals_of
 from plan_loop import read_commanded_findings, read_commanded_indices
 from plan_verify import apply_patch_steps, tree_content_source, verify_plan
 from post import read_model_stamp, resolve_bot_login
 from prepare_context import fetch_anchored_pair
-from stack import AlreadyDelivered, deliver_stacked_pr, fix_key
+from stack import AlreadyDelivered, StrandedDelivery, deliver_stacked_pr, fix_key
 from stack import Refusal as StackRefusal
 from suggest import finding_identity, reconcile_suggestions
 from verify import Rejection
@@ -437,7 +437,7 @@ def main() -> None:
                 bot_login=bot_login,
             )
         except AlreadyDelivered as exc:
-            # The decline channel's second producer (ADR-0014). This refusal is
+            # A reply producer (ADR-0014, widened by ADR-0018). This refusal is
             # knowable only here: fix_key needs anchor_signatures over the
             # quarantine tree, which `command` never fetches, and find_existing_fix
             # needs a live pull-request listing. Deliberately included — it is the
@@ -446,21 +446,52 @@ def main() -> None:
             #
             # `stack` emits an OUTPUT rather than posting: it holds this lane's
             # broadest credential, and making that job the one that talks to humans
-            # would split the decline into two implementations that must agree on
-            # their text. One posting job, one reason format, two producers.
-            emit_decline(
+            # would split the reply into two implementations that must agree on
+            # their text. One posting job, one reason format, several producers.
+            emit_reply(
                 f"This command has already been delivered. {exc}",
+                kind="declined",
                 head_sha=reviewed_sha,
                 # The ordinals come from the bundle's commanded_index.json, which is
                 # already a gate input here — the commanded findings are DERIVED from
-                # it — so the decline names the same command the scope gate checked.
+                # it — so the reply names the same command the scope gate checked.
                 ordinals=ordinals_of(read_commanded_indices(args.artifact_dir)),
             )
             fail(f"command already delivered: {exc}")
-        except StackRefusal as exc:
+        except StrandedDelivery as exc:
+            # The reply the stacked lane owed (ADR-0018, from finding 0002's PR
+            # #17): a post-push refusal leaves a fix branch standing, which is the
+            # one state a red run's silence makes the commander hunt for. The run
+            # stays red — the reply reports the terminal state, it does not excuse
+            # it — and the message is the raise site's, already addressed to the
+            # commander with the branch, the commit and the remedy.
+            emit_reply(
+                f"The fix could not be fully delivered. {exc}",
+                kind="declined",
+                head_sha=reviewed_sha,
+                ordinals=ordinals_of(read_commanded_indices(args.artifact_dir)),
+            )
             fail(f"plan verified but refused at delivery: {exc}")
-        # The commander's receipt. A delivered remediation whose only trace was a
-        # green run would leave them hunting for the pull request.
+        except StackRefusal as exc:
+            # Pre-push shapes only, now that the post-push pair is StrandedDelivery:
+            # a verified plan cannot present them, so reaching one is the machinery
+            # failing, which stays a red run with no reply (ADR-0018's criterion).
+            fail(f"plan verified but refused at delivery: {exc}")
+        # The commander's receipt (ADR-0018): the follow-up pull request is the one
+        # delivery GitHub never surfaces on the commanding pull request — no
+        # timeline cross-reference links a PR to the one whose head branch it
+        # targets — so a delivered remediation whose only trace was a green run
+        # would leave them hunting for it. A green producer emits the same outputs
+        # the declines do; the reply job's `if:` reads the flag either way.
+        emit_reply(
+            f"Opened follow-up pull request #{delivered.get('number')} "
+            f"({delivered.get('html_url')}) from the fix branch into `{base}`. "
+            "Review and merge it there; nothing was applied to this pull request "
+            "directly.",
+            kind="delivered",
+            head_sha=reviewed_sha,
+            ordinals=ordinals_of(read_commanded_indices(args.artifact_dir)),
+        )
         print(f"delivered: opened follow-up pull request #{delivered.get('number')} "
               f"({delivered.get('html_url')}) from the fix branch into {base!r}")
         # No post-write drift re-check, and that is the difference from the

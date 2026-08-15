@@ -136,7 +136,7 @@ API_ERROR_BACKOFF_SECONDS = float(os.environ.get("CC_API_ERROR_BACKOFF_SECONDS",
 # job's `timeout-minutes` and the deadline below from ONE number.
 #
 # The deadline crosses a job boundary, so it is joined by YAML and by nothing else:
-# this pairing gets decline.OUTPUT_ENV's treatment, asserted against both workflows
+# this pairing gets reply.OUTPUT_ENV's treatment, asserted against both workflows
 # in both directions. That pin is what makes the tolerated-absent fallback safe, a
 # workflow that forgot the variable being indistinguishable at runtime from direct
 # invocation.

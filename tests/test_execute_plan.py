@@ -1007,14 +1007,15 @@ class TestStackedPrDelivery:
 
     def test_an_already_delivered_command_emits_a_decline(
             self, stacked_env, stacked, monkeypatch, tmp_path, capsys):
-        # ADR-0014's SECOND producer. This refusal is knowable only here: fix_key
-        # needs anchor_signatures over the quarantine tree, which `command` never
-        # fetches, and find_existing_fix needs a live pull-request listing.
+        # A stack-side reply producer (ADR-0014). This refusal is knowable only
+        # here: fix_key needs anchor_signatures over the quarantine tree, which
+        # `command` never fetches, and find_existing_fix needs a live pull-request
+        # listing.
         #
-        # It is deliberately one of the two that reply — the refusal a maintainer is
-        # most likely to want an answer to, and the message already names and links
-        # the pull request that answers it.
-        import decline
+        # Deliberately a replying case — the refusal a maintainer is most likely to
+        # want an answer to, and the message already names and links the pull
+        # request that answers it.
+        import reply
 
         def already(*args, **kwargs):
             raise execute_plan.AlreadyDelivered("already delivered at #12")
@@ -1027,12 +1028,13 @@ class TestStackedPrDelivery:
         with pytest.raises(SystemExit):
             execute_plan.main()
         written = output.read_text()
-        assert "declined=true" in written, (
-            "an already-delivered command emitted no decline, so the commander's only receipt "
+        assert "replied=true" in written, (
+            "an already-delivered command emitted no reply, so the commander's only receipt "
             "is a red run in a log they must click into"
         )
-        for name in decline.OUTPUTS:
-            assert name in written, f"{name} is absent; the decline job reads it as empty"
+        for name in reply.OUTPUTS:
+            assert name in written, f"{name} is absent; the reply job reads it as empty"
+        assert written.split("reply_kind<<")[1].splitlines()[1] == "declined"
         # The existing pull request is what answers the commander's question, so it
         # has to reach the comment rather than only the log.
         assert "#12" in written
@@ -1041,7 +1043,7 @@ class TestStackedPrDelivery:
             self, stacked_env, stacked, monkeypatch, tmp_path):
         # ADR-0009 addendum B's self-dating rule, at this producer. The ordinals come
         # from the bundle's commanded_index.json — already a gate input here, since
-        # the commanded findings are derived from it — so the decline names the same
+        # the commanded findings are derived from it — so the reply names the same
         # command the scope gate checked.
         def already(*args, **kwargs):
             raise execute_plan.AlreadyDelivered("already delivered at #12")
@@ -1056,17 +1058,55 @@ class TestStackedPrDelivery:
         written = output.read_text()
         assert "reviewed-sha" in written
         # 1-BASED: the comment is addressed to the human who typed the ordinal.
-        assert "decline_ordinals" in written
-        ordinals = written.split("decline_ordinals<<")[1].splitlines()[1]
+        assert "reply_ordinals" in written
+        ordinals = written.split("reply_ordinals<<")[1].splitlines()[1]
         assert ordinals == "1"
 
-    def test_a_refused_shape_emits_NO_decline(self, stacked_env, stacked, monkeypatch,
-                                              tmp_path, capsys):
-        # Exactly two refusals reply. A StackRefusal is a plan that verified and
-        # cannot be delivered for a reason the harness could not know at command time
-        # — a run that failed, which gets a failed run. Replying to every refusal
-        # would need a hand-maintained exemption for the untrusted-commander case,
-        # which is the shape the silently unasserted gate-lane list already cost.
+    def test_a_stranded_delivery_emits_a_decline_and_fails_the_run(
+            self, stacked_env, stacked, monkeypatch, tmp_path, capsys):
+        # ADR-0018, from finding 0002's PR #17: a post-push refusal leaves a fix
+        # branch standing, which is the one state a silent red run makes the
+        # commander hunt for. The reply reports the terminal state; the run stays
+        # red — it does not excuse it.
+        def stranded(*args, **kwargs):
+            raise execute_plan.StrandedDelivery(
+                "the repository does not permit GitHub Actions to open pull requests, so the "
+                "fix was pushed to 'smtithy/fix-x' at abc123 and no follow-up pull request "
+                "could be opened for it"
+            )
+
+        monkeypatch.setattr(execute_plan, "deliver_stacked_pr", stranded)
+        stub_pr(monkeypatch, pr_payload())
+        output = tmp_path / "github_output"
+        output.write_text("")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+        with pytest.raises(SystemExit):
+            execute_plan.main()
+        written = output.read_text()
+        assert "replied=true" in written, (
+            "a stranded delivery emitted no reply, so a branch bearing the commander's fix "
+            "exists and nothing told them — the exact silence finding 0002 measured"
+        )
+        assert written.split("reply_kind<<")[1].splitlines()[1] == "declined"
+        # The state to clean up must reach the comment, not only the log.
+        assert "smtithy/fix-x" in written
+        assert "abc123" in written
+        assert "refused at delivery" in capsys.readouterr().err
+
+    def test_a_stranded_delivery_is_not_a_refusal(self):
+        # The fail-loud pin (ADR-0018): if StrandedDelivery subclassed Refusal, a
+        # lost or reordered except arm would swallow it silently — regressing to
+        # the exact orphan-plus-silence defect this class exists to fix. As a
+        # sibling, a lost arm propagates as a loud traceback instead.
+        assert not issubclass(execute_plan.StrandedDelivery, execute_plan.StackRefusal)
+        assert not issubclass(execute_plan.AlreadyDelivered, execute_plan.StackRefusal)
+
+    def test_a_refused_shape_emits_NO_reply(self, stacked_env, stacked, monkeypatch,
+                                            tmp_path, capsys):
+        # ADR-0018's criterion: a reply is the command's terminal ANSWER; a run
+        # whose machinery failed stays a red run. A StackRefusal is now pre-push
+        # only — a shape a verified plan cannot present, so reaching one means a
+        # gate is unwired, which is the machinery failing.
         def refuse(*args, **kwargs):
             raise execute_plan.StackRefusal("no patched content to commit")
 
@@ -1077,19 +1117,27 @@ class TestStackedPrDelivery:
         monkeypatch.setenv("GITHUB_OUTPUT", str(output))
         with pytest.raises(SystemExit):
             execute_plan.main()
-        assert "declined" not in output.read_text()
+        assert "replied" not in output.read_text()
 
-    def test_a_successful_delivery_emits_no_decline(self, stacked_env, stacked, monkeypatch,
-                                                    tmp_path):
-        # The other direction: a delivered fix must not also post a decline, or every
-        # stacked delivery would tell the commander it was declined.
+    def test_a_successful_delivery_emits_the_receipt(self, stacked_env, stacked, monkeypatch,
+                                                     tmp_path):
+        # ADR-0018: the follow-up pull request is the one delivery GitHub never
+        # surfaces on the commanding pull request, so a green run alone leaves the
+        # commander hunting for it (finding 0002, PR #17/#18). The receipt travels
+        # the same outputs the declines do, from a step that SUCCEEDS.
         stub_pr(monkeypatch, pr_payload())
         output = tmp_path / "github_output"
         output.write_text("")
         monkeypatch.setenv("GITHUB_OUTPUT", str(output))
         execute_plan.main()
         assert stacked, "nothing was delivered, so this asserts the wrong thing"
-        assert "declined" not in output.read_text()
+        written = output.read_text()
+        assert "replied=true" in written
+        assert written.split("reply_kind<<")[1].splitlines()[1] == "delivered"
+        # The pointer is the receipt's whole purpose: the number and URL of the
+        # pull request the commander would otherwise hunt for.
+        assert "#99" in written
+        assert "https://github.com/o/r/pull/99" in written
 
     def test_a_refused_shape_fails_the_run(self, stacked_env, stacked, monkeypatch, capsys):
         def refuse(*args, **kwargs):
@@ -1406,7 +1454,7 @@ class TestTheWholeCommandedSetReachesTheGate:
         with pytest.raises(SystemExit):
             execute_plan.main()
         written = output.read_text()
-        ordinals = written.split("decline_ordinals<<")[1].splitlines()[1]
+        ordinals = written.split("reply_ordinals<<")[1].splitlines()[1]
         assert ordinals == "1,2", (
             f"the decline speaks for {ordinals!r}; the commander typed two ordinals and the "
             "comment names a different command"

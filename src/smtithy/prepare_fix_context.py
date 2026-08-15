@@ -49,8 +49,8 @@ from typing import cast
 from artifact import POLICY_PATH, rendered_findings, severity_ranks
 from author_trust import is_trusted
 from canonicalize import read_harness_text
-from decline import emit as emit_decline
-from decline import ordinals_of
+from reply import emit as emit_reply
+from reply import ordinals_of
 from fix_command import parse_fix_command
 from github_api import api_json, is_fork
 from post import posted_review_witness, posting_run_id, resolve_bot_login
@@ -79,7 +79,7 @@ class Refused(Exception):
 
 
 class Undeliverable(Refused):
-    """A Refused the harness REPLIES to (ADR-0014's decline channel).
+    """A Refused the harness REPLIES to (ADR-0014's channel, widened by ADR-0018).
 
     A subclass rather than a flag, because which refusals get a comment is a
     security property and not a preference. Everything else here stays a red run,
@@ -94,7 +94,7 @@ class Undeliverable(Refused):
     new refusal is silent unless someone chooses this class deliberately — the
     fail-closed direction.
 
-    Carries the head SHA and the ordinals the command named, because the decline
+    Carries the head SHA and the ordinals the command named, because the reply
     comment must date itself with both (ADR-0009's addendum B). They travel on the
     exception rather than being re-derived in main(): only the raising site knows
     them, and re-deriving would be a second reader of what the command said.
@@ -331,13 +331,13 @@ def main() -> int:
         )
     except Undeliverable as exc:
         # ADR-0014: a refusal the harness REPLIES to. The reason and the facts the
-        # comment must date itself with are emitted for the `decline` job, which
+        # comment must date itself with are emitted for the `reply` job, which
         # holds pull-requests: write; this job holds none, being reached directly
         # from issue_comment. The run still FAILS — the command was not performed,
         # and a green run claiming otherwise would be the artefact whose text
         # over-claims that ADR-0009's addendum B was written about.
         print(f"::error::{exc}", file=sys.stderr)
-        emit_decline(exc.reason, head_sha=exc.head_sha, ordinals=exc.ordinals)
+        emit_reply(exc.reason, kind="declined", head_sha=exc.head_sha, ordinals=exc.ordinals)
         return 1
     except Refused as exc:
         # A refusal is the run's outcome, not a crash: it exits non-zero so the

@@ -632,13 +632,16 @@ class TestTheEmittedDecline:
         code, _ = self.emit(lane, monkeypatch, tmp_path)
         assert code == 1
 
-    def test_every_output_the_decline_job_reads_is_written(self, lane, monkeypatch, tmp_path):
-        import decline
+    def test_every_output_the_reply_job_reads_is_written(self, lane, monkeypatch, tmp_path):
+        import reply
 
         _, written = self.emit(lane, monkeypatch, tmp_path)
-        assert "declined=true" in written
-        for name in decline.OUTPUTS:
-            assert name in written, f"{name} is absent; the decline job reads it as empty"
+        assert "replied=true" in written
+        for name in reply.OUTPUTS:
+            assert name in written, f"{name} is absent; the reply job reads it as empty"
+        # An undeliverable command was not performed, and the kind is what selects
+        # the posted claim (ADR-0018).
+        assert written.split("reply_kind<<")[1].splitlines()[1] == "declined"
 
     def test_the_emitted_reason_is_the_one_raised(self, lane, monkeypatch, tmp_path):
         _, written = self.emit(lane, monkeypatch, tmp_path)
@@ -652,14 +655,16 @@ class TestTheEmittedDecline:
         lane["trusted"] = False
         code, written = self.emit(lane, monkeypatch, tmp_path)
         assert code == 1
-        assert "declined" not in written, (
-            "an untrusted commenter's refusal emitted a decline, so the harness posts a comment "
+        assert "replied" not in written, (
+            "an untrusted commenter's refusal emitted a reply, so the harness posts a comment "
             "naming them"
         )
 
-    def test_an_honoured_command_emits_no_decline(self, lane, monkeypatch, tmp_path):
+    def test_an_honoured_command_emits_no_reply(self, lane, monkeypatch, tmp_path):
         # The other direction: the ordinary path must not set the flag, or every
-        # successful command would also post a decline.
+        # successful command would also post a decline. (The delivered receipt is
+        # the STACK producer's, at delivery — this job knows only that the command
+        # was accepted, not that it was performed.)
         lane["review"] = dict(REVIEW)
         output = tmp_path / "github_output"
         output.write_text("")
@@ -671,7 +676,7 @@ class TestTheEmittedDecline:
         monkeypatch.setattr(
             "sys.argv", ["prepare_fix_context.py", "--output-dir", str(lane["output"])])
         assert pfc.main() == 0
-        assert "declined" not in output.read_text()
+        assert "replied" not in output.read_text()
 
 
 class TestDrift:

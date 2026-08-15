@@ -29,9 +29,10 @@
 #   plan     -> asserts the gate was real (ADR-0006), then read-only generation.
 #   execute  -> re-verifies, re-proves, delivers suggestions.
 #   stack    -> the same gate for the stacked pull request; the only contents:write.
-#   decline  -> posts the harness's reply to a command it will not perform
-#               (ADR-0014). Holds pull-requests:write; `command` holds none, and
-#               that is the property the ADR turns on.
+#   reply    -> posts the command's terminal state: a decline or a delivered
+#               receipt (ADR-0014, widened by ADR-0018). Holds
+#               pull-requests:write; `command` holds none, and that is the
+#               property the ADR turns on.
 #
 # TWO TRUST QUESTIONS, deliberately answered from two people. The COMMANDER's
 # permission authorises the fix (ADR-0007: the author's tells you nothing about
@@ -149,11 +150,12 @@ jobs:
       # ADR-0014: this job DERIVES the undeliverable-by-construction refusal (it
       # already fetches the pull request, and two commanded findings on distinct
       # paths guarantee the stacked route) and emits it. It does NOT post it — see
-      # the `decline` job, and note this job's stated property above.
-      declined: ${{ steps.compose.outputs.declined }}
-      decline_reason: ${{ steps.compose.outputs.decline_reason }}
-      decline_head_sha: ${{ steps.compose.outputs.decline_head_sha }}
-      decline_ordinals: ${{ steps.compose.outputs.decline_ordinals }}
+      # the `reply` job, and note this job's stated property above.
+      replied: ${{ steps.compose.outputs.replied }}
+      reply_reason: ${{ steps.compose.outputs.reply_reason }}
+      reply_kind: ${{ steps.compose.outputs.reply_kind }}
+      reply_head_sha: ${{ steps.compose.outputs.reply_head_sha }}
+      reply_ordinals: ${{ steps.compose.outputs.reply_ordinals }}
     steps:
       - name: Refuse to run unpinned
         # job.workflow_sha is the SHA the caller's `uses:` pin resolved to.
@@ -600,17 +602,23 @@ jobs:
       contents: write
       pull-requests: write
     outputs:
-      # ADR-0014's second producer. AlreadyDelivered is knowable only HERE: fix_key
-      # needs anchor_signatures over the quarantine tree, which `command` never
-      # fetches, and find_existing_fix needs a live pull-request listing. This job
-      # emits and does not post -- it holds the lane's broadest credential, and
-      # making it the one that talks to humans would split the decline into two
-      # implementations that must agree on their text. It gains an output and NO new
-      # scope, so the credential story is unchanged.
-      declined: ${{ steps.deliver.outputs.declined }}
-      decline_reason: ${{ steps.deliver.outputs.decline_reason }}
-      decline_head_sha: ${{ steps.deliver.outputs.decline_head_sha }}
-      decline_ordinals: ${{ steps.deliver.outputs.decline_ordinals }}
+      # The stack-side reply producer (ADR-0014, widened by ADR-0018). Three
+      # replies are knowable only HERE: AlreadyDelivered (fix_key needs
+      # anchor_signatures over the quarantine tree, which `command` never fetches,
+      # and find_existing_fix needs a live pull-request listing), a stranded
+      # delivery (the 422/403 fire at the write itself), and the delivered receipt
+      # (the follow-up pull request's number is GitHub's answer to the call). This
+      # job emits and does not post -- it holds the lane's broadest credential, and
+      # making it the one that talks to humans would split the reply into two
+      # implementations that must agree on their text. It gains outputs and NO new
+      # scope, so the credential story is unchanged. The declines emit from a step
+      # that then FAILS; the receipt emits from one that succeeds -- the reply
+      # job's `if:` reads the flag either way.
+      replied: ${{ steps.deliver.outputs.replied }}
+      reply_reason: ${{ steps.deliver.outputs.reply_reason }}
+      reply_kind: ${{ steps.deliver.outputs.reply_kind }}
+      reply_head_sha: ${{ steps.deliver.outputs.reply_head_sha }}
+      reply_ordinals: ${{ steps.deliver.outputs.reply_ordinals }}
     env:
       HEAD_SHA: ${{ needs.command.outputs.head_sha }}
       BASE_SHA: ${{ needs.command.outputs.base_sha }}
@@ -682,10 +690,10 @@ jobs:
             --policy src/smtithy/policy.json \
             --allow stacked_pr
 
-  # ADR-0014: the honest reply to a command the channel will not perform. The
+  # ADR-0018: the command channel replies with the command's terminal state. The
   # credential-free job DECIDES and this scoped job ACTS -- the same shape as
   # route -> execute/stack -- so `pull-requests: write` is minted only once a
-  # refusal was genuinely derived, downstream of the trust check.
+  # reply was genuinely derived, downstream of the trust check.
   #
   # WHY NOT ON `command`: prepare_fix_context resolves the commander's trust as its
   # SECOND step, so everything before it runs for an untrusted commenter. A write
@@ -694,30 +702,35 @@ jobs:
   # stated property ("holds NO credential and no write scope") in the one place the
   # property matters most.
   #
-  # TWO PRODUCERS, because the two refusals are knowable in different places:
-  # `command` for undeliverable-by-construction (the pull request object it already
-  # fetches), `stack` for AlreadyDelivered (the quarantine tree plus a live PR
-  # listing). One posting job, one reason format.
+  # TWO PRODUCERS, because the replies are knowable in different places: `command`
+  # for undeliverable-by-construction (the pull request object it already fetches),
+  # `stack` for AlreadyDelivered, a stranded delivery, and the delivered receipt
+  # (the quarantine tree, a live PR listing, and the write calls themselves). One
+  # posting job, one reason format.
   #
-  # EXACTLY TWO REFUSALS REPLY. Everything else stays a red run, and that is a
-  # security property rather than a preference: the untrusted-commander refusal is
-  # reached BEFORE trust is resolved, so replying to it would let any passer-by make
-  # the harness post a comment naming them. prepare_fix_context raises a distinct
-  # `Undeliverable` for the cases that reply, so a new refusal is silent unless
+  # THE CRITERION (ADR-0018), not an enumeration: the channel replies when the
+  # harness has a terminal ANSWER to the command and that answer is not already
+  # surfaced on the commanding pull request. A run whose machinery failed stays a
+  # red run. The untrusted-commander refusal is excluded BY CONSTRUCTION rather
+  # than by criterion -- it is reached BEFORE trust is resolved, so replying to it
+  # would let any passer-by make the harness post a comment naming them, and no
+  # reply producer runs that early. prepare_fix_context raises a distinct
+  # `Undeliverable` for its replying cases, so a new refusal is silent unless
   # someone chooses that class deliberately -- rather than a hand-maintained
   # security exemption list, which is the shape the silently unasserted gate-lane
   # list already cost.
-  decline:
+  reply:
     needs: [command, stack]
-    # always(), because BOTH producers fail their own job: `command` exits non-zero
-    # on the refusal it derived, and `stack` fails after emitting. A decline whose
+    # always(), because the declining producers fail their own job: `command` exits
+    # non-zero on the refusal it derived, and `stack` fails after emitting a
+    # decline (the receipt is the one emit from a green step). A reply whose
     # posting job was skipped because the producer went red would be the invisible
     # refusal ADR-0007's third addendum forbids.
     if: >-
       always()
       && (
-        needs.command.outputs.declined == 'true'
-        || needs.stack.outputs.declined == 'true'
+        needs.command.outputs.replied == 'true'
+        || needs.stack.outputs.replied == 'true'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -752,7 +765,7 @@ jobs:
       - name: Install harness dependencies (hash-pinned)
         run: pip install --require-hashes -r requirements.txt
 
-      - name: Post the decline
+      - name: Post the reply
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
@@ -761,8 +774,9 @@ jobs:
           # reached before a model session, so it is the earlier fact about the
           # channel. Every value arrives via env, never inline interpolation: it is
           # harness prose today, and a `run:` block would shell-expand it.
-          REASON: ${{ needs.command.outputs.decline_reason || needs.stack.outputs.decline_reason }}
-          HEAD_SHA: ${{ needs.command.outputs.decline_head_sha || needs.stack.outputs.decline_head_sha }}
-          ORDINALS: ${{ needs.command.outputs.decline_ordinals || needs.stack.outputs.decline_ordinals }}
+          REASON: ${{ needs.command.outputs.reply_reason || needs.stack.outputs.reply_reason }}
+          KIND: ${{ needs.command.outputs.reply_kind || needs.stack.outputs.reply_kind }}
+          HEAD_SHA: ${{ needs.command.outputs.reply_head_sha || needs.stack.outputs.reply_head_sha }}
+          ORDINALS: ${{ needs.command.outputs.reply_ordinals || needs.stack.outputs.reply_ordinals }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python src/smtithy/decline.py
+        run: python src/smtithy/reply.py

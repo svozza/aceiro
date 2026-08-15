@@ -70,6 +70,25 @@ class Refusal(Exception):
     """
 
 
+class StrandedDelivery(Exception):
+    """A verified plan's delivery stopped with a fix branch standing (ADR-0018).
+
+    Not a Refusal: nothing is wrong with the plan, and Refusal promises to leave
+    nothing behind. Both raises fire where a branch bearing this fix exists — the
+    403 after this run pushed it, the 422 when a prior run's survives — so the
+    commander must be told, and the message names the state to clean up.
+
+    A sibling of AlreadyDelivered rather than a Refusal subclass, deliberately:
+    if the dedicated except arm in execute_plan were ever lost or reordered, a
+    subclass would be silently swallowed by `except Refusal` — regressing to the
+    silent orphan finding 0002 measured, invisibly. A sibling propagates as a
+    loud traceback instead. No structured branch/commit attributes either: the
+    raise sites already build the commander-addressed message, and they differ in
+    a way a shared renderer would flatten (the 403's commit is the branch tip;
+    the 422's is this run's dangling object).
+    """
+
+
 class AlreadyDelivered(Exception):
     """ADR-0007's deduplication refusal: a follow-up PR for this
     (pr, head_sha, finding) already exists.
@@ -390,11 +409,13 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
         # The branch already exists, which the docstring above promises to report
         # as a refusal naming it. Reached where the dedup key cannot see the prior
         # effect — chiefly the deliberately-open window between 3 and 4, where a ref
-        # exists with no pull request carrying the marker. Raised as a Refusal so
-        # execute_plan reports it through fail() with the branch and the commit in
-        # the message; the bare HTTPError carried neither, and dropped GitHub's own
-        # "Reference already exists" body on the floor.
-        raise Refusal(
+        # exists with no pull request carrying the marker. StrandedDelivery, not
+        # Refusal: a fix branch is standing (a PRIOR run's — this run's create_ref
+        # failed and its commit is a dangling object), so the commander gets a
+        # reply naming the state to clean up (ADR-0018); the bare HTTPError carried
+        # neither branch nor commit, and dropped GitHub's own "Reference already
+        # exists" body on the floor.
+        raise StrandedDelivery(
             f"branch {branch!r} already exists in {repo}, so this fix was already pushed "
             f"(possibly without its pull request); the commit built for it is {commit}. "
             "Delete the branch or close its follow-up pull request to retry"
@@ -417,16 +438,18 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
         # requests" gates POST /pulls independently of the `pull-requests: write` this
         # job already holds, so the token has the scope and the call is refused anyway.
         #
-        # Reported as a Refusal for the reason the 422 above is: the branch and its
-        # commit already EXIST at this point, and a bare HTTPError reaches the
+        # Reported as a StrandedDelivery for the reason the 422 above is: the branch
+        # and its commit already EXIST at this point, and a bare HTTPError reaches the
         # commander as a traceback that names neither — so the one piece of state they
         # have to clean up is the one thing the failure does not tell them. Measured in
-        # production on artel PR #61, where this escaped as 24 lines of urllib stack.
+        # production on artel PR #61, where this escaped as 24 lines of urllib stack,
+        # and on the testbed (finding 0002's PR #17), where the Refusal it then was
+        # left a pushed branch and a red run nothing pointed at.
         #
         # Not caught earlier as a precondition: the setting is not readable with the
         # permissions this job holds, and a delivery that checked it would be trusting
         # a second reader of what the API itself decides at the call.
-        raise Refusal(
+        raise StrandedDelivery(
             f"the repository does not permit GitHub Actions to open pull requests, so the "
             f"fix was pushed to {branch!r} at {commit} and no follow-up pull request could "
             "be opened for it. Enable 'Allow GitHub Actions to create and approve pull "

@@ -684,17 +684,17 @@ class TestTheCommandLaneHoldsNoCredential:
                     "it is attacker-authored text and would be shell-expanded"
                 )
 
-    def test_only_the_two_delivery_jobs_and_the_decline_write(self):
+    def test_only_the_two_delivery_jobs_and_the_reply_write(self):
         # Two deliveries need two credentials (ADR-0009: suggestions need only
         # pull-requests: write, a stacked PR also needs contents: write), and
-        # ADR-0014 adds a third writer that delivers nothing: `decline` posts the
-        # harness's reply to a command it will not perform. Hand-maintained on
-        # purpose — a FOURTH writer appearing is a named decision, not a quiet one,
-        # and this list is exactly where that decision gets made.
+        # ADR-0014 adds a third writer that delivers nothing: `reply` posts the
+        # command's terminal state (ADR-0018). Hand-maintained on purpose — a
+        # FOURTH writer appearing is a named decision, not a quiet one, and this
+        # list is exactly where that decision gets made.
         text = (WORKFLOWS / self.FIX).read_text()
         writers = [job for job in job_names(text) if "pull-requests: write" in job_block(text, job)]
-        assert writers == ["execute", "stack", "decline"], (
-            f"only the delivery jobs and the decline may hold a write token, got {writers}"
+        assert writers == ["execute", "stack", "reply"], (
+            f"only the delivery jobs and the reply may hold a write token, got {writers}"
         )
 
     def test_contents_write_lives_in_exactly_one_job(self):
@@ -797,14 +797,15 @@ class TestTheCommandLaneHoldsNoCredential:
         )
 
 
-class TestTheDeclineLaneRepliesWithoutWideningTheCommandJob:
-    """ADR-0014: a decline is a reply from the command channel, and the whole
-    decision turns on WHERE the write scope for it lives.
+class TestTheReplyLaneRepliesWithoutWideningTheCommandJob:
+    """ADR-0014 (widened by ADR-0018): the command channel replies with the
+    command's terminal state, and the whole decision turns on WHERE the write
+    scope for it lives.
 
     `command` is reached directly from `issue_comment`, upstream of the trust check,
     on a channel anyone can write to. A `pull-requests: write` there is one minted
     for anybody who types `/fix 1`, whatever it is used for — so the credential-free
-    job DERIVES the refusal and a fourth job posts it, which is `route` →
+    job DERIVES the reply and a fourth job posts it, which is `route` →
     `execute`/`stack` reused.
     """
 
@@ -812,102 +813,105 @@ class TestTheDeclineLaneRepliesWithoutWideningTheCommandJob:
 
     def test_the_command_job_still_holds_no_write_scope(self):
         # The property ADR-0014 turns on, asserted where the ADR puts it rather than
-        # only alongside the other command-job scopes: the decline exists BECAUSE
+        # only alongside the other command-job scopes: the reply job exists BECAUSE
         # this job may not post, so if it ever could, the fourth job has no reason
         # to exist and the ADR's argument is gone.
         block = job_block((WORKFLOWS / self.FIX).read_text(), "command")
         assert "pull-requests: write" not in block, (
-            "the command job gained the write scope the decline job exists to keep out of it; "
+            "the command job gained the write scope the reply job exists to keep out of it; "
             "it is reached directly from issue_comment, upstream of the trust check"
         )
 
-    def test_the_decline_job_holds_only_pull_requests_write(self):
-        block = job_block((WORKFLOWS / self.FIX).read_text(), "decline")
+    def test_the_reply_job_holds_only_pull_requests_write(self):
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "reply")
         assert "pull-requests: write" in block
         for scope in ("contents: write", "id-token: write", "actions: read"):
-            assert scope not in block, f"the decline job holds {scope!r}; it posts one comment"
+            assert scope not in block, f"the reply job holds {scope!r}; it posts one comment"
 
-    def test_the_decline_job_mints_no_model_credential(self):
-        # The reason text is HARNESS-authored: no model runs to produce a decline,
+    def test_the_reply_job_mints_no_model_credential(self):
+        # The reason text is HARNESS-authored: no model runs to produce a reply,
         # which is one of the three reasons ADR-0014 refuses a `decline` plan step.
-        block = job_block((WORKFLOWS / self.FIX).read_text(), "decline")
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "reply")
         assert "configure-aws-credentials" not in block
         assert "ANTHROPIC_API_KEY" not in block
 
-    def test_the_decline_needs_both_producers(self):
-        # Two refusals, knowable in two places: the fork-plus-multi-path case in
-        # `command` (the PR object it already fetches) and AlreadyDelivered in
-        # `stack` (the quarantine tree plus a live PR listing). A job needing only
-        # one would silently drop the other refusal.
+    def test_the_reply_needs_both_producers(self):
+        # Replies knowable in two places: the fork-plus-multi-path case in
+        # `command` (the PR object it already fetches); AlreadyDelivered, the
+        # stranded deliveries and the receipt in `stack` (the quarantine tree, a
+        # live PR listing, and the write calls themselves). A job needing only
+        # one would silently drop the other producer's replies.
         text = (WORKFLOWS / self.FIX).read_text()
-        needs = job_needs(text, "decline")
+        needs = job_needs(text, "reply")
         assert needs == ["command", "stack"], (
-            f"the decline job needs {needs}; both producers must be named or one refusal "
+            f"the reply job needs {needs}; both producers must be named or one reply "
             "can never reach the commander"
         )
 
-    def test_the_decline_fires_on_either_producer(self):
-        condition = job_condition((WORKFLOWS / self.FIX).read_text(), "decline")
-        assert "needs.command.outputs.declined == 'true'" in condition
-        assert "needs.stack.outputs.declined == 'true'" in condition
-        # always(), because BOTH producers FAIL their own job — `command` exits
-        # non-zero on the refusal it derived, `stack` fails after emitting. Without
-        # it the posting job is skipped and the refusal is invisible, which is the
+    def test_the_reply_fires_on_either_producer(self):
+        condition = job_condition((WORKFLOWS / self.FIX).read_text(), "reply")
+        assert "needs.command.outputs.replied == 'true'" in condition
+        assert "needs.stack.outputs.replied == 'true'" in condition
+        # always(), because the DECLINING producers fail their own job — `command`
+        # exits non-zero on the refusal it derived, `stack` fails after emitting a
+        # decline (the receipt is the one emit from a green step). Without it the
+        # posting job is skipped and the refusal is invisible, which is the
         # "declined to fix something and told nobody" case ADR-0007's third addendum
         # forbids.
         assert "always()" in condition, (
-            "the decline job does not run when its producer failed, and both producers fail "
-            "by design; the reply would never be posted"
+            "the reply job does not run when its producer failed, and the declining "
+            "producers fail by design; the reply would never be posted"
         )
 
-    def test_the_decline_fires_on_an_EQUALITY_not_a_negation(self):
+    def test_the_reply_fires_on_an_EQUALITY_not_a_negation(self):
         # The fail-closed direction is a property of how the condition is written, as
-        # it is for the delivery jobs: a `!= 'false'` spelling would post a decline
+        # it is for the delivery jobs: a `!= 'false'` spelling would post a reply
         # whenever the output was absent — which is every ordinary successful run.
-        condition = job_condition((WORKFLOWS / self.FIX).read_text(), "decline")
+        condition = job_condition((WORKFLOWS / self.FIX).read_text(), "reply")
         assert "!=" not in condition, (
-            "the decline gates on a negation, so an absent output would post a decline on a "
-            "run that declined nothing"
+            "the reply gates on a negation, so an absent output would post a reply on a "
+            "run that answered nothing"
         )
 
-    def test_the_decline_marker_is_not_the_reviewers(self):
+    def test_the_reply_marker_is_not_the_reviewers(self):
         # Sharing post.MARKER would make the two lanes fight over ONE comment: the
-        # reviewer's next push overwriting the decline, or the decline overwriting
+        # reviewer's next push overwriting the reply, or the reply overwriting
         # the review. That is supersede_previous_reviews' unscoped-authority defect
         # waiting to happen somewhere new. Asserted against the modules rather than
-        # the workflow because that is where the values live.
-        import decline
+        # the workflow because that is where the values live — on the PREFIX,
+        # because the marker is per-command (ADR-0018) and every one carries it.
         import post
+        import reply
 
-        assert decline.MARKER != post.MARKER
-        assert decline.MARKER.strip(), "an empty marker matches every comment"
+        assert not post.MARKER.startswith(reply.MARKER_PREFIX)
+        assert reply.MARKER_PREFIX.strip(), "an empty marker prefix matches every comment"
 
-    def test_the_decline_reason_reaches_the_poster_through_env(self):
+    def test_the_reply_reason_reaches_the_poster_through_env(self):
         # Not inline interpolation. It is harness prose today, and that is exactly
         # why this must be pinned: a `run:` block would shell-expand whatever the
         # reason becomes later, and the whole lane's rule is that nothing reaches a
         # shell by substitution.
         text = (WORKFLOWS / self.FIX).read_text()
-        steps = parse_steps(text, "decline")
-        poster = next(s for s in steps if "decline.py" in s.get("run", ""))
+        steps = parse_steps(text, "reply")
+        poster = next(s for s in steps if "reply.py" in s.get("run", ""))
         assert any(key.endswith("REASON") for key in poster), "the reason is not passed via env"
         assert "needs." not in poster["run"], (
             "the poster's run: block interpolates a job output; every value must arrive via env"
         )
 
 
-class TestTheDeclineIsWiredEndToEnd:
+class TestTheReplyIsWiredEndToEnd:
     """The producers write job OUTPUTS and the poster reads ENVIRONMENT VARIABLES,
     and the only thing joining the two is this workflow's `env:` block.
 
     Nothing else could check that join, and a one-character typo in either name is
-    silent: the poster reads an empty value, `main()` refuses, and the decline becomes
+    silent: the poster reads an empty value, `main()` refuses, and the reply becomes
     a red run that posts nothing — the exact "declined to fix something and told
     nobody" case ADR-0007's third addendum forbids, arriving through the mechanism
     ADR-0014 built to prevent it. Verified reachable: renaming `decline_reason` to
     `decline_rason` in the workflow left the whole suite green before this existed.
 
-    So both directions are asserted against decline.OUTPUT_ENV, which is the one
+    So both directions are asserted against reply.OUTPUT_ENV, which is the one
     place the pairing is declared.
     """
 
@@ -915,17 +919,17 @@ class TestTheDeclineIsWiredEndToEnd:
 
     def poster(self):
         text = (WORKFLOWS / self.FIX).read_text()
-        return next(s for s in parse_steps(text, "decline") if "decline.py" in s.get("run", ""))
+        return next(s for s in parse_steps(text, "reply") if "reply.py" in s.get("run", ""))
 
     def test_every_output_the_poster_needs_is_mapped_to_its_env_var(self):
-        import decline
+        import reply
 
         poster = self.poster()
-        for output, env_var in decline.OUTPUT_ENV.items():
+        for output, env_var in reply.OUTPUT_ENV.items():
             value = poster.get(f"env.{env_var}")
             assert value is not None, (
                 f"the poster reads {env_var} but the workflow sets no env.{env_var}, so "
-                f"decline.py refuses and the commander is told nothing"
+                f"reply.py refuses and the commander is told nothing"
             )
             assert f"outputs.{output}" in value, (
                 f"env.{env_var} is {value!r}, which does not read outputs.{output} — the "
@@ -933,30 +937,30 @@ class TestTheDeclineIsWiredEndToEnd:
             )
 
     def test_every_mapped_env_var_reads_BOTH_producers(self):
-        # Two producers, and the decline fires on either (ADR-0014). A value reading
-        # only `command` leaves every AlreadyDelivered decline empty — and since that
-        # is the refusal a maintainer is most likely to want an answer to, it is the
-        # one that must not silently post a blank.
-        import decline
+        # Two producers, and the reply fires on either (ADR-0014). A value reading
+        # only `command` leaves every stack-derived reply empty — and since
+        # AlreadyDelivered is the refusal a maintainer is most likely to want an
+        # answer to, it is the one that must not silently post a blank.
+        import reply
 
         poster = self.poster()
-        for output, env_var in decline.OUTPUT_ENV.items():
+        for output, env_var in reply.OUTPUT_ENV.items():
             value = poster[f"env.{env_var}"]
             for producer in ("command", "stack"):
                 assert f"needs.{producer}.outputs.{output}" in value, (
-                    f"env.{env_var} does not read {producer}'s {output}, so a decline derived "
+                    f"env.{env_var} does not read {producer}'s {output}, so a reply derived "
                     f"by {producer} posts an empty value there"
                 )
 
     def test_the_poster_reads_no_env_var_no_producer_writes(self):
         # The reverse direction, which is what makes this a mapping rather than a
         # checklist: an env var the workflow sets from an output nobody writes is a
-        # value that is always empty, and the poster refuses on it — so a decline that
+        # value that is always empty, and the poster refuses on it — so a reply that
         # should have posted never does.
-        import decline
+        import reply
 
         poster = self.poster()
-        declared = set(decline.OUTPUT_ENV.values()) | {decline.RUN_URL_ENV}
+        declared = set(reply.OUTPUT_ENV.values()) | {reply.RUN_URL_ENV}
         # GITHUB_TOKEN and PR_NUMBER come from the event and the runtime, not a producer.
         from_the_event = {"GITHUB_TOKEN", "PR_NUMBER"}
         for key in poster:
@@ -964,20 +968,20 @@ class TestTheDeclineIsWiredEndToEnd:
                 continue
             name = key.removeprefix("env.")
             assert name in declared | from_the_event, (
-                f"the workflow sets env.{name}, which decline.py declares no reader for; "
+                f"the workflow sets env.{name}, which reply.py declares no reader for; "
                 "either it is dead or the module reads a name nothing sets"
             )
 
     def test_the_flag_the_condition_reads_is_the_flag_the_writer_writes(self):
         # The `if:` gates the whole job, so a mismatch here means the poster never
         # runs at all — the loudest version of the same silence.
-        import decline
+        import reply
 
-        condition = job_condition((WORKFLOWS / self.FIX).read_text(), "decline")
+        condition = job_condition((WORKFLOWS / self.FIX).read_text(), "reply")
         for producer in ("command", "stack"):
-            assert f"needs.{producer}.outputs.{decline.DECLINED_OUTPUT} == 'true'" in condition, (
-                f"the decline's condition does not read {producer}'s "
-                f"{decline.DECLINED_OUTPUT!r} output as the writer spells it"
+            assert f"needs.{producer}.outputs.{reply.REPLIED_OUTPUT} == 'true'" in condition, (
+                f"the reply's condition does not read {producer}'s "
+                f"{reply.REPLIED_OUTPUT!r} output as the writer spells it"
             )
 
     def test_both_producers_declare_every_output_the_poster_reads(self):
@@ -985,12 +989,12 @@ class TestTheDeclineIsWiredEndToEnd:
         # block — the value would be empty however correctly the step wrote it. This
         # is the third place the same name has to appear, and the only one the two
         # tests above cannot see.
-        import decline
+        import reply
 
         text = (WORKFLOWS / self.FIX).read_text()
         for producer in ("command", "stack"):
             block = job_block(text, producer)
-            for output in (*decline.OUTPUT_ENV, decline.DECLINED_OUTPUT):
+            for output in (*reply.OUTPUT_ENV, reply.REPLIED_OUTPUT):
                 assert f"{output}:" in block, (
                     f"job {producer!r} does not declare the output {output!r}, so it is empty "
                     "downstream whatever the step wrote to GITHUB_OUTPUT"
