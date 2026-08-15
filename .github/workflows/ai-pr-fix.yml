@@ -524,17 +524,6 @@ jobs:
       - name: Install verifier dependencies (hash-pinned)
         run: pip install --require-hashes -r requirements.txt
 
-      - name: Set up Node (the prover is TypeScript — ADR-0003)
-        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install and build the prover (hash-pinned lockfile)
-        run: |
-          npm ci
-          npm run build
-
       - name: Download plan artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -561,7 +550,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify, re-prove and deliver (fail-closed)
+      - name: Verify and deliver (fail-closed)
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
@@ -571,7 +560,6 @@ jobs:
             --artifact-dir "$RUNNER_TEMP/bundle" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
             --policy src/smtithy/policy.json \
-            --prover dist/plan/prove-cli.js \
             --allow suggestions
 
   # The ONLY job holding contents: write, and it runs only when the router said
@@ -582,10 +570,10 @@ jobs:
   # Deliberately a FULL COPY of execute's gate rather than a thin writer trusting
   # an upstream decision. The whole posture of execute_plan.py is that the process
   # holding the write token re-establishes everything itself: it re-fetches the
-  # provenance inputs, re-derives the commanded finding, re-verifies in-process and
-  # re-proves via prove-cli. A `stack` job that skipped any of that because
-  # `execute` or `route` had "already checked" would put the broadest credential in
-  # the lane behind the weakest link in it.
+  # provenance inputs, re-derives the commanded finding and re-verifies in-process.
+  # A `stack` job that skipped any of that because `execute` or `route` had
+  # "already checked" would put the broadest credential in the lane behind the
+  # weakest link in it.
   #
   # --allow stacked_pr is what makes the router's unverified input safe: this job
   # refuses to perform any other delivery even though its token could.
@@ -644,17 +632,6 @@ jobs:
       - name: Install verifier dependencies (hash-pinned)
         run: pip install --require-hashes -r requirements.txt
 
-      - name: Set up Node (the prover is TypeScript — ADR-0003)
-        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
-        with:
-          node-version: "22"
-          cache: npm
-
-      - name: Install and build the prover (hash-pinned lockfile)
-        run: |
-          npm ci
-          npm run build
-
       - name: Download plan artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -681,7 +658,7 @@ jobs:
             exit 1
           fi
 
-      - name: Verify, re-prove and deliver the stacked PR (fail-closed)
+      - name: Verify and deliver the stacked PR (fail-closed)
         id: deliver
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -692,7 +669,6 @@ jobs:
             --artifact-dir "$RUNNER_TEMP/bundle" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
             --policy src/smtithy/policy.json \
-            --prover dist/plan/prove-cli.js \
             --allow stacked_pr
 
   # ADR-0014: the honest reply to a command the channel will not perform. The

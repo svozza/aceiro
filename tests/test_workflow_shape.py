@@ -768,8 +768,6 @@ class TestTheCommandLaneHoldsNoCredential:
         # another job's verification: the posture execute_plan.py is built on. A
         # thin writer here would put contents: write behind the weakest link.
         block = job_block((WORKFLOWS / self.FIX).read_text(), "stack")
-        assert "npm run build" in block, "the prover must be built in this job"
-        assert "prove-cli.js" in block, "the plan must be re-proved here"
         assert "Quarantine-fetch PR head" in block, "the anchor tree is this job's own fetch"
         assert "execute_plan.py" in block, "verification happens in the job that writes"
 
@@ -1072,7 +1070,6 @@ class TestSupplyChainPinning:
         # A filter that matched nothing would make every assertion below vacuous.
         assert len(self.lines_containing("uses:")) >= 5
         assert len(self.lines_containing("pip install")) >= 5
-        assert len(self.lines_containing("npm ")) >= 2
 
     def test_every_action_is_pinned_to_a_full_commit_sha(self):
         # A moving tag is a supply-chain hole wherever it appears, but especially
@@ -1100,13 +1097,12 @@ class TestSupplyChainPinning:
                 f"index can substitute a dependency: {text!r}"
             )
 
-    def test_every_npm_install_is_ci(self):
-        # `npm install` may resolve outside the lockfile; `npm ci` may not.
-        for workflow, number, text in self.lines_containing("npm install"):
-            raise AssertionError(
-                f"{workflow}:{number} runs `npm install`, which may resolve outside "
-                f"the lockfile; use `npm ci`: {text!r}"
-            )
+    def test_no_workflow_runs_node(self):
+        # The harness is all Python (the ADR superseding ADR-0003): a Node step
+        # reappearing in a workflow means a second toolchain crept back into a
+        # credentialed lane without the decision being revisited.
+        assert self.lines_containing("npm ") == []
+        assert self.lines_containing("setup-node") == []
 
 
 AGENT_JOBS = [("ai-pr-review.yml", "review"), ("ai-pr-fix.yml", "plan")]

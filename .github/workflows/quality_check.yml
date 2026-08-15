@@ -2,10 +2,10 @@ name: Quality check
 
 # PROCESS
 #
-# The deterministic test suite for the artifact verifier: goldens, the
-# adversarial corpus, and hypothesis property tests. No external calls, no
-# secrets, no credential of any kind — so it runs on every pull request from
-# any branch and any fork, and blocks on any failure.
+# The deterministic test suite for the harness: goldens, the adversarial
+# corpus, and hypothesis property tests. No external calls, no secrets, no
+# credential of any kind — so it runs on every pull request from any branch
+# and any fork, and blocks on any failure.
 #
 # THIS WORKFLOW HOLDS NO CREDENTIAL, AND THAT IS WHY IT NEEDS NO GATE. A
 # standing rule, not a note about a stage the repo has passed: the two workflows
@@ -16,25 +16,13 @@ name: Quality check
 # all, so a secret-bearing step added here would hand that secret to unreviewed
 # fork code. A step needing a credential belongs in evals.yml's gated job.
 #
-# TWO RUNNERS, deliberately (ADR-0003). pytest covers the artifact verifier,
-# which stays Python because its risk is markdown-it rendering behaviour and a
-# hand-tabulated Unicode table. node --test covers the plan prover, which is
-# TypeScript because its risk is reachability reasoning. Both run for the whole
-# duration of the verifier's eventual port, since the Python is the differential
-# oracle for it -- the second runner is not saved until the port finishes.
-#
-# Separate jobs rather than one: a prover failure and a verifier failure are
-# different problems, and reading which one broke off the job name is worth more
-# than the few seconds a shared checkout would save.
-#
-# THE THIRD JOB IS THE SEAM ITSELF. test_verifier and test_prover run different
-# corpora over different code, so neither can see a policy that one gate enforces
-# and the other ignores — which is how plan.ordering came to be read by the
-# prover and by no Python code at all with a green suite. test_gate_differential
-# feeds ONE plan to BOTH gates and compares the verdicts, the guard ADR-0003
-# specifies for the port. It needs both toolchains in one job because that is the
-# whole point of it, and the differential SKIPS when the prover is unbuilt, so
-# the build step here is load-bearing rather than incidental.
+# One runner. The harness is all Python: the TypeScript plan prover and the
+# differential job that compared the two gates were retired when the port
+# direction reversed (the ADR superseding ADR-0003 records the decision and the
+# evidence). The defect class the differential caught — a policy key one gate
+# enforced and the other ignored — is now guarded in-process by
+# plan_verify.check_plan_policy_keys and its tests, which refuse a policy key
+# no reader consults.
 
 on:
   pull_request:
@@ -68,64 +56,3 @@ jobs:
           pip install --require-hashes -r requirements.txt -r requirements-dev.txt
       - name: Run verifier tests
         run: python -m pytest tests/ -p no:cacheprovider -q
-
-  test_prover:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read # checkout code only
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Set up Node
-        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
-        with:
-          node-version: "24"
-          cache: npm
-      - name: Install dependencies (lockfile-pinned)
-        # `ci`, not `install`: it installs exactly the lockfile and fails if
-        # package.json disagrees with it, which is the npm equivalent of the
-        # --require-hashes above.
-        run: npm ci
-      - name: Typecheck
-        # Separate from the test run so a type error reads as a type error. The
-        # strict set is load-bearing for the prover: a plan arrives as parsed
-        # JSON, so every field access is an "is it there?" question.
-        run: npm run typecheck
-      - name: Run prover tests
-        run: npm test
-
-  test_gate_differential:
-    # One plan, both gates, same verdict. The only job that can catch a policy
-    # the two implementations disagree about, so it holds both toolchains.
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read # checkout code only
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
-      - name: Set up Node
-        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
-        with:
-          node-version: "24"
-          cache: npm
-      - name: Install dependencies (pinned both sides)
-        run: |
-          pip install --require-hashes -r requirements.txt -r requirements-dev.txt
-          npm ci
-      - name: Build the prover
-        # The differential invokes dist/plan/prove-cli.js as a subprocess and
-        # SKIPS if it is absent, so this step is what keeps the guard from
-        # passing vacuously.
-        run: npm run build
-      - name: Assert the prover is built
-        # Belt and braces on the line above: a skipped differential looks green,
-        # which is the exact failure mode this job exists to prevent.
-        run: test -f dist/plan/prove-cli.js
-      - name: Run the differential corpus
-        run: python -m pytest tests/test_plan_gate_differential.py -p no:cacheprovider -q
