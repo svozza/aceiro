@@ -42,8 +42,11 @@ from __future__ import annotations
 import hashlib
 import re
 import urllib.error
+from collections.abc import Sequence
+from typing import cast
 
 from diff_map import normalize_signature_line
+from plan_verify import Step
 from github_api import (
     create_blob,
     create_commit,
@@ -311,7 +314,7 @@ def commit_message(title: str, metadata: dict) -> str:
     )
 
 
-def one_step(steps: list[dict], kind: str) -> dict:
+def one_step(steps: Sequence[Step], kind: str) -> Step:
     """The plan's single step of `kind`, or a Refusal.
 
     Both gates' cardinality already allow at most one of each write-class kind, and
@@ -320,13 +323,13 @@ def one_step(steps: list[dict], kind: str) -> dict:
     one decide_delivery's own docstring states: "should be unreachable" is not a
     delivery mechanism.
     """
-    found = [step for step in steps if step["kind"] == kind]
+    found = [step for step in steps if step.kind == kind]
     if len(found) != 1:
         raise Refusal(f"the plan carries {len(found)} {kind} steps; this delivery needs exactly one")
     return found[0]
 
 
-def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], *,
+def deliver_stacked_pr(repo: str, steps: Sequence[Step], applied: dict[str, bytes], *,
                        base: str, reviewed_sha: str, key: str, metadata: dict,
                        bot_login: str) -> dict:
     """Create the branch, commit the applied bytes, open the follow-up PR.
@@ -372,8 +375,8 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
 
     push = one_step(steps, "push_branch")
     open_pr = one_step(steps, "open_pr")
-    branch = push["args"][BRANCH_ARGS["push_branch"]]
-    opens_from = open_pr["args"][BRANCH_ARGS["open_pr"]]
+    branch = cast(str, push.args[BRANCH_ARGS["push_branch"]])
+    opens_from = cast(str, open_pr.args[BRANCH_ARGS["open_pr"]])
     # check_write_class_targets proves these agree; re-checked because pushing to
     # one branch and opening from another delivers content no step described and
     # no frame bounded.
@@ -416,7 +419,7 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
 
     blobs = {path: create_blob(repo, content) for path, content in applied.items()}
     tree = create_tree(repo, base_tree, blobs)
-    commit = create_commit(repo, commit_message(open_pr["args"]["title"], metadata),
+    commit = create_commit(repo, commit_message(cast(str, open_pr.args["title"]), metadata),
                            tree=tree, parent=reviewed_sha)
     try:
         create_ref(repo, branch, commit)
@@ -444,8 +447,8 @@ def deliver_stacked_pr(repo: str, steps: list[dict], applied: dict[str, bytes], 
             repo,
             head=branch,
             base=base,
-            title=open_pr["args"]["title"],
-            body=render_pr_body(open_pr["args"]["body"], key, metadata),
+            title=cast(str, open_pr.args["title"]),
+            body=render_pr_body(cast(str, open_pr.args["body"]), key, metadata),
         )
     except urllib.error.HTTPError as exc:
         if exc.code != 403:

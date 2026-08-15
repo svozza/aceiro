@@ -62,8 +62,9 @@ import argparse
 import hashlib
 import json
 import os
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import NamedTuple, Protocol, cast
 
 from artifact import redact_line
 from diff_map import anchor_signatures
@@ -130,7 +131,24 @@ class Delivery(NamedTuple):
     path: str | None  # the single suggestion target, None for a stacked PR
 
 
-def decide_delivery(steps: list[dict]) -> Delivery:
+class StepLike(Protocol):
+    """The two fields the delivery decision reads off a step, and nothing else.
+
+    A Protocol rather than plan_verify.Step, because this function has two
+    callers on opposite sides of the gate: the executor passes the parsed Steps
+    verify_plan returned, while route_delivery runs BEFORE any gate and only the
+    schema parser may construct a Step (ADR-0017) — the router brings its own
+    minimal shape carrying exactly the fields its guards proved.
+    """
+
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def args(self) -> Mapping[str, str | int]: ...
+
+
+def decide_delivery(steps: Sequence[StepLike]) -> Delivery:
     """The executor's delivery decision, from the verified plan's structure.
 
     Pure and total over verified plans: every input either returns a Delivery
@@ -138,7 +156,7 @@ def decide_delivery(steps: list[dict]) -> Delivery:
     already proved — the decision reads only step kinds and paths, both of
     which the schema gate pinned to the policy's vocabulary.
     """
-    kinds = [step["kind"] for step in steps]
+    kinds = [step.kind for step in steps]
     fix_kinds = {kind for kind in kinds if kind in FIX_KINDS}
     pushes = kinds.count("push_branch")
     opens = kinds.count("open_pr")
@@ -158,8 +176,8 @@ def decide_delivery(steps: list[dict]) -> Delivery:
     if fix_kinds == {"suggest"}:
         if pushes or opens:
             raise Refusal("a write chain (push_branch/open_pr) with no patch steps has nothing to push")
-        suggestions = [step for step in steps if step["kind"] == "suggest"]
-        paths = {step["args"]["path"] for step in suggestions}
+        suggestions = [step for step in steps if step.kind == "suggest"]
+        paths = {cast(str, step.args["path"]) for step in suggestions}
         if len(paths) > 1:
             # ADR-0009's atomicity rule: per-file suggestions of a multi-file
             # fix can be HALF-applied, leaving the branch broken in a way
@@ -348,7 +366,9 @@ def main() -> None:
         fail(f"plan rejected, nothing executed: {redact_line(str(exc), policy)}")
 
     try:
-        delivery = decide_delivery(plan["steps"])
+        # Over the parsed Steps, like every consumer downstream of the gate
+        # (ADR-0017): the steps decided are provably the steps verified.
+        delivery = decide_delivery(parsed_steps)
     except Refusal as exc:
         fail(f"plan verified but refused: {exc}")
 
@@ -414,7 +434,7 @@ def main() -> None:
         try:
             delivered = deliver_stacked_pr(
                 repo,
-                plan["steps"],
+                parsed_steps,
                 # The bytes the VERIFIER produced, from the same function its
                 # anchoring phase ran. Re-deriving them here would be a second
                 # model of what patching means, which is the divergence eight of
@@ -504,7 +524,7 @@ def main() -> None:
         # that exists and is correct.
         return
 
-    steps = [step for step in plan["steps"] if step["kind"] == "suggest"]
+    steps = [step for step in parsed_steps if step.kind == "suggest"]
     # The retraction scope. One command names one or more findings (ADR-0007,
     # ADR-0013), so this run speaks only for THOSE findings: without the scope the
     # reconciler would read every OTHER finding's live suggestion as withdrawn and

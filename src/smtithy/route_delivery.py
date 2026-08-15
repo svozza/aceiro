@@ -47,6 +47,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from canonicalize import read_harness_text
@@ -57,6 +59,22 @@ from github_api import fail
 # schema gate has NOT run: decide_delivery indexes args["path"] for a suggestion,
 # and a plan is free to omit it at this point in the lane.
 REQUIRED_ARGS = {"suggest": ("path",)}
+
+
+@dataclass(frozen=True)
+class RoutedStep:
+    """This router's own reading of one step: exactly the fields the guards
+    below proved, and nothing else.
+
+    NOT plan_verify.Step — only the schema parser constructs Step (ADR-0017),
+    and this input is unverified by design, so a Step here would claim a proof
+    that never ran. `args` carries only the entries REQUIRED_ARGS named and the
+    guards type-checked, which is what makes its type honest: everything else
+    in the raw step is data no routing decision reads.
+    """
+
+    kind: str
+    args: Mapping[str, str | int]
 
 
 def routed_mode(plan_path: Path) -> str:
@@ -83,6 +101,7 @@ def routed_mode(plan_path: Path) -> str:
     if not isinstance(steps, list):
         fail(f"plan.steps is {type(steps).__name__}, not a list; nothing to route")
 
+    routed: list[RoutedStep] = []
     for index, step in enumerate(steps):
         if not isinstance(step, dict):
             fail(f"plan.steps[{index}] is a {type(step).__name__}, not an object; nothing to route")
@@ -101,9 +120,12 @@ def routed_mode(plan_path: Path) -> str:
                     f"plan.steps[{index}] is a {kind} step whose args.{name} is not a string, "
                     "and the delivery decision reads it; nothing to route"
                 )
+        routed.append(RoutedStep(kind=kind, args={
+            name: args[name] for name in REQUIRED_ARGS.get(kind, ())
+        } if isinstance(args, dict) else {}))
 
     try:
-        return decide_delivery(steps).mode
+        return decide_delivery(routed).mode
     except Refusal as exc:
         # A refused plan routes NOWHERE. Picking a mode anyway would start a job
         # that mints a credential and then refuses the plan itself — pointless

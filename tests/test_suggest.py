@@ -20,7 +20,7 @@ import pytest
 
 import suggest
 from diff_map import anchor_signatures
-from plan_verify import check_suggestion_new_survives_markdown
+from plan_verify import Step, check_suggestion_new_survives_markdown
 from verify import Rejection, unterminated_fence
 
 from test_plan_verify import PLAN_CHANGED_FILES, PLAN_DIFF, PLAN_TREE, tree_source
@@ -61,8 +61,9 @@ def finding_key(path="src/app.py", line=2):
 
 def step(path="src/app.py", line=2, old="def load(path):\n",
          new="def load(path=None):\n", note="make path optional"):
-    return {"id": "s0", "kind": "suggest",
-            "args": {"path": path, "line": line, "old": old, "new": new, "note": note}}
+    # Hand-built Step: the fixture convenience ADR-0017 reserves to tests.
+    return Step(id="s0", kind="suggest",
+                args={"path": path, "line": line, "old": old, "new": new, "note": note})
 
 
 # ------------------------------------------------------------- the fence ---
@@ -229,24 +230,24 @@ class TestSuggestionFingerprint:
         # its comment and any human thread under it.
         first = step(note="make path optional")
         reworded = step(note="`load` should default its argument")
-        assert (suggest.suggestion_fingerprint(first["args"], SIGNATURES)
-                == suggest.suggestion_fingerprint(reworded["args"], SIGNATURES))
+        assert (suggest.suggestion_fingerprint(first.args, SIGNATURES)
+                == suggest.suggestion_fingerprint(reworded.args, SIGNATURES))
 
     def test_the_suggested_replacement_is_not_in_the_key(self):
         # `new` is what the fix DOES, not what it is about. A revised replacement
         # for the same defect keeps the thread.
-        assert (suggest.suggestion_fingerprint(step(new="def load(path=''):\n")["args"], SIGNATURES)
-                == suggest.suggestion_fingerprint(step(new="def load(path=None):\n")["args"], SIGNATURES))
+        assert (suggest.suggestion_fingerprint(step(new="def load(path=''):\n").args, SIGNATURES)
+                == suggest.suggestion_fingerprint(step(new="def load(path=None):\n").args, SIGNATURES))
 
     def test_a_different_anchor_is_a_different_suggestion(self):
-        assert (suggest.suggestion_fingerprint(step(line=2, old="def load(path):\n")["args"], SIGNATURES)
+        assert (suggest.suggestion_fingerprint(step(line=2, old="def load(path):\n").args, SIGNATURES)
                 != suggest.suggestion_fingerprint(
-                    step(line=3, old="    check(path)\n")["args"], SIGNATURES))
+                    step(line=3, old="    check(path)\n").args, SIGNATURES))
 
     def test_it_differs_on_path(self):
         other = step(path="src/util.py", line=1, old="def check(path):\n")
-        assert (suggest.suggestion_fingerprint(step()["args"], SIGNATURES)
-                != suggest.suggestion_fingerprint(other["args"], SIGNATURES))
+        assert (suggest.suggestion_fingerprint(step().args, SIGNATURES)
+                != suggest.suggestion_fingerprint(other.args, SIGNATURES))
 
     def test_a_line_shift_with_unchanged_code_keeps_identity(self):
         # GitHub re-anchors across a push, so the line number moves while the code
@@ -277,9 +278,9 @@ class TestSuggestionFingerprint:
     def test_nothing_the_model_authors_reaches_the_key(self):
         # The model must not be able to steer which comment its suggestion
         # matches, so the whole key comes from the anchor.
-        base = suggest.suggestion_fingerprint(step()["args"], SIGNATURES)
+        base = suggest.suggestion_fingerprint(step().args, SIGNATURES)
         for overrides in ({"note": "x" * 900}, {"new": "y" * 900}, {"new": ""}):
-            assert suggest.suggestion_fingerprint(step(**overrides)["args"], SIGNATURES) == base
+            assert suggest.suggestion_fingerprint(step(**overrides).args, SIGNATURES) == base
 
     def test_the_replaced_EXTENT_is_part_of_the_identity(self):
         # Same anchored line, different number of lines replaced: two different
@@ -289,8 +290,8 @@ class TestSuggestionFingerprint:
         # comment kept a one-line anchor while carrying a three-line replacement.
         one_line = step(line=2, old="def load(path):\n")
         three_lines = step(line=2, old="def load(path):\n    check(path)\n    return os.environ\n")
-        assert (suggest.suggestion_fingerprint(one_line["args"], SIGNATURES)
-                != suggest.suggestion_fingerprint(three_lines["args"], SIGNATURES))
+        assert (suggest.suggestion_fingerprint(one_line.args, SIGNATURES)
+                != suggest.suggestion_fingerprint(three_lines.args, SIGNATURES))
 
     def test_two_anchors_sharing_a_window_are_still_distinguished(self):
         # A window=1 signature is not unique for periodic content: three lines
@@ -315,30 +316,30 @@ class TestSuggestionFingerprint:
         # churn the design exists to prevent stays prevented: a reformat that
         # changes only indentation is the same suggestion.
         spaces = step(line=2, old="def load(path):\n")
-        assert (suggest.suggestion_fingerprint(spaces["args"], SIGNATURES)
+        assert (suggest.suggestion_fingerprint(spaces.args, SIGNATURES)
                 == suggest.suggestion_fingerprint(
-                    step(line=2, old="  def load(path):  \n")["args"], SIGNATURES))
+                    step(line=2, old="  def load(path):  \n").args, SIGNATURES))
 
     def test_a_missing_signature_falls_back_to_the_anchored_bytes(self):
         # Provenance makes this unreachable for a verified plan (line must be in a
         # hunk), but identity must degrade rather than crash — and the fallback is
         # still the anchored CODE, not the line number.
         absent = step(path="nowhere.py", line=999)
-        assert suggest.suggestion_fingerprint(absent["args"], SIGNATURES)
+        assert suggest.suggestion_fingerprint(absent.args, SIGNATURES)
 
     def test_the_fallback_still_distinguishes_two_anchors(self):
         # A fallback keyed on the line number would collide here; keyed on the
         # bytes it does not.
         first = step(path="nowhere.py", line=999, old="alpha\n")
         second = step(path="nowhere.py", line=999, old="omega\n")
-        assert (suggest.suggestion_fingerprint(first["args"], SIGNATURES)
-                != suggest.suggestion_fingerprint(second["args"], SIGNATURES))
+        assert (suggest.suggestion_fingerprint(first.args, SIGNATURES)
+                != suggest.suggestion_fingerprint(second.args, SIGNATURES))
 
     def test_the_fallback_ignores_reindentation_like_the_signature_does(self):
         first = step(path="nowhere.py", line=999, old="    alpha\n")
         second = step(path="nowhere.py", line=999, old="\talpha\n")
-        assert (suggest.suggestion_fingerprint(first["args"], SIGNATURES)
-                == suggest.suggestion_fingerprint(second["args"], SIGNATURES))
+        assert (suggest.suggestion_fingerprint(first.args, SIGNATURES)
+                == suggest.suggestion_fingerprint(second.args, SIGNATURES))
 
 
 # ------------------------------------------------------------ ownership ---
@@ -361,14 +362,14 @@ def comment(cid, fingerprint=None, login=BOT, in_reply_to=None, body=None, args=
     canned = step(**(args or {}))
     if body is None:
         if for_finding is None:
-            for_finding = finding_key(canned["args"]["path"], canned["args"]["line"])
+            for_finding = finding_key(canned.args["path"], canned.args["line"])
         body = suggest.render_suggestion(
-            canned, fingerprint or suggest.suggestion_fingerprint(canned["args"], SIGNATURES), METADATA,
+            canned, fingerprint or suggest.suggestion_fingerprint(canned.args, SIGNATURES), METADATA,
             None if for_finding is False else for_finding)
     # `path` as GitHub lists it, so the canned shape carries what the real listing
     # carries. The retraction scope reads our own marker rather than this field.
     return {"id": cid, "body": body, "user": {"login": login},
-            "in_reply_to_id": in_reply_to, "path": canned["args"]["path"]}
+            "in_reply_to_id": in_reply_to, "path": canned.args["path"]}
 
 
 class TestOwnership:
@@ -894,7 +895,7 @@ class TestRetraction:
         body = struck_body()
         assert suggest.is_struck({"body": body})
         assert (suggest.owned_fingerprint({"body": body, "user": {"login": BOT}}, BOT)
-                == suggest.suggestion_fingerprint(step()["args"], SIGNATURES))
+                == suggest.suggestion_fingerprint(step().args, SIGNATURES))
 
     def test_the_suggestion_fence_is_left_unstruck(self):
         # `~~` inside a fence renders literally, so striking there would corrupt

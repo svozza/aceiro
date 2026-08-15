@@ -27,6 +27,7 @@ import pytest
 
 import stack
 from diff_map import anchor_signatures
+from plan_verify import Step
 
 from test_plan_verify import PLAN_DIFF, tree_source
 
@@ -309,16 +310,17 @@ class TestTheMarkerCarriesTheKey:
         )
 
 
-def patch_plan(*paths):
+def patch_plan(*paths, opens_from="smtithy/fix-7"):
+    # Hand-built Steps: the fixture convenience ADR-0017 reserves to tests.
     steps = [
-        {"id": f"p{i}", "kind": "patch",
-         "args": {"path": path, "old": "o", "new": "n"}}
+        Step(id=f"p{i}", kind="patch",
+             args={"path": path, "old": "o", "new": "n"})
         for i, path in enumerate(paths or ("src/app.py",))
     ]
     return steps + [
-        {"id": "push", "kind": "push_branch", "args": {"name": "smtithy/fix-7"}},
-        {"id": "open", "kind": "open_pr",
-         "args": {"branch": "smtithy/fix-7", "title": "Fix it", "body": "the body"}},
+        Step(id="push", kind="push_branch", args={"name": "smtithy/fix-7"}),
+        Step(id="open", kind="open_pr",
+             args={"branch": opens_from, "title": "Fix it", "body": "the body"}),
     ]
 
 
@@ -519,13 +521,13 @@ class TestTheDelivery:
         # decide_delivery already requires exactly one of each, but this module
         # fails closed rather than assuming a gate ran -- the posture the whole
         # executor takes.
-        steps = [s for s in patch_plan() if s["kind"] != "push_branch"]
+        steps = [s for s in patch_plan() if s.kind != "push_branch"]
         with pytest.raises(stack.Refusal, match="push_branch"):
             deliver(steps=steps)
         assert calls == []
 
     def test_a_plan_with_no_open_pr_step_refuses(self, calls):
-        steps = [s for s in patch_plan() if s["kind"] != "open_pr"]
+        steps = [s for s in patch_plan() if s.kind != "open_pr"]
         with pytest.raises(stack.Refusal, match="open_pr"):
             deliver(steps=steps)
         assert calls == []
@@ -541,10 +543,8 @@ class TestTheDelivery:
         # check_write_class_targets proves this, and it is re-checked here for the
         # same fail-closed reason: pushing to one branch and opening from another
         # delivers content this plan never described.
-        steps = patch_plan()
-        steps[-1]["args"]["branch"] = "smtithy/somewhere-else"
         with pytest.raises(stack.Refusal, match="branch"):
-            deliver(steps=steps)
+            deliver(steps=patch_plan(opens_from="smtithy/somewhere-else"))
         assert calls == []
 
     def test_an_existing_branch_is_a_stranded_delivery_naming_it(self, calls, monkeypatch):
