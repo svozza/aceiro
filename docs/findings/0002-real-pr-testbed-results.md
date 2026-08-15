@@ -1793,10 +1793,17 @@ Three observations from the staging, recorded so the probes read honestly:
 - **The AlreadyDelivered reply does not say the PR it names is closed.** "A follow-up pull
   request … already exists: #18" read fine while #18 was open and slightly misleads once it
   is closed — the remedy (reopening is the maintainer's decision) is in a docstring, not in
-  the comment. A wording follow-up, not a behaviour one.
+  the comment. **FIXED** in the same pass: the message now carries the state, splitting on
+  `merged_at` rather than on state alone, because a merged fix is also "closed" and telling
+  its commander to reopen it would be advice GitHub refuses. Open — or a listing with no
+  state field — earns no note, since claiming "closed" there would be an invented fact.
+  Pinned by three cases in `test_stack.py`.
 - **Cosmetic:** the composed reason renders "This command has already been delivered. a
   follow-up pull request…" — the producer prefixes a sentence onto the exception text, so
   the joined text starts lowercase. Same class as the message concatenation in the 403 text.
+  **FIXED** at the raise sites (the three commander-addressed messages in `stack.py` now
+  start uppercase), not at the join: capitalising in the consumer would be a second renderer
+  of the producer's text.
 
 Testbed left restored: the setting re-enabled, the orphan branch deleted, the stripped markers
 put back on #18 and #19 (both closed), and PR #17 carrying the reply comment as evidence.

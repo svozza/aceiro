@@ -1070,7 +1070,7 @@ class TestStackedPrDelivery:
         # red — it does not excuse it.
         def stranded(*args, **kwargs):
             raise execute_plan.StrandedDelivery(
-                "the repository does not permit GitHub Actions to open pull requests, so the "
+                "The repository does not permit GitHub Actions to open pull requests, so the "
                 "fix was pushed to 'smtithy/fix-x' at abc123 and no follow-up pull request "
                 "could be opened for it"
             )
