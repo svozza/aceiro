@@ -336,7 +336,7 @@ def main() -> None:
     # fetch of the reviewed head, so anchoring reads the same bytes the plan
     # session read.
     try:
-        verify_plan(
+        parsed_steps = verify_plan(
             plan, diff_text, changed_files, policy, tree_content_source(args.pr_root),
             head_branch=reviewed_head_ref, commanded_findings=commanded_findings,
         )
@@ -418,10 +418,12 @@ def main() -> None:
                 # The bytes the VERIFIER produced, from the same function its
                 # anchoring phase ran. Re-deriving them here would be a second
                 # model of what patching means, which is the divergence eight of
-                # the chunk B review's fourteen findings came from.
+                # the chunk B review's fourteen findings came from. Over the
+                # steps verify_plan parsed: the applier takes Steps, and only
+                # the parser constructs them (ADR-0017).
                 apply_patch_steps(
-                    [(index, step) for index, step in enumerate(plan["steps"])
-                     if step["kind"] in FIX_KINDS],
+                    [(index, step) for index, step in enumerate(parsed_steps)
+                     if step.kind in FIX_KINDS],
                     tree_content_source(args.pr_root),
                 ),
                 base=base,

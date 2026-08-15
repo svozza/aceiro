@@ -402,14 +402,13 @@ class TestTheMultiFileScenarioIsSATISFIABLE:
         # THE assertion. Built from the scenario's own fix_paths_must_include and run
         # through the real check, so a fixture whose grader and gate disagree fails
         # here instead of costing three model sessions to discover.
-        from plan_verify import check_commanded_scope
+        from plan_verify import Step, check_commanded_scope
 
         expect = json.loads((self.scenario() / "expect.json").read_text())
-        demanded = {"steps": [
-            {"id": f"s{index}", "kind": "patch",
-             "args": {"path": path, "old": "x", "new": "y"}}
+        demanded = tuple(
+            Step(id=f"s{index}", kind="patch", args={"path": path, "old": "x", "new": "y"})
             for index, path in enumerate(expect["fix_paths_must_include"])
-        ]}
+        )
         check_commanded_scope(demanded, self.commanded())
 
     def test_every_commanded_path_is_one_the_grader_requires(self):
