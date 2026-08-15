@@ -168,6 +168,104 @@ describe('prove-cli', () => {
 
   // Exit 1 is a claim about the PLAN. A fault in the invocation or the runtime
   // says nothing about the plan, so every one of these is a 2.
+  // Ported from the red-team sweep of 2026-08-14 (20 crafted plans, all refused).
+  // prove.test.ts already covers each policy's logic against a synthetic policy;
+  // these run the SHIPPED one, where the values themselves are the assertion —
+  // `branch_prefix: "smtithy/"` and an EMPTY `label_allowlist` are facts about
+  // production that a synthetic fixture cannot pin.
+  it('exits 1 when a push_branch precedes the patch it delivers', () => {
+    const result = run({
+      steps: [
+        { id: 'push', kind: 'push_branch', args: { name: 'smtithy/fix-x' } },
+        { id: 'fix', kind: 'patch', args: { path: 'src/a.py', old: 'a', new: 'b' } },
+      ],
+    }, ['src/a.py']);
+    assert.equal(result.status, 1);
+    assert.match(String(result.stdout), /ordering: VIOLATED/);
+  });
+
+  it('exits 1 for a branch outside the shipped branch_prefix', () => {
+    const result = run({
+      steps: [
+        { id: 'fix', kind: 'patch', args: { path: 'src/a.py', old: 'a', new: 'b' } },
+        { id: 'push', kind: 'push_branch', args: { name: 'main' } },
+      ],
+    }, ['src/a.py']);
+    assert.equal(result.status, 1);
+    assert.match(String(result.stdout), /write_targets: VIOLATED/);
+  });
+
+  it('exits 1 for ANY label, because the shipped allowlist is empty', () => {
+    // Not "the wrong label": the shipped policy permits none at all, so the
+    // whole kind is unreachable in production. A synthetic policy with one
+    // allowed label would pass this plan and prove nothing about the real one.
+    const result = run({ steps: [{ id: 'lab', kind: 'label', args: { name: 'approved' } }] }, ['src/a.py']);
+    assert.equal(result.status, 1);
+    assert.match(String(result.stdout), /write_targets: VIOLATED|cardinality: VIOLATED/);
+  });
+
+  it('exits 1 when a write-class kind appears twice', () => {
+    const result = run({
+      steps: [
+        { id: 'fix', kind: 'patch', args: { path: 'src/a.py', old: 'a', new: 'b' } },
+        { id: 'push_a', kind: 'push_branch', args: { name: 'smtithy/a' } },
+        { id: 'push_b', kind: 'push_branch', args: { name: 'smtithy/b' } },
+      ],
+    }, ['src/a.py']);
+    assert.equal(result.status, 1);
+    assert.match(String(result.stdout), /cardinality: VIOLATED/);
+  });
+
+  it('exits 1 when a suggest is mixed with a write chain', () => {
+    const result = run({
+      steps: [
+        { id: 's1', kind: 'suggest', args: { path: 'src/a.py', line: 1, old: 'a', new: 'b', note: 'n' } },
+        { id: 'fix', kind: 'patch', args: { path: 'src/a.py', old: 'a', new: 'b' } },
+        { id: 'push', kind: 'push_branch', args: { name: 'smtithy/x' } },
+      ],
+    }, ['src/a.py']);
+    assert.equal(result.status, 1);
+    assert.match(String(result.stdout), /cardinality: VIOLATED/);
+  });
+
+  it('exits 1 for more patched files than the shipped max_patched_files', () => {
+    const paths = ['src/a.py', 'src/b.py', 'src/c.py', 'src/d.py'];
+    const result = run({
+      steps: paths.map((path, index) => ({
+        id: `fix${index}`, kind: 'patch', args: { path, old: 'a', new: 'b' },
+      })),
+    }, paths);
+    assert.equal(result.status, 1);
+    assert.match(String(result.stdout), /bounds: VIOLATED/);
+  });
+
+  // KNOWN GAP, pinned rather than fixed: two patches to one file whose `old`
+  // texts are identical, and a cascade whose second patch consumes the first's
+  // output, both prove CLEAN. `ordering` constrains patch-before-push_branch,
+  // never patch-versus-patch, and no policy models the file's state between
+  // steps. Neither is a hole — plan_verify.count_occurrences refuses an ambiguous
+  // write downstream — but the prover's silence here is a property worth failing
+  // on if it changes, in either direction.
+  it('does NOT catch two patches to one file with identical old text', () => {
+    const result = run({
+      steps: [
+        { id: 'p1', kind: 'patch', args: { path: 'src/a.py', old: 'alpha\n', new: 'ALPHA\n' } },
+        { id: 'p2', kind: 'patch', args: { path: 'src/a.py', old: 'alpha\n', new: 'OTHER\n' } },
+      ],
+    }, ['src/a.py']);
+    assert.equal(result.status, 0, String(result.stdout) + String(result.stderr));
+  });
+
+  it('does NOT catch a cascade where patch 2 consumes patch 1 output', () => {
+    const result = run({
+      steps: [
+        { id: 'p1', kind: 'patch', args: { path: 'src/a.py', old: 'alpha\n', new: 'BETA\n' } },
+        { id: 'p2', kind: 'patch', args: { path: 'src/a.py', old: 'BETA\n', new: 'GAMMA\n' } },
+      ],
+    }, ['src/a.py']);
+    assert.equal(result.status, 0, String(result.stdout) + String(result.stderr));
+  });
+
   it('exits 2 on an unknown option', () => {
     const result = spawnSync(process.execPath, [CLI, '--bogus'], { encoding: 'utf8' });
     assert.equal(result.status, 2);
