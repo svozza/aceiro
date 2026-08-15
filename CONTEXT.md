@@ -149,10 +149,30 @@ deliverable as suggestions. Atomicity is a property of one plan, so two
 commands can still deliver one defect in pieces.
 _Avoid_: mode, output, channel, strategy
 
+**Reply**:
+The command channel reporting a command's terminal state to its commander — a
+decline or a receipt. Posted only when the harness has an answer to the command
+itself, never when its own machinery failed, and only where that answer is not
+already visible on the commanding pull request. One reply per command, holding
+that command's current terminal state.
+_Avoid_: notification, status comment, decline channel
+
 **Decline**:
-The harness telling a commander it will not perform the fix they commanded,
-because the channel cannot express it or has already delivered it. A reply to
-the command rather than an artifact or a step, so no model runs to produce one
-and its text is the harness's. Distinct from a rejection, which is a verdict
-about an artifact, and from a run that merely failed.
+The reply kind that tells a commander their fix was not performed: the channel
+cannot express it, it has already been delivered, or delivery halted leaving
+state they must know about. No model runs to produce one and its text is the
+harness's. Distinct from a rejection, which is a verdict about an artifact, and
+from a run that merely failed.
 _Avoid_: refusal, error, rejection
+
+**Receipt**:
+The reply kind that tells a commander their fix was delivered, naming where.
+Owed only where the delivery's artifact does not land on the commanding pull
+request itself — a delivery the commander can already see is its own receipt.
+_Avoid_: confirmation, success comment
+
+**Stranded delivery**:
+A delivery halted with a fix branch standing and no pull request carrying it.
+The one terminal state that leaves something a commander must clean up, which
+is what makes its silence more expensive than any other refusal's.
+_Avoid_: partial delivery, half-delivered, orphan branch
