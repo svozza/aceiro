@@ -119,8 +119,8 @@ class TestDenylistEvasion:
 
 class TestFramePrefixSharing:
     def test_bak_twin_of_a_changed_file_rejects(self):
-        # src/a.py.bak vs src/a.py: identity is exact string equality, the
-        # prover's intern-table semantics. A startswith() frame would pass this.
+        # src/a.py.bak vs src/a.py: identity is exact string equality.
+        # A startswith() frame would pass this.
         rejected(plan_of(anchored_patch(path="src/app.py.bak")))
 
     def test_directory_prefix_twin_rejects(self):

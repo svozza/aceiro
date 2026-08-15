@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Adversarial sweep of the plan prover: one violating plan per policy.
 
+HISTORICAL — this drove the TypeScript prove-cli, which ADR-0016 retired. It
+last ran against `825c72b`, the final commit containing the prover; check that
+out to reproduce. The properties it attacked are enforced by
+plan_verify.verify_plan, whose own corpus is tests/test_plan_verify_adversarial.py.
+
 Each case is crafted to cross exactly one line where possible, so a `sat`
 verdict names the policy under test rather than an incidental co-violation.
 Baseline (the genuine plan) must stay unsat/exit 0 or the harness is lying.

@@ -1,5 +1,9 @@
 # Addendum to ADR-0004: a reservation refuses its shape, in code
 
+*Note (2026-08-15): the TypeScript gate discussed below is retired
+([ADR-0016](0016-retire-the-typescript-prover-consolidate-on-python.md)); the
+refusals this addendum required live on in `plan_verify.check_reserved_closures`.*
+
 ADR-0004 names three closures and says what each is for: "Three closures, each
 of which reserves a shape and refuses it today." Two of them did refuse.
 `control_flow` did not, in either gate.

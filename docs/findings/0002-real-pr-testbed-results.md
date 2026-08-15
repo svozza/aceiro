@@ -806,6 +806,11 @@ needs a third-party App or Dependabot PR, which this testbed does not carry.
 
 ## F — the plan prover, attacked directly
 
+> **Pointer (2026-08-15):** the prover this block attacks was retired by
+> [ADR-0016](../adr/0016-retire-the-typescript-prover-consolidate-on-python.md);
+> the analysis below (especially F2a–F2e) is part of the evidence for that
+> decision and is left as written. The attack suite last ran against `825c72b`.
+
 The prover was the one major control the matrix never aimed at, so it was swept separately:
 sixteen crafted plans against the CLI (`dist/plan/prove-cli.js`), plus one live PR whose diff
 targets the **plan** session rather than the reviewer.

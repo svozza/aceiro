@@ -424,8 +424,8 @@ class TestTheOrdinalIsResolvedInRenDeredOrder:
 
         Under the model-order read prepare() sees only {src/app.py} and composes the
         context — so the commander spends the approval gate, a model session, both
-        gates, the prover and a `contents: write` job to get a red run in a log they
-        must click into.
+        gates and a `contents: write` job to get a red run in a log they must
+        click into.
         """
         lane["review"] = self.review_for(self.TWO_FILES_WHEN_RENDERED)
         self.fork(lane)
@@ -501,8 +501,8 @@ class TestTheDeclineChannelRepliesToExactlyTwoRefusals:
 
     def test_it_is_refused_before_any_context_is_written(self, lane):
         # The whole point of hoisting it here: the commander would otherwise spend
-        # the approval gate, a model session, both gates, the prover and a
-        # contents: write job to receive a red run in a log they must click into.
+        # the approval gate, a model session, both gates and a contents: write
+        # job to receive a red run in a log they must click into.
         self.fork(self.two_file_command(lane))
         with pytest.raises(pfc.Undeliverable):
             run(lane, body="/fix 1,2")

@@ -124,7 +124,7 @@ class TestEveryTopLevelSpecIsEnforced:
         self, artifact, sample_diff, changed_files, policy
     ):
         # A constraint nobody enforces is worse than an absent one, because it is
-        # read as present. Same rule ts/plan/policy.ts applies to the plan
+        # read as present — the rule check_plan_policy_keys applies to the plan
         # section's own keys, and the same reasoning. `maximum` was this rule's
         # example until ADR-0013's `group` needed a range — see
         # TestTheIntegerRangeIsEnforced, and note the key it names here is one no
@@ -290,8 +290,7 @@ class TestTheIntegerRangeIsEnforced:
     ):
         # The value-side rule `minimum` already has: `maximum: "bogus"` reads as a
         # cap, and `value > "bogus"` raises TypeError from the middle of a check —
-        # a crash where the caller expects a verdict — while the TypeScript twin
-        # evaluates it as false and admits everything.
+        # a crash where the caller expects a verdict.
         extended = copy.deepcopy(policy)
         for bogus in ("2", 2.5, True):
             extended["artifact_schema"]["ticket"] = {"type": "integer", "maximum": bogus}

@@ -4,6 +4,12 @@ Answered yes. See ADR-0003. Kept because the numbers are the evidence for that
 decision, and because the encoding in `taint.mjs` is the starting point for the
 real plan prover.
 
+**Outcome (2026-08-15): the prover this spike enabled was built, ran in
+production, and was then retired when the port direction reversed —
+[ADR-0016](../../docs/adr/0016-retire-the-typescript-prover-consolidate-on-python.md).
+The spike stands as history; the last commit containing `ts/plan/prove.ts` is
+`825c72b`.**
+
 ## Running it
 
 ```bash

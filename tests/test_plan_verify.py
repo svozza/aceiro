@@ -1,10 +1,6 @@
-"""Tests for plan_verify.py — the Python twin of ts/plan/schema.ts.
-
-Shape gate only (containment and markdown are later phases). The cases mirror
-ts/plan/schema.test.ts deliberately: the two gates read the same policy.json,
-and a plan one admits and the other rejects is a defect in one of them. Where
-the TS suite pins a closure from ADR-0004, the same case appears here with the
-same name, so a divergence shows up as a one-sided test change in review.
+"""Tests for plan_verify.py's shape gate (containment and markdown are later
+phases). Several cases were written as mirrors of the retired TypeScript
+suite's (ADR-0016) and keep the failure modes that suite established.
 """
 
 import ast
@@ -122,8 +118,8 @@ class TestStepShape:
     )
     def test_inherited_and_dunder_names_are_unknown_kinds(self, kind):
         # `kind in step_kinds` is an own-key test on a dict, so these are already
-        # unknown here. Mirrors ts/plan/schema.test.ts, where a plain-object
-        # lookup resolved Object.prototype names and threw a TypeError instead.
+        # unknown here. Kept from the retired TS gate, whose plain-object lookup
+        # resolved Object.prototype names and threw a TypeError instead.
         plan = {"steps": [{"id": "s0", "kind": kind, "args": {}}]}
         with pytest.raises(Rejection, match="not a declared step kind"):
             check_plan_schema(plan, PLAN_POLICY)
@@ -147,8 +143,8 @@ class TestStepShape:
 
     @pytest.mark.parametrize("bad_id", ["", "S0", "0s", "s-0", "x" * 41, 7, None])
     def test_id_grammar_is_conservative(self, bad_id):
-        # Ids appear in audit output and counterexamples; the grammar must
-        # match ts/plan/schema.ts's ID_RE exactly.
+        # Ids appear in audit output and counterexamples, so the grammar is
+        # pinned conservative.
         step = patch_step()
         step["id"] = bad_id
         with pytest.raises(Rejection, match="short lowercase identifier"):
@@ -210,8 +206,7 @@ class TestArgs:
     # JSON permits \ud800 and both parsers accept it, so a plan can carry a
     # string no UTF-8 encoder will take. The containment phase encodes, the
     # transcript encodes, and neither raises Rejection: the shape gate is where
-    # a plan that cannot be encoded stops being well-formed. Mirrors
-    # ts/plan/schema.test.ts.
+    # a plan that cannot be encoded stops being well-formed.
 
     @pytest.mark.parametrize("bad", ["\ud800", "a\udfffb", "x\ud83d"])
     def test_an_unpaired_surrogate_is_a_shape_violation(self, bad):
@@ -230,10 +225,9 @@ class TestArgs:
 
 
 class TestShippedPolicyAgreement:
-    """The Python gate must enforce the SHIPPED policy, not a test double.
-    These pin the policy facts plan_verify relies on, mirroring
-    ts/plan/shipped-policy.test.ts so drift in policy.json breaks both suites,
-    not just the one that happens to load it first."""
+    """The gate must enforce the SHIPPED policy, not a test double. These pin
+    the policy facts plan_verify relies on, so drift in policy.json breaks the
+    suite rather than silently changing what the gate means."""
 
     def test_step_kind_universe(self):
         assert sorted(PLAN_POLICY["step_kinds"]) == ["label", "open_pr", "patch", "push_branch", "suggest"]
@@ -248,7 +242,7 @@ class TestShippedPolicyAgreement:
         # own head branch, and the executor sets that base from PR context. A
         # `base` arg here would make the merge target model-suppliable — the
         # same banned move as a model-selected policy version — so the arg set
-        # is pinned exactly. Mirrored in ts/plan/shipped-policy.test.ts.
+        # is pinned exactly.
         assert sorted(PLAN_POLICY["step_kinds"]["open_pr"]["args"]) == ["body", "branch", "title"]
 
     def test_every_string_arg_is_markdown_checked_or_charset_constrained(self):
@@ -287,13 +281,11 @@ class TestShippedPolicyAgreement:
         # The one argument that decides where `contents: write` is pointed. A
         # prefix is what makes "not the default branch, not the contributor's
         # head branch" a property of the NAME rather than a list of exclusions.
-        # Mirrored in ts/plan/shipped-policy.test.ts.
         assert PLAN_POLICY["branch_prefix"] == "smtithy/"
 
     def test_bounding_is_declared_in_both_dimensions(self):
         # ADR-0005's bounding half. A line count bounds nothing about line
-        # LENGTH, so a byte budget ships alongside it; mirrored in
-        # ts/plan/shipped-policy.test.ts.
+        # LENGTH, so a byte budget ships alongside it.
         assert PLAN_POLICY["max_changed_lines"] >= 1
         assert PLAN_POLICY["max_changed_bytes"] >= 1
         assert PLAN_POLICY["max_plan_changed_bytes"] >= PLAN_POLICY["max_changed_bytes"]
@@ -324,9 +316,6 @@ class TestReservedClosures:
     both gates must REFUSE a policy that widens them rather than reading the flag
     and carrying on — a branch step the verifier treats as an ordinary
     straight-line step is a branch nothing reasons about.
-
-    Mirrored in ts/plan/policy.test.ts: the prover's ordering and frame proofs
-    quantify over plan positions, which is a claim about a straight-line plan.
     """
 
     def test_shipped_policy_reserves_both(self):
@@ -344,9 +333,8 @@ class TestReservedClosures:
             check_plan_schema({"steps": [patch_step()]}, policy)
 
     def test_a_policy_declaring_another_argument_form_is_refused(self):
-        # The prover already refuses this (checkPlanPolicy: "this prover only
-        # implements [\"literal\"]"); the Python gate read the key nowhere, so a
-        # widened policy would have been enforced by one gate and not the other.
+        # This gate once read the key nowhere: a widened policy would have been
+        # a reservation that reserved nothing (ADR-0004's addendum).
         policy = copy.deepcopy(PLAN_POLICY)
         policy["argument_forms"] = ["literal", "binding"]
         with pytest.raises(Rejection, match="argument_forms"):
@@ -367,13 +355,12 @@ class TestReservedClosures:
 
 class TestPlanPolicyKeysAreAllowlisted:
     """A plan-policy key with no reader here is the twin divergence g1-6 was about,
-    one level out: ts/plan/policy.ts's PLAN_KEYS refuses an unknown key at load,
-    and this gate read its keys ad hoc and ignored the rest."""
+    one level out: this gate read its keys ad hoc and ignored the rest, so an
+    unknown key was admitted here and refused by the retired TS loader."""
 
     def test_an_unknown_plan_policy_key_is_a_policy_error(self):
         # `max_suggestions_per_file: 1` reads as a real bound to whoever reviews
-        # policy.json. The prover refuses to load it; this gate ignored it, so the
-        # same policy meant two different things to the two gates.
+        # policy.json while nothing enforces it.
         policy = copy.deepcopy(PLAN_POLICY)
         policy["max_suggestions_per_file"] = 1
         with pytest.raises(Rejection, match="policy error.*max_suggestions_per_file"):
@@ -475,14 +462,13 @@ class TestSpecsAreValidatedEagerly:
     Checked eagerly rather than where the value is consumed, because a lazy check
     only ever sees the step kinds a plan happens to USE: a malformed write-class
     spec stays latent until some later plan exercises it, which is the worst time
-    to discover the policy does not load. Twin of ts/plan/policy.ts, whose loader
-    validates the whole plan section up front.
+    to discover the policy does not load.
     """
 
     def test_a_pattern_the_enforcer_cannot_compile_is_a_policy_error(self):
-        # `\p{L}` compiles under JS both plainly and with `u`, and is a
-        # PatternError to Python's re — so it is the direction of this divergence
-        # that a TS-only loader check would leave live in the Python gate.
+        # `\p{L}` is legal in most regex dialects (JS included) and a
+        # PatternError to Python's re — the shape of pattern most likely to
+        # arrive in a policy authored against another engine.
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["patch"]["args"]["path"]["pattern"] = r"\p{L}"
         with pytest.raises(Rejection, match="policy error.*pattern"):
@@ -491,7 +477,7 @@ class TestSpecsAreValidatedEagerly:
     def test_a_non_integer_minimum_is_a_policy_error(self):
         # `{"type": "integer", "minimum": "bogus"}` reads as a floor. Python's
         # comparison raises TypeError rather than Rejection, so the gate crashed
-        # instead of producing a verdict; the prover admitted line -9999 outright.
+        # instead of producing a verdict.
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["suggest"]["args"]["line"]["minimum"] = "bogus"
         with pytest.raises(Rejection, match="policy error.*minimum"):
@@ -518,11 +504,10 @@ class TestSpecsAreValidatedEagerly:
         with pytest.raises(Rejection, match="policy error.*pattern"):
             check_plan_schema({"steps": [patch_step()]}, policy)
 
-    def test_a_pattern_only_the_other_engine_refuses_is_left_to_it(self):
-        # `a{,3}` is a valid Python pattern (a literal brace run) and a SyntaxError
-        # to JS under `u`. Each gate refuses what ITS enforcer cannot compile, so
-        # this one is the prover's to reject and not a policy error here — mirrored
-        # by the TypeScript loader's own case for it.
+    def test_a_pattern_another_engine_would_refuse_is_not_a_policy_error(self):
+        # `a{,3}` is a valid Python pattern (a literal brace run) and a
+        # SyntaxError to JS under `u`. The gate refuses what ITS enforcer cannot
+        # compile, not what some other dialect would balk at.
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["open_pr"]["args"]["title"]["pattern"] = "a{,3}"
         check_plan_schema({"steps": [patch_step()]}, policy)
@@ -1524,11 +1509,8 @@ class TestWriteChainCardinality:
 
 
 class TestOrdering:
-    """The Python twin of ts/plan/prove.test.ts describe('proveOrdering').
-
-    Case for case, same names, because the semantics must be byte-identical:
-    the prover and this module read the same policy.ordering, and a plan one
-    admits and the other rejects is the defect this module's docstring names.
+    """Ported case for case from the retired prover's proveOrdering suite, so
+    the deletion changed no ordering semantics (ADR-0016).
     """
 
     def test_holds_when_patch_precedes_push_branch_precedes_open_pr(self):

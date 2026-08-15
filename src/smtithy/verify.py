@@ -119,13 +119,13 @@ def check_scalar_spec(spec: dict, where: str) -> None:
     cannot use. Both are policy faults rather than claims about an artifact, and
     both must be decided before any value is checked: `{"minimum": "bogus"}`
     reads as a floor, and `value < "bogus"` raises TypeError from the middle of a
-    check — a crash where the caller expects a verdict — while the TypeScript twin
-    evaluates it as `false` and admits a negative integer.
+    check — a crash where the caller expects a verdict. (The retired TS gate
+    evaluated the same comparison as `false` and admitted a negative integer,
+    which is why this is checked at load rather than trusted to fail loudly.)
 
     A pattern is compiled here, not merely inspected, because "valid regex" is
-    the compiler's judgement and it differs between the two gates: `\\p{L}` is a
-    PatternError to Python's re and legal to JS, and `a{,3}` is the reverse. Each
-    side must refuse what ITS enforcer cannot compile, or the loader admits a
+    the compiler's judgement: this gate must refuse what its OWN enforcer cannot
+    compile (`\\p{L}` is a PatternError to Python's re), or the loader admits a
     policy that throws at enforcement time.
     """
     if isinstance(spec.get("pattern"), str):

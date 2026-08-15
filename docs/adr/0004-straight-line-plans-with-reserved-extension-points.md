@@ -1,5 +1,11 @@
 # Straight-line plans, with three reserved extension points
 
+*Note (2026-08-15): "the prover" below is the TypeScript SMT prover ADR-0003
+established, retired by [ADR-0016](0016-retire-the-typescript-prover-consolidate-on-python.md);
+its checks live in `plan_verify.py`. The decision here — straight-line plans,
+three reservations that refuse their shape — is unchanged, and the staged
+grounding extension remains not built.*
+
 §20 describes plans as programs — steps, branches, data bindings — and states
 its taint policy over execution-time reads: data derived from `read_pr_file`
 must never flow into `push_branch.name`. But the generator already reads PR

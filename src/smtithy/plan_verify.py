@@ -1,19 +1,17 @@
 """Deterministic, fail-closed verifier for remediation PLAN artifacts.
 
-The Python twin of ts/plan/schema.ts, for the executor's side of the boundary:
-the prover (TypeScript, ADR-0003) decides whether a plan satisfies the ordering
-and frame policies, but the process that holds the write token is Python, and
-it re-verifies rather than trusting a claim from another job — the same posture
-post.py takes toward the review job. The two implementations read the same
-policy.json, so a plan the prover admitted and this module rejects (or the
-reverse) is a defect in one of them, and the differential is worth a test.
+THE plan gate (ADR-0016): the process that holds the write token re-verifies
+every plan here rather than trusting a claim from another job — the same
+posture post.py takes toward the review job. Several checks began as twins of
+the retired TypeScript prover's (ADR-0003, superseded), which is why some
+docstrings name the semantics they were ported to preserve.
 
-This module carries ADR-0004's three reserved closures, same as the TS gate:
-steps are {id, kind, args} typed records; argument_forms admits only literals,
-so an execution-time binding ({"$ref": ...}) is an object where a scalar is
-expected and rejects today; and there is no version field — a model-supplied
-schema version is a model-selected policy, so "version" is just an unexpected
-key like anything else the model invents.
+This module carries ADR-0004's three reserved closures: steps are {id, kind,
+args} typed records; argument_forms admits only literals, so an execution-time
+binding ({"$ref": ...}) is an object where a scalar is expected and rejects
+today; and there is no version field — a model-supplied schema version is a
+model-selected policy, so "version" is just an unexpected key like anything
+else the model invents.
 
 Fail-closed, whole-plan, first violation wins. No partial acceptance, no
 repair.
@@ -21,8 +19,8 @@ repair.
 Checks, in order (mirroring verify.py's phase order):
 1. Strict structural schema (check_plan_schema).
 2. Cardinality (check_plan_cardinality) then the ordering policy
-   (check_plan_ordering, mirroring proveOrdering) — both decidable from the plan
-   alone, so they run before anything that reads a file.
+   (check_plan_ordering) — both decidable from the plan alone, so they run
+   before anything that reads a file.
 3. ADR-0005's containment (check_plan_containment): frame, denylist,
    suggest.line provenance and placement, bounding, anchoring. Anchoring is why
    verify_plan grows a content source over verify()'s argument list — the ADR
@@ -54,18 +52,18 @@ from verify import (
 
 # Ids exist so steps can be referred to; a duplicate makes a reference
 # ambiguous, and a counterexample naming a step becomes unactionable. Kept
-# conservative: this is what appears in audit output. Same expression as
-# ts/plan/schema.ts's ID_RE — the two must agree or a plan can pass one gate
-# and fail the other on shape alone.
+# conservative: this is what appears in audit output.
 ID_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
 PLAN_KEYS = frozenset({"steps"})
 STEP_KEYS = frozenset({"id", "kind", "args"})
 
 # Every key of the policy's `plan` section, being exactly the ones this gate
-# reads. Twin of ts/plan/policy.ts's PLAN_KEYS, whose loader refuses a policy
-# carrying anything outside it — this gate read its keys ad hoc, so an unknown key
-# was silently ignored here and rejected there: one policy meaning two things.
+# reads. This gate once read its keys ad hoc, so an unknown key was silently
+# ignored here while the (since-retired) TS loader rejected it: one policy
+# meaning two things. Membership is bounded here; that every key also has a
+# consuming READER is asserted by TestEveryPlanPolicyKeyHasAReader, which
+# scans this module with this allowlist excised.
 PLAN_POLICY_KEYS = frozenset({
     "max_steps",
     "control_flow",
@@ -86,8 +84,7 @@ PLAN_POLICY_KEYS = frozenset({
 # anchor, the transcript for the audit record) and raises UnicodeEncodeError,
 # which is not a Rejection. Any surrogate reaching here is UNPAIRED by
 # construction — json.loads combines a valid pair into one astral code point — so
-# the range test needs no pairing logic. ts/plan/schema.ts's twin does, since a
-# JS string keeps UTF-16 units.
+# the range test needs no pairing logic.
 SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
 
@@ -97,18 +94,16 @@ def check_reserved_closures(policy_plan: dict) -> None:
 
     control_flow and argument_forms are reservations, which means they have to
     REFUSE their shape today or they reserve nothing. This gate reasons about a
-    straight-line plan throughout: ordering compares plan indices, containment
-    simulates steps applying in sequence, and the prover's ∀-claims quantify over
-    those same fixed positions. A policy declaring `branch` would be read by no
-    code here — the branch step would verify as an ordinary straight-line step,
-    and both gates would prove properties of a program neither had modelled.
+    straight-line plan throughout: ordering compares plan indices and
+    containment simulates steps applying in sequence. A policy declaring
+    `branch` would be read by no code here — the branch step would verify as an
+    ordinary straight-line step, and the gate would prove properties of a
+    program it had not modelled.
 
     A policy error, not a Rejection about the plan: the fault is the deployment's,
     and reporting it as "the model produced something invalid" would send a reader
     to the generator. It is raised as Rejection only because that is the one
-    failure channel this module has, with the message carrying the distinction —
-    the prover's PolicyError is the same decision in a language that has a second
-    exception type for it.
+    failure channel this module has, with the message carrying the distinction.
     """
     if control_flow := policy_plan["control_flow"]:
         raise Rejection(
@@ -157,10 +152,8 @@ def check_plan_arg_specs(policy_plan: dict) -> None:
     malformed write-class spec — the ones deciding where `contents: write` points
     — stays latent until some later plan exercises it.
 
-    Twin of ts/plan/policy.ts's loader, which validates the whole plan section up
-    front. The two compile patterns with their OWN engines deliberately: each gate
-    must refuse what it cannot enforce, and the two regex dialects disagree in
-    both directions.
+    Patterns are compiled with THIS gate's own engine: the gate must refuse what
+    it cannot enforce as it will enforce it.
     """
     for kind, spec in policy_plan["step_kinds"].items():
         args = spec.get("args")
@@ -290,21 +283,20 @@ def check_plan_schema(candidate, policy_plan: dict) -> None:
 
 # The step kinds whose path is a file the executor would modify. suggest joins
 # patch (ADR-0009): an applied suggestion changes the file exactly as a patch
-# would, so every containment check binds both. Mirrors proveFrame's filter in
-# ts/plan/prove.ts.
+# would, so every containment check binds both.
 ANCHORED_KINDS = ("patch", "suggest")
 
 
 def glob_to_regexp(pattern: str) -> re.Pattern:
     """The denylist glob: ** spans separators, * does not, a dot is a dot.
 
-    A deliberate port of ts/plan/prove.ts's globToRegExp, NOT fnmatch — fnmatch
-    gives ** no special meaning (each * matches across separators, so
-    `.github/**` and `.github/*` would silently mean the same thing) and its
-    case behavior is platform-dependent. The §17 dotfile defect was a pattern
-    enforced exactly as written where the written pattern was wrong; two
-    languages enforcing the same policy.json must share one written-down
-    semantics, and this is it. Everything that is not a * is a literal.
+    Deliberately NOT fnmatch — fnmatch gives ** no special meaning (each *
+    matches across separators, so `.github/**` and `.github/*` would silently
+    mean the same thing) and its case behavior is platform-dependent. The §17
+    dotfile defect was a pattern enforced exactly as written where the written
+    pattern was wrong; the policy needs one written-down semantics, and this is
+    it (ported from the retired prover's globToRegExp — ADR-0016). Everything
+    that is not a * is a literal.
     """
     out = []
     i = 0
@@ -610,10 +602,9 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # phase that bounds where the write credential is pointed.
     check_write_class_targets(plan, policy_plan, head_branch)
 
-    # Frame: every modified path is a file the PR touched (§20 as written,
-    # the Python re-verification of what proveFrame proves — the executor
-    # trusts no other job). Exact string identity, same as the prover's
-    # intern table: a path that merely shares a prefix is a different file.
+    # Frame: every modified path is a file the PR touched (§20 as written —
+    # the executor trusts no other job). Exact string identity: a path that
+    # merely shares a prefix is a different file.
     for index, step in anchored:
         path = step["args"]["path"]
         if path not in changed:
@@ -871,10 +862,9 @@ def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
 def check_plan_ordering(plan: dict, policy_plan: dict) -> None:
     """policy.plan.ordering: no `after`-kind step may precede a `before`-kind one.
 
-    ADR-0009's legal write chain (patch → push_branch → open_pr). The Python twin
-    of ts/plan/prove.ts proveOrdering, and semantics must stay identical to it:
-    pairs at their plan indices, so relative order matters and not adjacency; a
-    plan with no orderable pair holds vacuously; first violation wins.
+    ADR-0009's legal write chain (patch → push_branch → open_pr). Pairs at
+    their plan indices, so relative order matters and not adjacency; a plan
+    with no orderable pair holds vacuously; first violation wins.
     """
     steps = plan["steps"]
     for rule in policy_plan["ordering"]:

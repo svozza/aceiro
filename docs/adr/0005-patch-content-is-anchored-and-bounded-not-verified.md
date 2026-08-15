@@ -100,6 +100,11 @@ points the prover at that — one list, both gates. The bundle's copies remain i
 the artifact as reproducibility evidence, which is all they were ever load-bearing
 for.
 
+*(Since [ADR-0016](0016-retire-the-typescript-prover-consolidate-on-python.md)
+retired the prover, the fetched list goes straight to `verify_plan` and the
+written-out file is gone; the property — provenance inputs are the executor's
+own fetch, never the bundle's — is unchanged.)*
+
 Nothing about the frame condition itself changes. This is the ADR's own reasoning
 being made true: `changed_files` is only a closed set if the process making the
 ∀-claim is the one that closed it.

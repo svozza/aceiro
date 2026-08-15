@@ -11,11 +11,11 @@ API.
 
 The AI PR reviewer is the first application. Review-and-remediate, where the
 verified object is a plan rather than a flat record, is the second — and the
-reason there is an SMT solver in the name.
+reason there is an SMT solver in the name, though the solver itself is history
+now ([ADR-0016](docs/adr/0016-retire-the-typescript-prover-consolidate-on-python.md)).
 
 Start with [CONTEXT.md](CONTEXT.md) for the vocabulary, then
-[docs/adr/](docs/adr/) for the decisions. [ADR-0003](docs/adr/0003-plan-prover-in-typescript-via-z3-wasm.md)
-is the one that explains the shape of the codebase.
+[docs/adr/](docs/adr/) for the decisions.
 
 ## Status
 
@@ -36,13 +36,12 @@ the artifact verifier and its tests, moved behaviour-preserving:
 | `src/smtithy/policy.json` | the declarative policy — the reviewable security object, hashed into the transcript. |
 | `tests/` | goldens, hypothesis properties, and a 486-line adversarial corpus that is the executable spec of the threat model. |
 
-And the plan prover, in TypeScript:
-
-| | |
-| --- | --- |
-| `ts/plan/policy.ts` | the plan half of `policy.json`, typed. Loaded, never constructed: there are no defaults, because a default would be a rule nobody reviewed. |
-| `ts/plan/schema.ts` | the shape gate, carrying ADR-0004's three reserved closures. Runs before the solver — an encoding built from an unchecked shape is reasoning about a structure it assumed. |
-| `ts/plan/prove.ts` | ordering and frame conditions, asserted **negated** so `unsat` means the policy holds on every path. Returns a counterexample on `sat`. |
+And the plan gate, in `src/smtithy/plan_verify.py`: ADR-0004's three reserved
+closures, the legal write chain's ordering, the frame condition, denylist,
+bounds, anchoring, markdown and secrets — one gate, run by the process holding
+the write token. (It began as the Python twin of a TypeScript SMT prover;
+[ADR-0016](docs/adr/0016-retire-the-typescript-prover-consolidate-on-python.md)
+records why the prover was retired and where its encoding lives.)
 
 And the remediation lane, commanded per finding (ADR-0007):
 
@@ -51,7 +50,7 @@ And the remediation lane, commanded per finding (ADR-0007):
 | `src/smtithy/fix_command.py` | the `/fix N` parse. The command must be the comment's whole content, in one exact spelling, and the ordinal is 1-based for humans — this is the only place that meets the 0-based index. |
 | `src/smtithy/prepare_fix_context.py` | every precondition the command channel adds, refused before a credential is in scope: the commander's trust (the COMMENT author), the issue being a pull request, drift, and a review this harness actually posted for the commanded head. |
 | `src/smtithy/plan_loop.py` | the plan generator, and `read_commanded_finding` — the one reader that DERIVES the commanded finding by verifying the accepted artifact and indexing it, so its membership in a real review is structural rather than claimed. |
-| `src/smtithy/execute_plan.py` | the trusted plan executor: re-verifies, re-proves via the TypeScript prover, decides the delivery from checkable structure, and delivers. `--allow` names the one mode the invoking job may perform. |
+| `src/smtithy/execute_plan.py` | the trusted plan executor: re-verifies in-process, decides the delivery from checkable structure, and delivers. `--allow` names the one mode the invoking job may perform. |
 | `src/smtithy/route_delivery.py` | which job delivers, decided in a job holding `permissions: {}`. It reads step kinds and nothing else, so a suggestion run never mints `contents: write` — and because the plan it reads is unverified, every malformed shape refuses rather than emitting a mode. |
 | `src/smtithy/suggest.py` | the suggestion delivery: the default, and the only one that works on fork pull requests. |
 | `src/smtithy/stack.py` | the stacked follow-up pull request: the fallback for an atomic multi-file fix, committed through unreferenced objects so a partial failure leaves nothing behind, and carrying ADR-0007's `(pr, head_sha, finding)` deduplication key. |
@@ -194,37 +193,8 @@ pip install --require-hashes -r requirements.txt -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-And the prover, on Node 24:
-
-```bash
-npm ci
-npm run typecheck
-npm test
-```
-
-Two runners, deliberately (ADR-0003): pytest for the artifact verifier, whose
-risk is `markdown-it` rendering behaviour and a hand-tabulated Unicode table, and
-`node --test` for the plan prover, whose risk is reachability reasoning. Both run
-until the verifier is ported last, behind a differential oracle — the Python is
-the oracle, so the second runner is not saved until the port finishes.
-
-### Reading the prover's tests
-
-The policies are asserted **negated**, so `unsat` means "holds". That makes one
-failure mode invisible to ordinary tests: an encoding that is accidentally
-*contradictory* returns `unsat` for every plan — a prover that approves
-everything, and looks green doing it. So the load-bearing cases are the ones
-named `CATCHES`, which must come back `sat` with a counterexample naming the
-offending step. Verified by mutation: making the ordering encoding contradictory
-fails all three `CATCHES` cases while the rest stay green.
-
-`proveTaint` is expected to hold for every plan the schema admits, because
-`argument_forms` is `["literal"]` and there is nothing to taint from. A check
-that is green forever carries no signal, so it takes a synthetic `bindings`
-argument the schema can never produce, and the corpus uses it to assert `sat`
-with the expected leaking path — including one laundered through an intermediate
-step, since transitivity is the part most easily got wrong. ADR-0004 requires
-this: the prover is tested beyond what the policy admits.
+One runner — the harness is all Python
+([ADR-0016](docs/adr/0016-retire-the-typescript-prover-consolidate-on-python.md)).
 
 ## Configuring the policy
 

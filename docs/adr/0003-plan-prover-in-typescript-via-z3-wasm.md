@@ -1,5 +1,11 @@
 # The plan prover is TypeScript, on z3-solver via WASM
 
+**SUPERSEDED by [ADR-0016](0016-retire-the-typescript-prover-consolidate-on-python.md)
+(2026-08-15).** The port direction reversed — everything is Python — so the
+prover was retired; its checks were already implemented in `plan_verify.py`
+and the differential oracle confirmed the coverage across 97 cases. The last
+commit containing `ts/plan/prove.ts` is `825c72b`.
+
 §20's review-and-remediate extension needs an SMT backend: taint is an
 ∃-dataflow-chain question over branches and joins, and frame conditions are
 quantified over all files. Z3's Python bindings are the mature ones, so the

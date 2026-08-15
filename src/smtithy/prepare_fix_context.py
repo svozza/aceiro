@@ -269,8 +269,8 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
     # the base repository for a pull request to be based on (ADR-0009's addendum).
     # Nothing about that can change between here and the delivery, so it is knowable
     # at command time and the commander would otherwise spend the approval gate, a
-    # model session, both gates, the prover and a contents: write job to receive a
-    # red run with an ::error:: line in a log they must click into.
+    # model session, both gates and a contents: write job to receive a red run
+    # with an ::error:: line in a log they must click into.
     #
     # Before the artifact is composed, so no context the plan session could read is
     # written. The paths come from the DERIVED findings — resolved above through the

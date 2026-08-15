@@ -1,5 +1,10 @@
 # Addendum to ADR-0003: a shared policy number means one thing
 
+**Historical (see [ADR-0016](0016-retire-the-typescript-prover-consolidate-on-python.md)):**
+the seam this addendum polices closed when the prover was retired; the scalar
+lexeme rules it produced (code-point lengths, integer lexemes, surrogate
+refusal) stay in the Python gate on their own merits.
+
 ADR-0003 accepts a two-language verification tier "for now" and names what keeps
 the two gates honest while the seam is open: `policy.json` "becomes shared data
 with two readers in two languages… now it is also the only thing keeping the two

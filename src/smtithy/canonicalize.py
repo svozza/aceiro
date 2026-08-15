@@ -6,8 +6,7 @@ actually render a piece of text as, before deciding whether it is safe.
 The invisible table is read by the input fence (artifact.escape_fence), the
 artifact secret scan (verify.rendered_text), the plan secret scan, and verify's
 canonical-text gate (ADR-0011), so a code point added here closes every one of
-them at once. If the artifact verifier is ported to TypeScript (ADR-0003 phases
-this table first), it must stay one source of truth across both languages.
+them at once.
 
 The readers exist so the codec is never the platform's choice, and so
 contributor-controlled bytes and harness-written bytes are decoded by different
