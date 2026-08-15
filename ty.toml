@@ -1,0 +1,17 @@
+# ty runs as its own CI job beside quality_check (ADR-0017): a dev tool only,
+# never inside the credentialed jobs, so it sits outside the gate's runtime
+# trust boundary.
+
+[environment]
+python-version = "3.13"
+
+[src]
+include = ["src/smtithy"]
+# Eval scenario trees are fixtures playing the CONTRIBUTOR'S code — partial,
+# deliberately defective, and never imported by the harness.
+exclude = [
+    "src/smtithy/evals/scenarios/*/pr_root",
+    "src/smtithy/evals/scenarios/*/base_root",
+    "src/smtithy/evals/plan_scenarios/*/pr_root",
+    "src/smtithy/evals/plan_scenarios/*/base_root",
+]
