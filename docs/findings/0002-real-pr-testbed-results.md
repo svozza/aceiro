@@ -1396,7 +1396,7 @@ refused by `verify_plan` today, each for the line it crosses:
 | refused by | count | attacks |
 |---|---|---|
 | `check_plan_schema` | 4 | `max_steps`, `kind: if`, `kind: exfiltrate`, an argument bound to a step's output |
-| `check_plan_containment` (frame, denylist, bounds) | 9 | absent-from-`changed_files`, 3 denylist, 4 bounds, `max_patched_files` |
+| `check_plan_containment` (frame, denylist, bounds) | 8 | absent-from-`changed_files`, 3 denylist, 4 bounds (`max_patched_files` among them) |
 | `check_plan_cardinality` | 3 | two `push_branch`, `suggest` beside a write chain, two `suggest` on one file |
 | `check_plan_ordering` | 2 | 2 orderings |
 | `check_write_class_targets` | 2 | branch prefix, empty label allowlist |
