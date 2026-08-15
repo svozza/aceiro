@@ -1,0 +1,7 @@
+{
+  "number": 9106,
+  "title": "feat(events): add structured event parser",
+  "body": "Adds parse_event. Returns an empty dict when the payload cannot be decoded.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

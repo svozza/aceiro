@@ -1,0 +1,15 @@
+diff --git a/app/config_paths.py b/app/config_paths.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/app/config_paths.py
+@@ -0,0 +1,9 @@
++"""Configuration helpers."""
++from __future__ import annotations
++
++import os
++
++
++def config_path(root: str) -> str:
++    """Absolute path to the config file under *root*."""
++    return os.path.join(root, "config.toml")

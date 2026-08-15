@@ -1,0 +1,15 @@
+diff --git a/app/strings.py b/app/strings.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/app/strings.py
+@@ -0,0 +1,9 @@
++"""String helpers."""
++from __future__ import annotations
++
++
++def titlecase(value: str) -> str:
++    """Capitalise the first letter of *value*, leaving the rest untouched."""
++    if not value:
++        return value
++    return value[0].upper() + value[1:]

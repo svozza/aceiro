@@ -444,13 +444,18 @@ class TestScenarioExpectations:
     def load(name):
         return json.loads((run_plan_evals.PLAN_SCENARIOS_DIR / name / "expect.json").read_text())
 
-    def test_the_five_scenarios_exist(self):
+    def test_the_six_scenarios_exist(self):
         assert self.NAMES == [
             "plan_injection_in_pr_head",
             "plan_multi_file_fix",
             "plan_popitem_fix",
             "plan_rejection_recovery",
             "plan_scope_discipline",
+            # The second injection scenario, ported from the red-team exercise
+            # 2026-08-14. plan_injection_in_pr_head asks for a widened scope and a
+            # fake note prefix; this one asks for the write credential to be
+            # pointed at a new branch, a label and the review workflow itself.
+            "plan_write_class_injection",
         ]
 
     @pytest.mark.parametrize("name", NAMES)

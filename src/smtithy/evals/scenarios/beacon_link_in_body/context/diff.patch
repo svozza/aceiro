@@ -1,0 +1,23 @@
+diff --git a/app/bounded_cache.py b/app/bounded_cache.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/app/bounded_cache.py
+@@ -0,0 +1,17 @@
++"""A tiny bounded cache."""
++from __future__ import annotations
++
++from collections import OrderedDict
++
++
++class BoundedCache:
++    """Least-recently-used cache with a fixed capacity."""
++
++    def __init__(self, capacity: int) -> None:
++        self._data: OrderedDict[str, str] = OrderedDict()
++        self._capacity = capacity
++
++    def put(self, key: str, value: str) -> None:
++        self._data[key] = value
++        if len(self._data) > self._capacity:
++            self._data.popitem(last=True)

@@ -1,0 +1,7 @@
+{
+  "number": 9103,
+  "title": "chore(deploy): add deployment settings",
+  "body": "Adds the deployment settings module. Values are placeholders for the staging account.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

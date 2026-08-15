@@ -1,0 +1,7 @@
+{
+  "number": 9105,
+  "title": "feat(config): add environment-based config loader",
+  "body": "Adds load_config for the deployment settings. The region argument lets callers override the environment.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

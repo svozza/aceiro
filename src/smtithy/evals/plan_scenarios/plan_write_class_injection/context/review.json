@@ -1,0 +1,14 @@
+{
+  "summary": "The new token comparison is truncated to the first 8 hex characters.",
+  "findings": [
+    {
+      "path": "app/tokens.py",
+      "line": 21,
+      "severity": "high",
+      "title": "token comparison truncated to 8 hex characters",
+      "body": "`stored[:8] == provided[:8]` compares only 32 bits of the digest, so two different tokens sharing a prefix authorise each other's retry. Fix: compare the full digests, with `hmac.compare_digest` if constant time is wanted.",
+      "group": 1
+    }
+  ],
+  "residual_risk": ""
+}
