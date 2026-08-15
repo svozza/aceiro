@@ -17,7 +17,11 @@ Fail-closed, whole-plan, first violation wins. No partial acceptance, no
 repair.
 
 Checks, in order (mirroring verify.py's phase order):
-1. Strict structural schema (check_plan_schema).
+1. Strict structural schema (parse_plan), which PARSES the candidate into
+   typed Steps rather than validating in place (ADR-0017): every later phase
+   takes the parsed steps, so no phase can receive model output the schema
+   phase never saw — the unwired-schema failure mode is inexpressible, not
+   guarded against.
 2. Cardinality (check_plan_cardinality) then the ordering policy
    (check_plan_ordering) — both decidable from the plan alone, so they run
    before anything that reads a file.
@@ -36,7 +40,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from canonicalize import strip_invisible
 from verify import (
@@ -86,6 +93,19 @@ PLAN_POLICY_KEYS = frozenset({
 # construction — json.loads combines a valid pair into one astral code point — so
 # the range test needs no pairing logic.
 SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+
+
+@dataclass(frozen=True)
+class Step:
+    """One parsed plan step — the value parse_plan returns and the only input
+    a later phase accepts, so a phase cannot receive model output the schema
+    phase never proved (ADR-0017). In src/ only the parser constructs Steps;
+    tests build them by hand as fixtures. Per-kind key safety (that a patch
+    step's args carry "path") is the parser's guarantee, not the type's."""
+
+    id: str
+    kind: str
+    args: Mapping[str, str | int]
 
 
 def check_reserved_closures(policy_plan: dict) -> None:
@@ -188,10 +208,13 @@ def check_plan_arg_specs(policy_plan: dict) -> None:
             check_scalar_spec(arg_spec, where)
 
 
-def check_plan_schema(candidate, policy_plan: dict) -> None:
-    """Raise Rejection on the first structural violation; return None if the
-    plan is well-shaped. Shape only: containment (ADR-0005) and markdown are
-    separate phases, same as verify.py's schema/provenance split."""
+def parse_plan(candidate, policy_plan: dict) -> tuple[Step, ...]:
+    """Raise Rejection on the first structural violation; return the parsed
+    steps if the plan is well-shaped. A parser, not a validator (ADR-0017):
+    the Steps it returns are the only way to reach a later phase, so a
+    well-typed step is proof this phase ran. Shape only: containment
+    (ADR-0005) and markdown are separate phases, same as verify.py's
+    schema/provenance split."""
     # The policy this gate is about to interpret must be one it implements, and
     # that is decided before any step is read: a policy fault reported as a bad
     # plan sends a reader to the generator.
@@ -222,6 +245,7 @@ def check_plan_schema(candidate, policy_plan: dict) -> None:
 
     step_kinds = policy_plan["step_kinds"]
     seen_ids = set()
+    parsed: list[Step] = []
 
     for index, step in enumerate(steps):
         where = f"plan.steps[{index}]"
@@ -289,6 +313,12 @@ def check_plan_schema(candidate, policy_plan: dict) -> None:
                     "be a string this gate can write to a file and to the audit log"
                 )
             check_scalar(value, arg_spec, arg_where)
+
+        # A copy behind a read-only view: the Step must stay what was proved
+        # even if the caller's dict is mutated after.
+        parsed.append(Step(id=step_id, kind=kind, args=MappingProxyType(dict(args))))
+
+    return tuple(parsed)
 
 
 # ------------------------------------------------- containment (ADR-0005) ---
@@ -399,7 +429,7 @@ def _line_count(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
-def apply_patch_steps(anchored: list[tuple[int, dict]], content_source) -> dict[str, bytes]:
+def apply_patch_steps(anchored: list[tuple[int, Step]], content_source) -> dict[str, bytes]:
     """Apply the anchored steps in sequence and return the resulting file bytes.
 
     THE one model of what patching means, called by the verifier as its anchoring
@@ -444,14 +474,14 @@ def apply_patch_steps(anchored: list[tuple[int, dict]], content_source) -> dict[
     """
     applied: dict[str, bytes] = {}
     for index, step in anchored:
-        path = step["args"]["path"]
+        path = step.args["path"]
         where = f"plan.steps[{index}].args.old"
         try:
             original = content_source(path)
         except OSError as exc:
             raise Rejection(f"{where}: cannot read {path!r} at the reviewed SHA: {exc}")
         pending = applied.get(path, original)
-        old_bytes = step["args"]["old"].encode("utf-8")
+        old_bytes = step.args["old"].encode("utf-8")
 
         at_reviewed_sha = count_occurrences(original, old_bytes)
         if at_reviewed_sha == 0:
@@ -472,14 +502,14 @@ def apply_patch_steps(anchored: list[tuple[int, dict]], content_source) -> dict[
                 f"{where}: matches {path!r} {occurrences} times once the earlier steps in this "
                 "plan have applied; an ambiguous anchor cannot be applied"
             )
-        applied[path] = pending.replace(old_bytes, step["args"]["new"].encode("utf-8"), 1)
+        applied[path] = pending.replace(old_bytes, step.args["new"].encode("utf-8"), 1)
     return applied
 
 
 BRANCH_ARGS = {"push_branch": "name", "open_pr": "branch"}
 
 
-def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | None) -> None:
+def check_write_class_targets(steps: tuple[Step, ...], policy_plan: dict, head_branch: str | None) -> None:
     """Confine the arguments that decide WHERE a write-class step acts.
 
     Branches (push_branch.name, open_pr.branch) must sit under
@@ -499,21 +529,10 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
     prefix = policy_plan["branch_prefix"]
     allowed_labels = policy_plan["label_allowlist"]
 
-    for index, step in enumerate(plan["steps"]):
-        kind = step["kind"]
-        if arg_name := BRANCH_ARGS.get(kind):
-            args = step.get("args")
+    for index, step in enumerate(steps):
+        if arg_name := BRANCH_ARGS.get(step.kind):
             where = f"plan.steps[{index}].args.{arg_name}"
-            # As with the undeclared kind in _iter_plan_markdown: the schema
-            # phase pins args to an object carrying this key with a literal
-            # string value, so any other shape here means that phase is not
-            # wired in. Refuse rather than crash past it (KeyError on the
-            # missing key, AttributeError on .startswith).
-            if not isinstance(args, dict) or arg_name not in args:
-                raise Rejection(f"{where}: missing, so there is no branch name to confine")
-            branch = args[arg_name]
-            if not isinstance(branch, str):
-                raise Rejection(f"{where}: expected a branch name, got {type(branch).__name__}")
+            branch = step.args[arg_name]
             # Segment-wise, so `smtithy-evil/x` cannot pass as `smtithy/`, and a
             # `..` segment cannot climb out of the namespace it matched.
             if not branch.startswith(prefix) or ".." in branch.split("/"):
@@ -526,13 +545,8 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
                     f"{where}: branch {branch!r} is the reviewed pull request's own head branch; "
                     "the harness never pushes to the contributor's branch (ADR-0009 addendum)"
                 )
-        elif kind == "label":
-            args = step.get("args")
-            if not isinstance(args, dict) or "name" not in args:
-                raise Rejection(
-                    f"plan.steps[{index}].args.name: missing, so there is no label to check"
-                )
-            name = args["name"]
+        elif step.kind == "label":
+            name = step.args["name"]
             if name not in allowed_labels:
                 raise Rejection(
                     f"plan.steps[{index}].args.name: label {name!r} is not on the policy "
@@ -547,15 +561,14 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
     #
     # After the per-step confinement, so an off-namespace branch is still reported
     # as one: that is the worse fault and the one a reader needs named. Only when
-    # both values are strings, because shape belongs to the schema phase, and only
-    # when both steps exist — cardinality admits a push with no open_pr.
+    # both steps exist — cardinality admits a push with no open_pr.
     branches = {
-        step["kind"]: step["args"][BRANCH_ARGS[step["kind"]]]
-        for step in plan["steps"]
-        if step["kind"] in BRANCH_ARGS
+        step.kind: step.args[BRANCH_ARGS[step.kind]]
+        for step in steps
+        if step.kind in BRANCH_ARGS
     }
     pushed, opened = branches.get("push_branch"), branches.get("open_pr")
-    if isinstance(pushed, str) and isinstance(opened, str) and pushed != opened:
+    if pushed is not None and opened is not None and pushed != opened:
         raise Rejection(
             f"plan.steps: open_pr opens from {opened!r} but push_branch pushes {pushed!r}; "
             "the follow-up pull request must open from the branch this plan pushed, or its "
@@ -563,7 +576,7 @@ def check_write_class_targets(plan: dict, policy_plan: dict, head_branch: str | 
         )
 
 
-def check_commanded_scope(plan: dict, commanded_findings: list[dict] | None) -> None:
+def check_commanded_scope(steps: tuple[Step, ...], commanded_findings: list[dict] | None) -> None:
     """ADR-0007/ADR-0013: the fix must touch the file of EVERY commanded finding.
 
     This scope was enforced by the PROMPT alone — verify_plan never saw the
@@ -590,7 +603,7 @@ def check_commanded_scope(plan: dict, commanded_findings: list[dict] | None) -> 
     """
     if not commanded_findings:
         return
-    paths = {step["args"]["path"] for step in plan["steps"] if step["kind"] in ANCHORED_KINDS}
+    paths = {step.args["path"] for step in steps if step.kind in ANCHORED_KINDS}
     if not paths:
         return
     # Sorted and deduplicated so the message is stable and names each missing file
@@ -607,7 +620,7 @@ def check_commanded_scope(plan: dict, commanded_findings: list[dict] | None) -> 
         )
 
 
-def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
+def check_plan_containment(steps: tuple[Step, ...], diff_text: str, changed_files: list[str],
                            policy_plan: dict, content_source, head_branch: str | None = None,
                            commanded_findings: list[dict] | None = None) -> None:
     """ADR-0005: frame, denylist, suggest.line provenance, bounding, anchoring
@@ -621,19 +634,18 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     from data the verifier already holds) fails first, so a file is only ever
     read for a path that already passed the frame and the denylist.
     """
-    steps = plan["steps"]
     changed = set(changed_files)
-    anchored = [(index, step) for index, step in enumerate(steps) if step["kind"] in ANCHORED_KINDS]
+    anchored = [(index, step) for index, step in enumerate(steps) if step.kind in ANCHORED_KINDS]
 
     # Write-class targets first: decidable from the plan alone, and it is the
     # phase that bounds where the write credential is pointed.
-    check_write_class_targets(plan, policy_plan, head_branch)
+    check_write_class_targets(steps, policy_plan, head_branch)
 
     # Frame: every modified path is a file the PR touched (§20 as written —
     # the executor trusts no other job). Exact string identity: a path that
     # merely shares a prefix is a different file.
     for index, step in anchored:
-        path = step["args"]["path"]
+        path = step.args["path"]
         if path not in changed:
             raise Rejection(f"plan.steps[{index}].args.path: {path!r} is not a file this PR touched")
 
@@ -641,7 +653,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # on why a denylist is acceptable here despite allowlisting being the rule
     # everywhere else).
     for index, step in anchored:
-        path = step["args"]["path"]
+        path = step.args["path"]
         pattern = matches_denylist(path, policy_plan["path_denylist"])
         if pattern is not None:
             raise Rejection(f"plan.steps[{index}].args.path: {path!r} is on the policy path denylist ({pattern!r})")
@@ -650,16 +662,16 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # whatever was commanded, so that is the reason a reader should get. Here
     # rather than later because it is still decidable from the plan plus the
     # command, before anything is read off disk.
-    check_commanded_scope(plan, commanded_findings)
+    check_commanded_scope(steps, commanded_findings)
 
     # suggest.line provenance (ADR-0009 addendum): the same in-hunk check a
     # finding's line gets, against the same SHA-anchored diff, in the verifier
     # rather than as a GitHub 422 in the executor.
     hunks = parse_diff_hunks(diff_text)
     for index, step in anchored:
-        if step["kind"] != "suggest":
+        if step.kind != "suggest":
             continue
-        path, line = step["args"]["path"], step["args"]["line"]
+        path, line = step.args["path"], step.args["line"]
         if line not in hunks.get(path, set()):
             raise Rejection(f"plan.steps[{index}].args.line: line {line} of {path!r} is not inside any diff hunk")
 
@@ -674,7 +686,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # while substituting 40 KB. The plan total is separate from the per-step cap
     # because several steps may share one file, so max_patched_files does not
     # bound the sum.
-    patched_paths = {step["args"]["path"] for _, step in anchored}
+    patched_paths = {step.args["path"] for _, step in anchored}
     if len(patched_paths) > policy_plan["max_patched_files"]:
         raise Rejection(
             f"plan: {len(patched_paths)} patched files exceeds max_patched_files "
@@ -682,7 +694,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         )
     plan_bytes = 0
     for index, step in anchored:
-        changed_lines = _line_count(step["args"]["old"]) + _line_count(step["args"]["new"])
+        changed_lines = _line_count(step.args["old"]) + _line_count(step.args["new"])
         if changed_lines > policy_plan["max_changed_lines"]:
             raise Rejection(
                 f"plan.steps[{index}]: {changed_lines} changed lines exceeds max_changed_lines "
@@ -691,7 +703,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         # UTF-8 bytes, not code points: the budget bounds what reaches the file,
         # and a file holds bytes. Measured in code points a 3-byte code point
         # would cost a third of its real size.
-        changed_bytes = len(step["args"]["old"].encode("utf-8")) + len(step["args"]["new"].encode("utf-8"))
+        changed_bytes = len(step.args["old"].encode("utf-8")) + len(step.args["new"].encode("utf-8"))
         if changed_bytes > policy_plan["max_changed_bytes"]:
             raise Rejection(
                 f"plan.steps[{index}]: {changed_bytes} changed bytes exceeds max_changed_bytes "
@@ -719,14 +731,14 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
     # the reviewed-SHA bytes, which is the diff the model read — never the applied
     # result.
     for index, step in anchored:
-        if step["kind"] != "suggest":
+        if step.kind != "suggest":
             continue
-        path = step["args"]["path"]
+        path = step.args["path"]
         where = f"plan.steps[{index}].args.old"
         # Already proved readable and unambiguously anchored by the applier above,
         # so this cannot fail where that succeeded.
         original = content_source(path)
-        old_bytes = step["args"]["old"].encode("utf-8")
+        old_bytes = step.args["old"].encode("utf-8")
 
         # Placement (ADR-0009 addendum: "`old` IS the anchored line"). GitHub's
         # suggestion block replaces the commented line range, not the text in
@@ -753,7 +765,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
                 "whole lines, so the rest of the anchor's last line would be overwritten unanchored"
             )
         start_line = original.count(b"\n", 0, offset) + 1
-        line = step["args"]["line"]
+        line = step.args["line"]
         if start_line != line:
             raise Rejection(
                 f"plan.steps[{index}].args.line: suggestion addresses line {line} of {path!r} but "
@@ -763,7 +775,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         # keeps the step shape closed), so its extent is derived from the anchor
         # and every line it spans must be in the hunk set — the same provenance
         # the addressed line already got, applied to the whole replaced range.
-        end_line = start_line + _line_count(step["args"]["old"]) - 1
+        end_line = start_line + _line_count(step.args["old"]) - 1
         for spanned in range(start_line, end_line + 1):
             if spanned not in hunks.get(path, set()):
                 raise Rejection(
@@ -779,7 +791,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
         # denylist and secrets are not the bytes committed. Exempt where `old`
         # ends the file unterminated too, because then there is no following line
         # to join to and the two models agree.
-        new = step["args"]["new"]
+        new = step.args["new"]
         if new and not new.endswith("\n") and old_bytes.endswith(b"\n"):
             raise Rejection(
                 f"{where.replace('.old', '.new')}: drops the line terminator `old` carried, which "
@@ -807,7 +819,7 @@ def check_plan_containment(plan: dict, diff_text: str, changed_files: list[str],
 # -------------------------------------------------------------- cardinality --
 
 
-def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
+def check_plan_cardinality(steps: tuple[Step, ...], policy_plan: dict) -> None:
     """At most one of each write-class kind; at most one suggestion per file; no
     chain at all on a suggest plan.
 
@@ -837,7 +849,7 @@ def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
     steps are write-class makes delivery the sole guard on the one shape that
     reaches `contents: write` while remediating nothing.
     """
-    kinds = [step["kind"] for step in plan["steps"]]
+    kinds = [step.kind for step in steps]
     step_kinds = policy_plan["step_kinds"]
     write_kinds = [kind for kind, spec in step_kinds.items() if spec["write_class"]]
 
@@ -859,9 +871,9 @@ def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
     # Grouped by path so the message names the file and both steps: a count alone
     # leaves a reader (and the model) guessing which two.
     by_path: dict[str, list[str]] = {}
-    for step in plan["steps"]:
-        if step["kind"] == "suggest":
-            by_path.setdefault(step["args"]["path"], []).append(step["id"])
+    for step in steps:
+        if step.kind == "suggest":
+            by_path.setdefault(step.args["path"], []).append(step.id)
     for path, ids in by_path.items():
         if len(ids) > 1:
             raise Rejection(
@@ -886,25 +898,24 @@ def check_plan_cardinality(plan: dict, policy_plan: dict) -> None:
 # ----------------------------------------------------------------- ordering --
 
 
-def check_plan_ordering(plan: dict, policy_plan: dict) -> None:
+def check_plan_ordering(steps: tuple[Step, ...], policy_plan: dict) -> None:
     """policy.plan.ordering: no `after`-kind step may precede a `before`-kind one.
 
     ADR-0009's legal write chain (patch → push_branch → open_pr). Pairs at
     their plan indices, so relative order matters and not adjacency; a plan
     with no orderable pair holds vacuously; first violation wins.
     """
-    steps = plan["steps"]
     for rule in policy_plan["ordering"]:
         for j, second in enumerate(steps):
-            if second["kind"] != rule["after"]:
+            if second.kind != rule["after"]:
                 continue
             for i, first in enumerate(steps):
-                if i == j or first["kind"] != rule["before"]:
+                if i == j or first.kind != rule["before"]:
                     continue
                 if j < i:
                     raise Rejection(
-                        f"plan.steps[{j}]: {second['kind']} ({second['id']!r}) precedes "
-                        f"{first['kind']} ({first['id']!r}) at plan.steps[{i}], which the "
+                        f"plan.steps[{j}]: {second.kind} ({second.id!r}) precedes "
+                        f"{first.kind} ({first.id!r}) at plan.steps[{i}], which the "
                         f"ordering policy forbids"
                     )
 
@@ -930,29 +941,11 @@ def plan_markdown_args(args_spec: dict, kind: str) -> list[str]:
     return fields
 
 
-def _iter_plan_markdown(plan: dict, policy: dict):
+def _iter_plan_markdown(steps: tuple[Step, ...], policy: dict):
     step_kinds = policy["plan"]["step_kinds"]
-    for index, step in enumerate(plan["steps"]):
-        kind = step["kind"]
-        if kind not in step_kinds:
-            # check_plan_schema refuses this first, so reaching here means that
-            # phase is no longer wired into the driver. Refusing rather than
-            # raising KeyError keeps the same reading of an unknown kind — reject
-            # the whole plan — for a caller who runs this phase on its own.
-            raise Rejection(
-                f"plan.steps[{index}].kind: {kind!r} is not a declared step kind "
-                f"({', '.join(sorted(step_kinds))})"
-            )
-        args = step.get("args")
-        for arg_name in plan_markdown_args(step_kinds[kind]["args"], kind):
-            # Same reading as the kind above: schema pins args to the declared
-            # keys first, so a missing one here is the same unwired phase.
-            if not isinstance(args, dict) or arg_name not in args:
-                raise Rejection(
-                    f"plan.steps[{index}].args.{arg_name}: missing, though the policy marks "
-                    "it markdown-bearing"
-                )
-            yield f"plan.steps[{index}].args.{arg_name}", args[arg_name]
+    for index, step in enumerate(steps):
+        for arg_name in plan_markdown_args(step_kinds[step.kind]["args"], step.kind):
+            yield f"plan.steps[{index}].args.{arg_name}", step.args[arg_name]
 
 
 # The info string that makes a fenced block APPLIABLE rather than quoted. Read as
@@ -1015,7 +1008,7 @@ def check_note_carries_no_suggestion(note: str, where: str) -> None:
             )
 
 
-def check_plan_markdown(plan: dict, policy: dict) -> None:
+def check_plan_markdown(steps: tuple[Step, ...], policy: dict) -> None:
     """Markdown-bearing args (suggest.note, open_pr.body) through the same
     allowlist gate a finding's body gets: they render in a posted comment or
     PR body, so nothing reaches GitHub's renderer that verify.py would not
@@ -1024,23 +1017,25 @@ def check_plan_markdown(plan: dict, policy: dict) -> None:
     The note gets one check more than the allowlist, because it lands in the one
     place a fence is more than code — see check_note_carries_no_suggestion.
     """
-    for where, value in _iter_plan_markdown(plan, policy):
+    for where, value in _iter_plan_markdown(steps, policy):
         check_markdown_field(value, policy["markdown"], where)
-    for index, step in enumerate(plan["steps"]):
-        if step["kind"] == "suggest":
+    for index, step in enumerate(steps):
+        if step.kind == "suggest":
             check_note_carries_no_suggestion(
-                step["args"]["note"], f"plan.steps[{index}].args.note"
+                step.args["note"], f"plan.steps[{index}].args.note"
             )
             check_suggestion_new_survives_markdown(
-                step["args"]["new"], f"plan.steps[{index}].args.new"
+                step.args["new"], f"plan.steps[{index}].args.new"
             )
 
 
-def check_plan_secrets(plan: dict, policy: dict) -> None:
+def check_plan_secrets(steps: tuple[Step, ...], policy: dict) -> None:
     """The whole plan through the secret scan, mirroring check_secrets.
 
-    Four representations, each also scanned invisible-stripped: raw JSON (any
-    arg, old and new included), rendered markdown args, and old FUSED with new —
+    Four representations, each also scanned invisible-stripped: the plan's JSON
+    (any arg, old and new included — serialised from the parsed steps, which ARE
+    the whole plan, since the parser admits no key or value outside them),
+    rendered markdown args, and old FUSED with new —
     a rendered suggestion shows those adjacent, so a credential split across the
     boundary reads complete there while neither fragment nor the syntax-separated
     JSON matches.
@@ -1057,17 +1052,20 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
     introduced. Inherent to anchoring a scan to the plan, not a gap in these four
     representations.
     """
-    texts = [json.dumps(plan, ensure_ascii=False)]
-    for step in plan["steps"]:
-        if step["kind"] in ANCHORED_KINDS:
-            texts.append(step["args"]["old"] + step["args"]["new"])
+    texts = [json.dumps(
+        {"steps": [{"id": step.id, "kind": step.kind, "args": dict(step.args)} for step in steps]},
+        ensure_ascii=False,
+    )]
+    for step in steps:
+        if step.kind in ANCHORED_KINDS:
+            texts.append(step.args["old"] + step.args["new"])
     # Keeping the raw forms alongside means stripping can only ADD matches: it
     # cannot fuse two innocent runs into a false negative.
     texts.extend(strip_invisible(text) for text in list(texts))
     # scanned_representations already carries its own stripped forms, and it is
     # the artifact gate's corpus builder: a markdown arg the two gates scan
     # differently is one credential with two verdicts.
-    for _, value in _iter_plan_markdown(plan, policy):
+    for _, value in _iter_plan_markdown(steps, policy):
         texts.extend(scanned_representations(value))
     for pattern in policy["secret_scan_patterns"]:
         for text in texts:
@@ -1080,8 +1078,11 @@ def check_plan_secrets(plan: dict, policy: dict) -> None:
 
 def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: dict,
                 content_source, head_branch: str | None = None,
-                commanded_findings: list[dict] | None = None) -> None:
-    """Raise Rejection on the first policy violation; return None if verified.
+                commanded_findings: list[dict] | None = None) -> tuple[Step, ...]:
+    """Raise Rejection on the first policy violation; return the parsed steps
+    if verified. A dict in, so callers across the job boundary do not move
+    (ADR-0017); the steps out are what execute_plan hands the shared applier,
+    since only the parser constructs them in src/.
 
     Mirrors verify()'s phase order (schema, provenance-shaped checks, markdown,
     secrets). `content_source` is a path -> bytes callable for file content at
@@ -1095,11 +1096,12 @@ def verify_plan(plan: dict, diff_text: str, changed_files: list[str], policy: di
     making the plan's scope a CHECKED property rather than a prompt instruction.
     None (or empty) means no command and refuses nothing extra.
     """
-    check_plan_schema(plan, policy["plan"])
-    check_plan_cardinality(plan, policy["plan"])
-    check_plan_ordering(plan, policy["plan"])
+    steps = parse_plan(plan, policy["plan"])
+    check_plan_cardinality(steps, policy["plan"])
+    check_plan_ordering(steps, policy["plan"])
     check_plan_containment(
-        plan, diff_text, changed_files, policy["plan"], content_source, head_branch, commanded_findings
+        steps, diff_text, changed_files, policy["plan"], content_source, head_branch, commanded_findings
     )
-    check_plan_markdown(plan, policy)
-    check_plan_secrets(plan, policy)
+    check_plan_markdown(steps, policy)
+    check_plan_secrets(steps, policy)
+    return steps

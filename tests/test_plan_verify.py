@@ -16,15 +16,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
 
 import plan_verify  # noqa: E402
 from plan_verify import (  # noqa: E402
+    Step,
     apply_patch_steps,
     check_plan_cardinality,
     check_plan_containment,
-    check_plan_markdown,
     check_plan_ordering,
-    check_plan_schema,
-    check_write_class_targets,
     glob_to_regexp,
     matches_denylist,
+    parse_plan,
     tree_content_source,
     verify_plan,
 )
@@ -60,6 +59,17 @@ def label_step(step_id="s3", name="needs-tests"):
     return {"id": step_id, "kind": "label", "args": {"name": name}}
 
 
+# Hand-built Steps for the per-phase classes (ADR-0017: in src/ only the
+# parser constructs Step; tests build them from the dict fixtures freely).
+
+def as_step(step: dict) -> Step:
+    return Step(id=step["id"], kind=step["kind"], args=step["args"])
+
+
+def as_steps(plan: dict) -> tuple[Step, ...]:
+    return tuple(as_step(step) for step in plan["steps"])
+
+
 def _full_policy():
     """POLICY with a populated link allowlist, for cases that run the whole
     driver: the shipped list is empty, so open_pr.body's markdown check would
@@ -75,16 +85,38 @@ def valid_plan():
 
 class TestPlanShape:
     def test_a_valid_plan_passes(self):
-        check_plan_schema(valid_plan(), PLAN_POLICY)
+        parse_plan(valid_plan(), PLAN_POLICY)
+
+    def test_the_parser_returns_the_steps_it_proved(self):
+        # ADR-0017: the return value is the phase's contract — later phases
+        # take these Steps, so what comes back must be the plan, typed.
+        steps = parse_plan(valid_plan(), PLAN_POLICY)
+        assert [(step.id, step.kind) for step in steps] == [("s0", "patch"), ("s1", "push_branch")]
+        assert steps[0].args == {"path": "src/a.py", "old": "a", "new": "b"}
+
+    def test_a_parsed_step_cannot_be_reshaped_after_the_parse(self):
+        # A Step is proof its plan passed the schema phase, so the value must
+        # stay what was proved: frozen fields, read-only args.
+        step = parse_plan(valid_plan(), PLAN_POLICY)[0]
+        with pytest.raises(AttributeError):
+            step.kind = "label"
+        with pytest.raises(TypeError):
+            step.args["path"] = "src/evil.py"
+
+    def test_the_parse_copies_args_so_the_candidate_dict_cannot_reach_it(self):
+        plan = valid_plan()
+        steps = parse_plan(plan, PLAN_POLICY)
+        plan["steps"][0]["args"]["path"] = "src/evil.py"
+        assert steps[0].args["path"] == "src/a.py"
 
     def test_non_object_rejects(self):
         for candidate in (None, [], "steps", 42):
             with pytest.raises(Rejection, match="expected a JSON object"):
-                check_plan_schema(candidate, PLAN_POLICY)
+                parse_plan(candidate, PLAN_POLICY)
 
     def test_missing_steps_rejects(self):
         with pytest.raises(Rejection, match="missing steps"):
-            check_plan_schema({}, PLAN_POLICY)
+            parse_plan({}, PLAN_POLICY)
 
     def test_version_field_is_an_unexpected_key_not_a_feature(self):
         # ADR-0004's third closure: a model-supplied schema version is a
@@ -92,17 +124,17 @@ class TestPlanShape:
         plan = valid_plan()
         plan["version"] = 2
         with pytest.raises(Rejection, match=r"unexpected keys \['version'\]"):
-            check_plan_schema(plan, PLAN_POLICY)
+            parse_plan(plan, PLAN_POLICY)
 
     def test_empty_steps_rejects_as_a_visible_failure(self):
         # An empty plan is a remediation that would silently do nothing.
         with pytest.raises(Rejection, match="empty"):
-            check_plan_schema({"steps": []}, PLAN_POLICY)
+            parse_plan({"steps": []}, PLAN_POLICY)
 
     def test_max_steps_is_enforced(self):
         steps = [patch_step(f"s{i}") for i in range(PLAN_POLICY["max_steps"] + 1)]
         with pytest.raises(Rejection, match="exceeds max_steps"):
-            check_plan_schema({"steps": steps}, PLAN_POLICY)
+            parse_plan({"steps": steps}, PLAN_POLICY)
 
     def test_verify_plan_enforces_id_uniqueness(self):
         # Driver-level for the reason test_verify_plan_enforces_ordering is, and
@@ -120,7 +152,7 @@ class TestStepShape:
         # does not understand, never a skippable no-op.
         plan = {"steps": [{"id": "s0", "kind": "run_tests", "args": {}}]}
         with pytest.raises(Rejection, match="not a declared step kind") as exc:
-            check_plan_schema(plan, PLAN_POLICY)
+            parse_plan(plan, PLAN_POLICY)
         for kind in ("patch", "push_branch", "open_pr", "label", "suggest"):
             assert kind in str(exc.value)
 
@@ -133,24 +165,24 @@ class TestStepShape:
         # resolved Object.prototype names and threw a TypeError instead.
         plan = {"steps": [{"id": "s0", "kind": kind, "args": {}}]}
         with pytest.raises(Rejection, match="not a declared step kind"):
-            check_plan_schema(plan, PLAN_POLICY)
+            parse_plan(plan, PLAN_POLICY)
 
     def test_extra_step_keys_reject(self):
         step = patch_step()
         step["when"] = "always"
         with pytest.raises(Rejection, match=r"unexpected keys \['when'\]"):
-            check_plan_schema({"steps": [step]}, PLAN_POLICY)
+            parse_plan({"steps": [step]}, PLAN_POLICY)
 
     def test_missing_id_kind_or_args_rejects(self):
         for dropped in ("id", "kind", "args"):
             step = patch_step()
             del step[dropped]
             with pytest.raises(Rejection, match="missing keys"):
-                check_plan_schema({"steps": [step]}, PLAN_POLICY)
+                parse_plan({"steps": [step]}, PLAN_POLICY)
 
     def test_duplicate_ids_reject(self):
         with pytest.raises(Rejection, match="duplicate id"):
-            check_plan_schema({"steps": [patch_step("s0"), push_step("s0")]}, PLAN_POLICY)
+            parse_plan({"steps": [patch_step("s0"), push_step("s0")]}, PLAN_POLICY)
 
     @pytest.mark.parametrize("bad_id", ["", "S0", "0s", "s-0", "x" * 41, 7, None])
     def test_id_grammar_is_conservative(self, bad_id):
@@ -159,7 +191,7 @@ class TestStepShape:
         step = patch_step()
         step["id"] = bad_id
         with pytest.raises(Rejection, match="short lowercase identifier"):
-            check_plan_schema({"steps": [step]}, PLAN_POLICY)
+            parse_plan({"steps": [step]}, PLAN_POLICY)
 
 
 class TestArgs:
@@ -170,49 +202,49 @@ class TestArgs:
         step = patch_step()
         step["args"]["path"] = {"$ref": "step1.output"}
         with pytest.raises(Rejection, match="argument_forms"):
-            check_plan_schema({"steps": [step]}, PLAN_POLICY)
+            parse_plan({"steps": [step]}, PLAN_POLICY)
 
     def test_array_arg_rejects_the_same_way(self):
         step = patch_step()
         step["args"]["old"] = ["a", "b"]
         with pytest.raises(Rejection, match="argument_forms"):
-            check_plan_schema({"steps": [step]}, PLAN_POLICY)
+            parse_plan({"steps": [step]}, PLAN_POLICY)
 
     def test_extra_args_reject(self):
         step = patch_step()
         step["args"]["mode"] = "0644"
         with pytest.raises(Rejection, match=r"unexpected keys \['mode'\]"):
-            check_plan_schema({"steps": [step]}, PLAN_POLICY)
+            parse_plan({"steps": [step]}, PLAN_POLICY)
 
     def test_missing_args_reject(self):
         step = patch_step()
         del step["args"]["old"]
         with pytest.raises(Rejection, match=r"missing keys \['old'\]"):
-            check_plan_schema({"steps": [step]}, PLAN_POLICY)
+            parse_plan({"steps": [step]}, PLAN_POLICY)
 
     def test_scalar_specs_are_enforced_via_check_scalar(self):
         # One case per spec facet; check_scalar itself is covered by the
         # artifact suite. Length is measured on NFC there, so it is here too.
         too_long = patch_step(path="p" * 501)
         with pytest.raises(Rejection, match="max_length"):
-            check_plan_schema({"steps": [too_long]}, PLAN_POLICY)
+            parse_plan({"steps": [too_long]}, PLAN_POLICY)
 
         bad_pattern = push_step(name="-starts-with-dash")
         with pytest.raises(Rejection, match="pattern"):
-            check_plan_schema({"steps": [bad_pattern]}, PLAN_POLICY)
+            parse_plan({"steps": [bad_pattern]}, PLAN_POLICY)
 
         bad_int = suggest_step()
         bad_int["args"]["line"] = 0
         with pytest.raises(Rejection, match="below minimum"):
-            check_plan_schema({"steps": [bad_int]}, PLAN_POLICY)
+            parse_plan({"steps": [bad_int]}, PLAN_POLICY)
 
         bool_is_not_int = suggest_step()
         bool_is_not_int["args"]["line"] = True
         with pytest.raises(Rejection, match="expected integer"):
-            check_plan_schema({"steps": [bool_is_not_int]}, PLAN_POLICY)
+            parse_plan({"steps": [bool_is_not_int]}, PLAN_POLICY)
 
     def test_suggest_step_passes_whole(self):
-        check_plan_schema({"steps": [suggest_step()]}, PLAN_POLICY)
+        parse_plan({"steps": [suggest_step()]}, PLAN_POLICY)
 
     # JSON permits \ud800 and both parsers accept it, so a plan can carry a
     # string no UTF-8 encoder will take. The containment phase encodes, the
@@ -222,17 +254,17 @@ class TestArgs:
     @pytest.mark.parametrize("bad", ["\ud800", "a\udfffb", "x\ud83d"])
     def test_an_unpaired_surrogate_is_a_shape_violation(self, bad):
         with pytest.raises(Rejection, match="unpaired surrogate"):
-            check_plan_schema({"steps": [patch_step(new=bad)]}, PLAN_POLICY)
+            parse_plan({"steps": [patch_step(new=bad)]}, PLAN_POLICY)
 
     def test_an_unpaired_surrogate_in_any_string_arg_rejects(self):
         with pytest.raises(Rejection, match="unpaired surrogate"):
-            check_plan_schema({"steps": [open_pr_step(title="Fix \ud800 it")]}, PLAN_POLICY)
+            parse_plan({"steps": [open_pr_step(title="Fix \ud800 it")]}, PLAN_POLICY)
 
     def test_an_astral_character_is_not_a_surrogate(self):
         # Calibration: an emoji IS a surrogate pair in UTF-16 and a single code
         # point in Python, and it encodes fine. A check reading UTF-16 units
         # would refuse it.
-        check_plan_schema({"steps": [patch_step(new="🎉 fixed\n")]}, PLAN_POLICY)
+        parse_plan({"steps": [patch_step(new="🎉 fixed\n")]}, PLAN_POLICY)
 
 
 class TestShippedPolicyAgreement:
@@ -341,7 +373,7 @@ class TestReservedClosures:
             "args": {"cond": {"type": "string", "min_length": 1, "max_length": 100, "pattern": "[a-z]+"}},
         }
         with pytest.raises(Rejection, match="control_flow"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_policy_declaring_another_argument_form_is_refused(self):
         # This gate once read the key nowhere: a widened policy would have been
@@ -349,7 +381,7 @@ class TestReservedClosures:
         policy = copy.deepcopy(PLAN_POLICY)
         policy["argument_forms"] = ["literal", "binding"]
         with pytest.raises(Rejection, match="argument_forms"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_the_refusal_precedes_any_step_check(self):
         # A policy this gate cannot implement must not be reported as a bad plan:
@@ -357,11 +389,11 @@ class TestReservedClosures:
         policy = copy.deepcopy(PLAN_POLICY)
         policy["control_flow"] = ["branch"]
         with pytest.raises(Rejection, match="policy error"):
-            check_plan_schema({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
+            parse_plan({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
 
     def test_the_shipped_policy_still_passes(self):
         # The reservations must refuse a WIDENED policy, not the shipped one.
-        check_plan_schema({"steps": [patch_step()]}, PLAN_POLICY)
+        parse_plan({"steps": [patch_step()]}, PLAN_POLICY)
 
 
 class TestPlanPolicyKeysAreAllowlisted:
@@ -375,13 +407,13 @@ class TestPlanPolicyKeysAreAllowlisted:
         policy = copy.deepcopy(PLAN_POLICY)
         policy["max_suggestions_per_file"] = 1
         with pytest.raises(Rejection, match="policy error.*max_suggestions_per_file"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_the_refusal_precedes_any_step_check(self):
         policy = copy.deepcopy(PLAN_POLICY)
         policy["bogus_key"] = True
         with pytest.raises(Rejection, match="policy error"):
-            check_plan_schema({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
+            parse_plan({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
 
     def test_a_missing_plan_policy_key_is_a_policy_error(self):
         # The other direction: a key every reader indexes must be present, or the
@@ -390,7 +422,7 @@ class TestPlanPolicyKeysAreAllowlisted:
         policy = copy.deepcopy(PLAN_POLICY)
         del policy["max_changed_bytes"]
         with pytest.raises(Rejection, match="policy error.*max_changed_bytes"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_the_shipped_policy_declares_exactly_the_expected_keys(self):
         # The allowlist and the shipped policy must agree, or one of them is wrong.
@@ -484,19 +516,19 @@ class TestSpecsAreValidatedEagerly:
         policy = copy.deepcopy(PLAN_POLICY)
         del policy["step_kinds"]["label"]["write_class"]
         with pytest.raises(Rejection, match="policy error.*write_class"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_non_boolean_write_class_is_a_policy_error(self):
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["push_branch"]["write_class"] = "yes"
         with pytest.raises(Rejection, match="policy error.*write_class"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_kind_spec_that_is_not_an_object_is_a_policy_error(self):
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["label"] = ["write_class", "args"]
         with pytest.raises(Rejection, match="policy error.*not an object"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_pattern_the_enforcer_cannot_compile_is_a_policy_error(self):
         # `\p{L}` is legal in most regex dialects (JS included) and a
@@ -505,7 +537,7 @@ class TestSpecsAreValidatedEagerly:
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["patch"]["args"]["path"]["pattern"] = r"\p{L}"
         with pytest.raises(Rejection, match="policy error.*pattern"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_non_integer_minimum_is_a_policy_error(self):
         # `{"type": "integer", "minimum": "bogus"}` reads as a floor. Python's
@@ -514,19 +546,19 @@ class TestSpecsAreValidatedEagerly:
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["suggest"]["args"]["line"]["minimum"] = "bogus"
         with pytest.raises(Rejection, match="policy error.*minimum"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_non_integer_length_bound_is_a_policy_error(self):
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["patch"]["args"]["old"]["max_length"] = "20000"
         with pytest.raises(Rejection, match="policy error.*max_length"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_non_list_enum_values_is_a_policy_error(self):
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["label"]["args"]["name"] = {"type": "enum", "values": "automated"}
         with pytest.raises(Rejection, match="policy error.*values"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_the_sweep_reaches_a_kind_the_plan_never_uses(self):
         # The whole point of eager. This plan carries only a patch step, so a
@@ -535,7 +567,7 @@ class TestSpecsAreValidatedEagerly:
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["open_pr"]["args"]["title"]["pattern"] = r"(?<x>a)"
         with pytest.raises(Rejection, match="policy error.*pattern"):
-            check_plan_schema({"steps": [patch_step()]}, policy)
+            parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_pattern_another_engine_would_refuse_is_not_a_policy_error(self):
         # `a{,3}` is a valid Python pattern (a literal brace run) and a
@@ -543,17 +575,17 @@ class TestSpecsAreValidatedEagerly:
         # compile, not what some other dialect would balk at.
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["open_pr"]["args"]["title"]["pattern"] = "a{,3}"
-        check_plan_schema({"steps": [patch_step()]}, policy)
+        parse_plan({"steps": [patch_step()]}, policy)
 
     def test_the_refusal_precedes_any_step_check(self):
         # A policy fault reported as a bad plan sends a reader to the generator.
         policy = copy.deepcopy(PLAN_POLICY)
         policy["step_kinds"]["patch"]["args"]["path"]["pattern"] = r"\p{L}"
         with pytest.raises(Rejection, match="policy error"):
-            check_plan_schema({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
+            parse_plan({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
 
     def test_the_shipped_plan_policy_loads(self):
-        check_plan_schema({"steps": [patch_step()]}, PLAN_POLICY)
+        parse_plan({"steps": [patch_step()]}, PLAN_POLICY)
 
 
 class TestMutationDiscipline:
@@ -565,7 +597,7 @@ class TestMutationDiscipline:
         plan["steps"][0]["args"]["path"] = {"$ref": "x"}
         plan["steps"][1]["id"] = plan["steps"][0]["id"]
         with pytest.raises(Rejection):
-            check_plan_schema(plan, PLAN_POLICY)
+            parse_plan(plan, PLAN_POLICY)
 
 
 # --------------------------------------------- containment (ADR-0005) ------
@@ -622,7 +654,7 @@ def contained(plan, **overrides):
         content_source=tree_source(),
     )
     kwargs.update(overrides)
-    return check_plan_containment(plan, **kwargs)
+    return check_plan_containment(as_steps(plan), **kwargs)
 
 
 def anchored_patch(step_id="s0", path="src/app.py", old="def load(path):\n", new="def load(path=None):\n"):
@@ -841,7 +873,7 @@ class TestSuggestLineProvenance:
         tree = {"src/app.py": b"import os\ndef load(path):\n    check(path)\n"}
         step = anchored_suggest(line=2, old="def load(path):\n", new="def load(path=None):\n")
         contained({"steps": [step]}, content_source=tree_source(tree))
-        applied = apply_patch_steps([(0, step)], tree_source(tree))["src/app.py"]
+        applied = apply_patch_steps([(0, as_step(step))], tree_source(tree))["src/app.py"]
         assert applied == b"import os\ndef load(path=None):\n    check(path)\n"
         # One line in, one line out: the addressed range and the applier agree.
         assert applied.count(b"\n") == tree["src/app.py"].count(b"\n")
@@ -1074,7 +1106,7 @@ class TestTheApplierIsSharedWithTheDelivery:
 
     def test_the_applied_bytes_are_returned_for_the_delivery_to_commit(self):
         applied = apply_patch_steps(
-            [(0, anchored_patch(old="def load(path):\n", new="def load(path=None):\n"))],
+            [(0, as_step(anchored_patch(old="def load(path):\n", new="def load(path=None):\n")))],
             tree_source(),
         )
         assert applied == {
@@ -1085,7 +1117,7 @@ class TestTheApplierIsSharedWithTheDelivery:
         # The delivery uploads one blob per returned path, so an untouched file
         # must not be in the map: re-committing identical bytes is noise in the
         # follow-up PR's diff, and a path nothing anchored was never bounded.
-        applied = apply_patch_steps([(0, anchored_patch())], tree_source())
+        applied = apply_patch_steps([(0, as_step(anchored_patch()))], tree_source())
         assert list(applied) == ["src/app.py"]
 
     def test_sequential_steps_on_one_path_compose(self):
@@ -1094,9 +1126,9 @@ class TestTheApplierIsSharedWithTheDelivery:
         # patches), so the map must carry BOTH edits, not the last one.
         applied = apply_patch_steps(
             [
-                (0, anchored_patch("s0", old="import os\n", new="import os, sys\n")),
-                (1, anchored_patch("s1", old="    return os.environ\n",
-                                   new="    return dict(os.environ)\n")),
+                (0, as_step(anchored_patch("s0", old="import os\n", new="import os, sys\n"))),
+                (1, as_step(anchored_patch("s1", old="    return os.environ\n",
+                                           new="    return dict(os.environ)\n"))),
             ],
             tree_source(),
         )
@@ -1123,7 +1155,7 @@ class TestTheApplierIsSharedWithTheDelivery:
         # plan.steps[N]: moving the loop must not cost the audit trail its
         # coordinates. Index 3 rather than 0 so a hardcoded 0 fails.
         with pytest.raises(Rejection, match=r"plan\.steps\[3\]\.args\.old"):
-            apply_patch_steps([(3, anchored_patch(old="not in the file\n"))], tree_source())
+            apply_patch_steps([(3, as_step(anchored_patch(old="not in the file\n")))], tree_source())
 
     def test_the_anchor_guarantee_travels_with_the_helper(self):
         # Exactly-once is what makes the returned bytes safe to commit, so it has
@@ -1136,7 +1168,7 @@ class TestTheApplierIsSharedWithTheDelivery:
         # match and the reviewed-SHA one could be deleted with nothing failing.
         tree = {"src/app.py": b"pass\npass\n"}
         with pytest.raises(Rejection, match="at the reviewed SHA"):
-            apply_patch_steps([(0, anchored_patch(old="pass\n"))], tree_source(tree))
+            apply_patch_steps([(0, as_step(anchored_patch(old="pass\n")))], tree_source(tree))
 
     def test_an_anchor_duplicated_only_at_the_reviewed_sha_is_ambiguous(self):
         # The case that separates the two guards. Step 0 collapses the duplicate, so
@@ -1148,8 +1180,8 @@ class TestTheApplierIsSharedWithTheDelivery:
         tree = {"src/app.py": b"dup\ndup\n"}
         with pytest.raises(Rejection, match="at the reviewed SHA"):
             apply_patch_steps([
-                (0, anchored_patch("s0", old="dup\ndup\n", new="dup\n")),
-                (1, anchored_patch("s1", old="dup\n", new="unique\n")),
+                (0, as_step(anchored_patch("s0", old="dup\ndup\n", new="dup\n"))),
+                (1, as_step(anchored_patch("s1", old="dup\n", new="unique\n"))),
             ], tree_source(tree))
 
     def test_an_anchor_a_previous_step_duplicated_is_ambiguous_too(self):
@@ -1159,8 +1191,8 @@ class TestTheApplierIsSharedWithTheDelivery:
         tree = {"src/app.py": b"keep\ndup\n"}
         with pytest.raises(Rejection, match="have applied"):
             apply_patch_steps([
-                (0, anchored_patch("s0", old="keep\n", new="dup\n")),
-                (1, anchored_patch("s1", old="dup\n", new="three\n")),
+                (0, as_step(anchored_patch("s0", old="keep\n", new="dup\n"))),
+                (1, as_step(anchored_patch("s1", old="dup\n", new="three\n"))),
             ], tree_source(tree))
 
 
@@ -1420,7 +1452,7 @@ class TestWriteChainCardinality:
 
     def test_the_legal_single_chain_passes(self):
         check_plan_cardinality(
-            {"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2")]}, PLAN_POLICY
+            as_steps({"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2")]}), PLAN_POLICY
         )
 
     def test_nine_chains_for_one_patch_reject(self):
@@ -1431,21 +1463,21 @@ class TestWriteChainCardinality:
         steps += [open_pr_step(f"o{i}", branch=f"smtithy/b{i}") for i in range(9)]
         # Kinds are checked in sorted order, so open_pr is the first violation.
         with pytest.raises(Rejection, match="9 open_pr steps"):
-            check_plan_cardinality({"steps": steps}, PLAN_POLICY)
+            check_plan_cardinality(as_steps({"steps": steps}), PLAN_POLICY)
 
     def test_two_push_branches_reject(self):
         with pytest.raises(Rejection, match="push_branch"):
             check_plan_cardinality(
-                {"steps": [patch_step("s0"), push_step("s1"), push_step("s2", name="smtithy/other"),
-                           open_pr_step("s3")]},
+                as_steps({"steps": [patch_step("s0"), push_step("s1"), push_step("s2", name="smtithy/other"),
+                           open_pr_step("s3")]}),
                 PLAN_POLICY,
             )
 
     def test_two_open_prs_reject(self):
         with pytest.raises(Rejection, match="open_pr"):
             check_plan_cardinality(
-                {"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2"),
-                           open_pr_step("s3", branch="smtithy/other")]},
+                as_steps({"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2"),
+                           open_pr_step("s3", branch="smtithy/other")]}),
                 PLAN_POLICY,
             )
 
@@ -1456,36 +1488,36 @@ class TestWriteChainCardinality:
         # refusal was the only guard on the one shape that reaches
         # `contents: write` while remediating nothing. Both engines found this.
         with pytest.raises(Rejection, match="no fix step"):
-            check_plan_cardinality({"steps": [push_step("s0"), open_pr_step("s1")]}, PLAN_POLICY)
+            check_plan_cardinality(as_steps({"steps": [push_step("s0"), open_pr_step("s1")]}), PLAN_POLICY)
 
     def test_a_label_only_plan_rejects(self):
         with pytest.raises(Rejection, match="no fix step"):
-            check_plan_cardinality({"steps": [label_step("s0")]}, PLAN_POLICY)
+            check_plan_cardinality(as_steps({"steps": [label_step("s0")]}), PLAN_POLICY)
 
     def test_a_suggest_step_is_a_fix_step(self):
         # The other bound: suggest and patch both count, or the refusal would
         # reject ADR-0009's default delivery.
-        check_plan_cardinality({"steps": [suggest_step("s0")]}, PLAN_POLICY)
+        check_plan_cardinality(as_steps({"steps": [suggest_step("s0")]}), PLAN_POLICY)
 
     def test_open_pr_without_a_push_rejects(self):
         # Nothing to open a PR from: the branch was never pushed.
         with pytest.raises(Rejection, match="no push_branch"):
-            check_plan_cardinality({"steps": [patch_step("s0"), open_pr_step("s1")]}, PLAN_POLICY)
+            check_plan_cardinality(as_steps({"steps": [patch_step("s0"), open_pr_step("s1")]}), PLAN_POLICY)
 
     def test_a_push_with_no_open_pr_passes_the_cardinality_rule(self):
         # Incomplete, but that is decide_delivery's Refusal to make — this phase
         # bounds COUNT, and rejecting here would pre-empt a different rule.
-        check_plan_cardinality({"steps": [patch_step("s0"), push_step("s1")]}, PLAN_POLICY)
+        check_plan_cardinality(as_steps({"steps": [patch_step("s0"), push_step("s1")]}), PLAN_POLICY)
 
     def test_a_suggestion_plan_may_not_carry_a_write_chain(self):
         # ADR-0009: a suggestion is the delivery that needs no branch.
         with pytest.raises(Rejection, match="suggest"):
             check_plan_cardinality(
-                {"steps": [suggest_step("s0"), push_step("s1"), open_pr_step("s2")]}, PLAN_POLICY
+                as_steps({"steps": [suggest_step("s0"), push_step("s1"), open_pr_step("s2")]}), PLAN_POLICY
             )
 
     def test_a_suggestion_only_plan_passes(self):
-        check_plan_cardinality({"steps": [suggest_step("s0")]}, PLAN_POLICY)
+        check_plan_cardinality(as_steps({"steps": [suggest_step("s0")]}), PLAN_POLICY)
 
     # ADR-0009: one suggestion per file per finding, matching GitHub's
     # one-hunk-per-suggestion mechanics. The rule is here rather than in
@@ -1496,7 +1528,7 @@ class TestWriteChainCardinality:
     def test_two_suggestions_on_one_file_reject(self):
         with pytest.raises(Rejection, match="2 suggest steps on 'src/a.py'"):
             check_plan_cardinality(
-                {"steps": [suggest_step("s0"), suggest_step("s1")]}, PLAN_POLICY
+                as_steps({"steps": [suggest_step("s0"), suggest_step("s1")]}), PLAN_POLICY
             )
 
     def test_the_rejection_names_both_step_ids(self):
@@ -1504,7 +1536,7 @@ class TestWriteChainCardinality:
         # count alone leaves the model guessing which two.
         with pytest.raises(Rejection) as exc:
             check_plan_cardinality(
-                {"steps": [suggest_step("s0"), suggest_step("s1")]}, PLAN_POLICY
+                as_steps({"steps": [suggest_step("s0"), suggest_step("s1")]}), PLAN_POLICY
             )
         assert "'s0'" in str(exc.value) and "'s1'" in str(exc.value)
 
@@ -1513,7 +1545,7 @@ class TestWriteChainCardinality:
         # is what refuses a multi-file suggestion plan, and pre-empting it here
         # would move a rule that has its own reason and its own message.
         check_plan_cardinality(
-            {"steps": [suggest_step("s0"), suggest_step("s1", path="src/b.py")]}, PLAN_POLICY
+            as_steps({"steps": [suggest_step("s0"), suggest_step("s1", path="src/b.py")]}), PLAN_POLICY
         )
 
     def test_several_patches_on_one_file_still_pass(self):
@@ -1521,7 +1553,7 @@ class TestWriteChainCardinality:
         # stacked branch, so two coordinated hunks in a file are exactly what that
         # delivery is for. Only suggestions are independently applicable.
         check_plan_cardinality(
-            {"steps": [patch_step("s0"), patch_step("s1"), push_step("s2"), open_pr_step("s3")]},
+            as_steps({"steps": [patch_step("s0"), patch_step("s1"), push_step("s2"), open_pr_step("s3")]}),
             PLAN_POLICY,
         )
 
@@ -1530,7 +1562,7 @@ class TestWriteChainCardinality:
         # pairwise ordering alone accepts.
         with pytest.raises(Rejection, match="label"):
             check_plan_cardinality(
-                {"steps": [patch_step("s0"), label_step("s1"), label_step("s2")]}, PLAN_POLICY
+                as_steps({"steps": [patch_step("s0"), label_step("s1"), label_step("s2")]}), PLAN_POLICY
             )
 
     def test_verify_plan_enforces_cardinality(self):
@@ -1547,42 +1579,42 @@ class TestOrdering:
     """
 
     def test_holds_when_patch_precedes_push_branch_precedes_open_pr(self):
-        check_plan_ordering({"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2")]}, PLAN_POLICY)
+        check_plan_ordering(as_steps({"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2")]}), PLAN_POLICY)
 
     def test_catches_push_branch_before_patch(self):
         with pytest.raises(Rejection, match="push_branch.*precedes.*patch"):
-            check_plan_ordering({"steps": [push_step("s0"), patch_step("s1")]}, PLAN_POLICY)
+            check_plan_ordering(as_steps({"steps": [push_step("s0"), patch_step("s1")]}), PLAN_POLICY)
 
     def test_catches_open_pr_before_push_branch(self):
         with pytest.raises(Rejection, match="open_pr.*precedes.*push_branch"):
-            check_plan_ordering({"steps": [open_pr_step("s0"), push_step("s1")]}, PLAN_POLICY)
+            check_plan_ordering(as_steps({"steps": [open_pr_step("s0"), push_step("s1")]}), PLAN_POLICY)
 
     def test_catches_a_violation_across_unrelated_steps_between_the_pair(self):
         # The rule is about relative order, not adjacency.
         with pytest.raises(Rejection):
             check_plan_ordering(
-                {"steps": [open_pr_step("s0"), patch_step("s1"), push_step("s2")]}, PLAN_POLICY
+                as_steps({"steps": [open_pr_step("s0"), patch_step("s1"), push_step("s2")]}), PLAN_POLICY
             )
 
     def test_holds_for_a_plan_with_no_orderable_pair(self):
-        check_plan_ordering({"steps": [label_step("s0")]}, PLAN_POLICY)
+        check_plan_ordering(as_steps({"steps": [label_step("s0")]}), PLAN_POLICY)
 
     def test_holds_for_repeated_patches_which_no_rule_orders(self):
         check_plan_ordering(
-            {"steps": [patch_step("s0"), patch_step("s1", path="src/b.py"), push_step("s2")]}, PLAN_POLICY
+            as_steps({"steps": [patch_step("s0"), patch_step("s1", path="src/b.py"), push_step("s2")]}), PLAN_POLICY
         )
 
     # ordering with suggest steps (ADR-0009), mirroring the TS describe block.
 
     def test_holds_for_a_suggestion_only_plan_vacuously(self):
-        check_plan_ordering({"steps": [suggest_step("s0")]}, PLAN_POLICY)
+        check_plan_ordering(as_steps({"steps": [suggest_step("s0")]}), PLAN_POLICY)
 
     def test_catches_push_branch_before_patch_alongside_suggestions(self):
         # Vacuous-pass is this policy's known failure mode: suggest steps must
         # not dilute the ordering obligation on the write chain beside them.
         with pytest.raises(Rejection, match="push_branch"):
             check_plan_ordering(
-                {"steps": [suggest_step("s0"), push_step("s1"), patch_step("s2", path="src/b.py")]},
+                as_steps({"steps": [suggest_step("s0"), push_step("s1"), patch_step("s2", path="src/b.py")]}),
                 PLAN_POLICY,
             )
 
@@ -1719,46 +1751,6 @@ class TestPlanMarkdownAndSecrets:
 
     def test_a_full_plan_verifies_end_to_end(self):
         self.run(self.full_plan())
-
-    def test_a_non_string_branch_is_refused_rather_than_raising_attributeerror(self):
-        # Same class as the undeclared kind below, found the same way: the schema
-        # phase pins this arg to a literal string, so a dict here means that phase
-        # is not wired in — and it reached str.startswith as an AttributeError.
-        plan = {"steps": [anchored_patch("s0"), push_step("s1", name={"$ref": "s0.output"}),
-                          open_pr_step("s2")]}
-        with pytest.raises(Rejection, match="expected a branch name, got dict"):
-            check_write_class_targets(plan, PLAN_POLICY, None)
-
-    def test_a_push_step_missing_its_branch_arg_is_refused_rather_than_raising_keyerror(self):
-        # The other half of the guard above: schema pins the args OBJECT and its
-        # key set before this phase reads either.
-        plan = {"steps": [anchored_patch("s0"),
-                          {"id": "s1", "kind": "push_branch", "args": {}},
-                          open_pr_step("s2")]}
-        with pytest.raises(Rejection, match="missing, so there is no branch name"):
-            check_write_class_targets(plan, PLAN_POLICY, None)
-
-    def test_a_label_step_missing_its_name_is_refused_rather_than_raising_keyerror(self):
-        plan = {"steps": [anchored_patch("s0"), {"id": "s1", "kind": "label", "args": {}}]}
-        with pytest.raises(Rejection, match="missing, so there is no label"):
-            check_write_class_targets(plan, PLAN_POLICY, None)
-
-    def test_a_markdown_bearing_arg_missing_is_refused_rather_than_raising_keyerror(self):
-        plan = self.full_plan()
-        del plan["steps"][2]["args"]["body"]
-        with pytest.raises(Rejection, match=r"args\.body: missing, though the policy marks"):
-            check_plan_markdown(plan, self.full_policy())
-
-    def test_an_undeclared_kind_is_refused_rather_than_raising_keyerror(self):
-        # This phase indexes step_kinds by the step's own kind. check_plan_schema
-        # refuses an undeclared one first, so the only way here is that phase not
-        # being wired into the driver — found by mutation-testing exactly that
-        # (the F1 corpus below), where it raised KeyError instead of refusing.
-        # Fails closed either way; a Rejection is the auditable half.
-        plan = self.full_plan()
-        plan["steps"].insert(0, {"id": "c0", "kind": "if", "args": {"cond": "tests_pass"}})
-        with pytest.raises(Rejection, match=r"'if' is not a declared step kind"):
-            check_plan_markdown(plan, self.full_policy())
 
     def test_a_suggestion_plan_verifies_end_to_end(self):
         self.run(self.suggest_plan())
