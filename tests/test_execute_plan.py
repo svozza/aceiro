@@ -1,16 +1,14 @@
 """Tests for execute_plan.py — the executor's re-verify, decide and deliver.
 
 Network is never touched (api_json is stubbed, and conftest's no_network fixture
-holds that claim to account); the prover runs as a stub subprocess script so the
-exit-code contract is exercised for real.
+holds that claim to account).
 
 Covers decide_delivery's whole case analysis (ADR-0009: the decision is the
-executor's, from checkable plan structure), run_prover's three-way exit
-contract (0 proved / 1 disproved-with-counterexample / 2 nothing-proved),
-the TOCTOU + fork gates on the PR snapshot, main()'s fail-closed ordering
-(verify before prove, prove before decide, decide before any fetch), and the
-suggestion delivery's wiring — what reaches the reconciler, and what refuses
-before anything is posted. The reconciler's own behaviour is test_suggest.py.
+executor's, from checkable plan structure), the TOCTOU + fork gates on the PR
+snapshot, main()'s fail-closed ordering (verify before decide, decide before any
+fetch), and the suggestion delivery's wiring — what reaches the reconciler, and
+what refuses before anything is posted. The reconciler's own behaviour is
+test_suggest.py.
 """
 
 import hashlib
@@ -29,7 +27,7 @@ from verify import Rejection
 from test_plan_verify import PLAN_DIFF, PLAN_CHANGED_FILES, PLAN_TREE, tree_source
 
 POLICY = json.loads(
-    (execute_plan._HARNESS_ROOT / "policy.json").read_text()
+    (Path(execute_plan.__file__).resolve().parent / "policy.json").read_text()
 )
 # The shipped label_allowlist is EMPTY (fail-closed: a consumer names the labels
 # it accepts), so every label step would reject for that one uninteresting reason
@@ -145,111 +143,6 @@ class TestDecideDelivery:
     def test_two_write_chains_refuse(self):
         with pytest.raises(Refusal, match=r"got 2 and 2"):
             decide_delivery([patch(), push("s2"), open_pr("s3"), push("s4"), open_pr("s5")])
-
-
-# ------------------------------------------------------------ run_prover ---
-
-
-@pytest.fixture
-def stub_prover(tmp_path):
-    """A node script standing in for prove-cli: exit code and streams driven
-    by the test, so run_prover's contract is exercised through a REAL
-    subprocess boundary rather than a mocked subprocess.run."""
-
-    def make(exit_code, stdout="", stderr=""):
-        script = tmp_path / "prover.js"
-        script.write_text(
-            f"process.stdout.write({json.dumps(stdout)});\n"
-            f"process.stderr.write({json.dumps(stderr)});\n"
-            f"process.exitCode = {exit_code};\n"
-        )
-        return script
-
-    return make
-
-
-@pytest.fixture
-def prover_inputs(tmp_path):
-    plan_path = tmp_path / "plan.json"
-    plan_path.write_text(json.dumps({"steps": [suggest()]}))
-    changed = tmp_path / "changed_files.json"
-    changed.write_text(json.dumps(PLAN_CHANGED_FILES))
-    policy_path = tmp_path / "policy.json"
-    policy_path.write_text(json.dumps(POLICY))
-    return plan_path, changed, policy_path
-
-
-class TestRunProver:
-    def test_exit_zero_passes_and_echoes_verdicts(self, stub_prover, prover_inputs, capsys):
-        prover = stub_prover(0, stdout="ordering: holds (1.0ms)\n")
-        execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
-        assert "ordering: holds" in capsys.readouterr().out
-
-    def test_exit_one_fails_with_the_counterexample(self, stub_prover, prover_inputs, capsys):
-        # Exit 1 is an audit record: the counterexample must reach the log.
-        prover = stub_prover(1, stdout="frame: VIOLATED (2.0ms)\n  step s0 writes src/evil.py\n")
-        with pytest.raises(SystemExit):
-            execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
-        err = capsys.readouterr().err
-        assert "DISPROVED" in err
-        assert "step s0 writes src/evil.py" in err
-
-    def test_exit_two_fails_as_operational(self, stub_prover, prover_inputs, capsys):
-        # Exit 2 means nothing was proved at all — an operational failure of
-        # the run, not evidence about the plan, and logged as such.
-        prover = stub_prover(2, stderr="prove-cli: changed-files: expected an array of strings\n")
-        with pytest.raises(SystemExit):
-            execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
-        err = capsys.readouterr().err
-        assert "operational failure" in err
-        assert "expected an array of strings" in err
-        assert "DISPROVED" not in err
-
-    def test_exit_two_carries_an_undecided_reason_from_stdout(self, stub_prover, prover_inputs, capsys):
-        # An UNDECIDED policy exits 2 (nothing was proved) but reports on STDOUT,
-        # where every verdict line goes. Logging stderr alone would drop the one
-        # thing an operator can act on — which solver query gave up, and why.
-        prover = stub_prover(
-            2,
-            stdout="ordering: holds (1.0ms)\nframe: UNDECIDED (3.0ms)\n"
-                   "  frame: UNDECIDED — the solver returned unknown\n"
-                   "  solver reason: max. resource limit exceeded\n",
-        )
-        with pytest.raises(SystemExit):
-            execute_plan.run_prover(prover, *prover_inputs, head_branch="feature/x")
-        err = capsys.readouterr().err
-        assert "operational failure" in err
-        assert "max. resource limit exceeded" in err
-        assert "DISPROVED" not in err
-
-    def test_unrunnable_prover_fails_closed(self, tmp_path, prover_inputs, capsys):
-        with pytest.raises(SystemExit):
-            execute_plan.run_prover(tmp_path / "does-not-exist.js", *prover_inputs, head_branch="feature/x")
-        assert "nothing was proved" in capsys.readouterr().err
-
-    def test_a_head_branch_beginning_with_a_dash_still_reaches_the_prover(
-            self, tmp_path, prover_inputs, capsys):
-        # git accepts `-evil` as a branch name (`git check-ref-format
-        # refs/heads/-evil` exits 0) and prepare_fix_context forwards head_ref
-        # verbatim, so a contributor chooses this value. Passed as a separate argv
-        # element, Node's parseArgs reads it as an option and throws, and every
-        # /fix on that pull request ends red blaming the harness.
-        #
-        # The stub is the REAL parseArgs, so it fails exactly as prove-cli does on
-        # the two-element form. A stub that accepted either spelling would pass
-        # whichever way the argv is built and pin nothing.
-        script = tmp_path / "parse_argv.js"
-        script.write_text(
-            "const { parseArgs } = require('node:util');\n"
-            "const { values } = parseArgs({ options: {\n"
-            "  plan: { type: 'string' }, 'changed-files': { type: 'string' },\n"
-            "  policy: { type: 'string' }, 'head-branch': { type: 'string' },\n"
-            "} });\n"
-            "process.stdout.write('head-branch seen: ' + values['head-branch'] + '\\n');\n"
-            "process.exitCode = 0;\n"
-        )
-        execute_plan.run_prover(script, *prover_inputs, head_branch="-evil")
-        assert "head-branch seen: -evil" in capsys.readouterr().out
 
 
 # --------------------------------------------------- pr_snapshot / fork ---
@@ -383,10 +276,9 @@ def pr_root(tmp_path):
 
 
 @pytest.fixture
-def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
+def main_env(tmp_path, monkeypatch, artifact_dir, pr_root):
     policy_path = tmp_path / "policy.json"
     policy_path.write_text(json.dumps(POLICY))
-    prover = stub_prover(0, stdout="ordering: holds (1.0ms)\n")
 
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("GITHUB_REPOSITORY", "o/r")
@@ -402,7 +294,6 @@ def main_env(tmp_path, monkeypatch, artifact_dir, pr_root, stub_prover):
         "--artifact-dir", str(artifact_dir),
         "--pr-root", str(pr_root),
         "--policy", str(policy_path),
-        "--prover", str(prover),
     ])
     # The executor fetches its own provenance inputs; the network stands in for a
     # PR whose real changes are the plan fixtures'. Tests about the fetch itself
@@ -501,19 +392,6 @@ class TestMain:
             execute_plan.main()
         assert "own head branch" in capsys.readouterr().err
 
-    def test_the_head_ref_reaches_the_prover_too(self, main_env, monkeypatch, capsys):
-        # Both gates or neither: a Python-only wiring leaves the prover admitting
-        # what the verifier refuses, which is the divergence the differential
-        # corpus exists to catch.
-        monkeypatch.setenv("HEAD_REF", "smtithy/theirs")
-        seen = []
-        monkeypatch.setattr(execute_plan, "run_prover",
-                            lambda *args, **kwargs: seen.append(kwargs.get("head_branch")))
-        stub_delivery(monkeypatch)
-        stub_pr(monkeypatch, pr_payload())
-        execute_plan.main()
-        assert seen == ["smtithy/theirs"]
-
     def test_a_missing_head_ref_fails_closed(self, main_env, monkeypatch, capsys):
         # ADR-0012's reading for BASE_REF, applied to this one: absence is a
         # KeyError rather than a default, because a default would silently
@@ -523,16 +401,11 @@ class TestMain:
         with pytest.raises(KeyError):
             execute_plan.main()
 
-    def test_rejected_plan_never_reaches_the_prover_or_network(
+    def test_rejected_plan_never_reaches_the_network(
             self, main_env, monkeypatch, capsys):
         (main_env / "plan.json").write_text(json.dumps(
             {"steps": [suggest(path="src/evil.py")]}))
         calls = stub_pr(monkeypatch, pr_payload())
-
-        def exploding_prover(*args):
-            raise AssertionError("prover ran for a rejected plan")
-
-        monkeypatch.setattr(execute_plan, "run_prover", exploding_prover)
         with pytest.raises(SystemExit):
             execute_plan.main()
         assert "plan rejected" in capsys.readouterr().err
@@ -654,17 +527,6 @@ class TestMain:
         execute_plan.main()
         assert "delivery decision: suggestion comments on 'src/app.py'" in capsys.readouterr().out
 
-    def test_disproved_plan_never_reaches_the_network(self, main_env, monkeypatch, capsys, stub_prover, tmp_path):
-        disprover = stub_prover(1, stdout="frame: VIOLATED\n")
-        argv = sys.argv[:]
-        argv[argv.index("--prover") + 1] = str(disprover)
-        monkeypatch.setattr(sys, "argv", argv)
-        calls = stub_pr(monkeypatch, pr_payload())
-        with pytest.raises(SystemExit):
-            execute_plan.main()
-        assert "DISPROVED" in capsys.readouterr().err
-        assert calls == []
-
     def test_a_plan_no_delivery_carries_never_reaches_the_network(self, main_env, monkeypatch, capsys):
         # A lone label is in-grammar and vacuously ordered. It is now refused by
         # cardinality in the gate rather than by decide_delivery, which is strictly
@@ -715,12 +577,9 @@ class TestMain:
 class TestProvenanceInputsAreFirstParty:
     """The frame condition — every patched path is a file the PR touched — is
     only as strong as the changed-file list it quantifies over, and that list
-    arrived in the bundle from the job that ran the generator.
-
-    Both gates read it: verify_plan takes the parsed list, and the prover takes
-    a PATH, so a partial fix would leave the two proving different things about
-    different files. That is why the fetched list is written to disk and the
-    prover is pointed at THAT file.
+    arrived in the bundle from the job that ran the generator. verify_plan must
+    therefore be handed the list this process fetched itself, never the
+    bundle's copy.
     """
 
     FORGED = "src/forged.py"
@@ -764,33 +623,6 @@ class TestProvenanceInputsAreFirstParty:
         captured = capsys.readouterr()
         assert "not a file this PR touched" in captured.err
         assert "delivery decision" not in captured.out
-
-    def test_the_prover_is_given_the_fetched_list_not_the_bundles(
-        self, main_env, pr_root, monkeypatch
-    ):
-        # verify_plan takes the parsed list and the prover takes a path. If the
-        # prover keeps reading the bundle's file, the frame condition is proved
-        # against the very list the executor refused to trust.
-        self.forged_bundle(main_env, pr_root)
-        monkeypatch.setattr(
-            execute_plan, "fetch_anchored_pair",
-            lambda repo, base, head: (PLAN_DIFF.encode(), list(PLAN_CHANGED_FILES)),
-        )
-        seen = {}
-
-        def spy_prover(prover_js, plan_path, changed_files_path, policy_path, **kwargs):
-            seen["listed"] = json.loads(Path(changed_files_path).read_text())
-
-        monkeypatch.setattr(execute_plan, "run_prover", spy_prover)
-        # A plan the fetched list DOES support, so the run reaches the prover.
-        (main_env / "plan.json").write_text(json.dumps({"steps": [suggest()]}))
-        stub_delivery(monkeypatch)
-        stub_pr(monkeypatch, pr_payload())
-
-        execute_plan.main()
-
-        assert seen["listed"] == list(PLAN_CHANGED_FILES)
-        assert self.FORGED not in seen["listed"], "the prover read the bundle's changed-file list"
 
     def test_the_fetch_is_anchored_to_the_reviewed_shas(self, main_env, monkeypatch):
         asked = {}
@@ -1065,17 +897,6 @@ class TestSuggestionDelivery:
             execute_plan.main()
         assert posted == []
 
-    def test_nothing_is_delivered_for_a_disproved_plan(
-            self, delivery_env, posted, monkeypatch, stub_prover):
-        disprover = stub_prover(1, stdout="frame: VIOLATED\n")
-        argv = sys.argv[:]
-        argv[argv.index("--prover") + 1] = str(disprover)
-        monkeypatch.setattr(sys, "argv", argv)
-        stub_pr(monkeypatch, pr_payload())
-        with pytest.raises(SystemExit):
-            execute_plan.main()
-        assert posted == []
-
 
 # --------------------------------------------------- stacked PR delivery ---
 
@@ -1283,17 +1104,6 @@ class TestStackedPrDelivery:
     def test_nothing_is_delivered_for_a_rejected_plan(self, stacked_env, stacked, monkeypatch):
         (stacked_env / "plan.json").write_text(json.dumps(
             {"steps": [patch(path="src/evil.py"), push(), open_pr()]}))
-        stub_pr(monkeypatch, pr_payload())
-        with pytest.raises(SystemExit):
-            execute_plan.main()
-        assert stacked == []
-
-    def test_nothing_is_delivered_for_a_disproved_plan(
-            self, stacked_env, stacked, monkeypatch, stub_prover):
-        disprover = stub_prover(1, stdout="frame: VIOLATED\n")
-        argv = sys.argv[:]
-        argv[argv.index("--prover") + 1] = str(disprover)
-        monkeypatch.setattr(sys, "argv", argv)
         stub_pr(monkeypatch, pr_payload())
         with pytest.raises(SystemExit):
             execute_plan.main()
@@ -1512,8 +1322,8 @@ class TestTheWholeCommandedSetReachesTheGate:
 
     def test_the_gate_receives_both_commanded_findings(self, plural_env, stacked, monkeypatch):
         # The wiring itself, spied at the gate's own parameter. Nothing behind
-        # verify_plan re-checks this — the prover is finding-blind — so a narrowing
-        # here is the one mutation that genuinely opens the gate.
+        # verify_plan re-checks this, so a narrowing here is the one mutation
+        # that genuinely opens the gate.
         seen = []
         real = execute_plan.verify_plan
 

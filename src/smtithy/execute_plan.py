@@ -1,12 +1,10 @@
-"""Trusted plan executor: re-verify, re-prove, decide the delivery, deliver.
+"""Trusted plan executor: re-verify, decide the delivery, deliver.
 
 Runs in the execute job (the one holding `pull-requests: write`). Trusts
 nothing from the plan job: re-fetches the SHA-anchored diff and changed-file
 list rather than reading the bundle's copies, re-runs verify_plan() in this
 process against the quarantine-fetched PR head (the same tree that anchored the
-plan), re-proves the ordering/frame/taint policies by running prove-cli as a
-subprocess (ADR-0003 put the prover in TypeScript; this process is Python), and
-only then decides how the fix is delivered — and delivers it.
+plan), and only then decides how the fix is delivered — and delivers it.
 
 The plan is the one thing that must come from the bundle, being the plan job's
 output. Everything the plan is CHECKED against is first-party.
@@ -29,12 +27,7 @@ the verified plan, never the model's (ADR-0009):
   unreachable for a verified plan; they are refused anyway, because "the
   verifier must have caught it" is not a delivery mechanism.
 
-Any rejection, disproof or refusal: nothing is posted, exit non-zero. The
-prover's two failure exits are logged differently because they mean different
-things: exit 1 carries a counterexample (an audit record — the model produced
-a plan a policy disproves), exit 2 means nothing was proved at all (an
-operational failure of the run, not evidence about the plan) — whether because an
-input was unreadable or because the solver could not decide a query.
+Any rejection or refusal: nothing is posted, exit non-zero.
 
 Both deliveries are built and they are ALTERNATIVES, never a fallback chain:
 suggest.py reconciles suggestion comments (ported from the extraction source),
@@ -58,9 +51,9 @@ gates refuse — ADR-0009 addendum), RUN_URL (the delivered comment's footer).
 Arguments: --artifact-dir (plan.json, plus review.json and commanded_index.json —
 the accepted artifact and the ordinal, from which the commanded finding is
 DERIVED rather than taken on trust; the bundle's diff.patch and
-changed_files.json travel as evidence only, since both gates' provenance inputs
+changed_files.json travel as evidence only, since the gate's provenance inputs
 are re-fetched here), --pr-root (the quarantine-fetched reviewed head, the anchor
-tree), --policy, and --prover (the built prove-cli.js).
+tree), and --policy.
 """
 
 from __future__ import annotations
@@ -69,7 +62,6 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 from pathlib import Path
 from typing import NamedTuple, cast
 
@@ -88,16 +80,11 @@ from stack import Refusal as StackRefusal
 from suggest import finding_identity, reconcile_suggestions
 from verify import Rejection
 
-_HARNESS_ROOT = Path(__file__).resolve().parent
-DEFAULT_PROVER = _HARNESS_ROOT.parent.parent / "dist" / "plan" / "prove-cli.js"
-
 # The step kinds that express the fix itself; everything else is delivery
 # plumbing (push_branch, open_pr) or side effect (label). Mirrors
 # plan_verify.ANCHORED_KINDS but named for what it means here: the delivery
 # decision is made from these steps' shape.
 FIX_KINDS = ("suggest", "patch")
-
-PROVER_TIMEOUT_SECONDS = 120
 
 
 def required_env(name: str) -> str:
@@ -216,61 +203,6 @@ def decide_delivery(steps: list[dict]) -> Delivery:
     return Delivery("stacked_pr", None)
 
 
-def run_prover(prover_js: Path, plan_path: Path, changed_files_path: Path, policy_path: Path,
-               *, head_branch: str) -> None:
-    """Re-prove the plan by running prove-cli as a subprocess; fail closed.
-
-    Exit 0: every policy holds. Exit 1: a policy is DISPROVED and stdout
-    carries the counterexample — that is an audit record about the plan, so
-    it is echoed in full. Exit 2 (or any inability to run at all): nothing
-    was proved — an operational failure of this run, not evidence about the
-    plan, logged as such.
-
-    Reading exit 1 as a claim about the plan rests on prove-cli routing every
-    uncaught throw to 2, so a crashed prover cannot arrive here as a disproof.
-    This branch does not parse the verdict lines to second-guess it: their
-    format is human-readable output nothing pins on either side.
-    """
-    # Checked here, not left to node: node exits 1 for a missing module, and
-    # exit 1 means DISPROVED — an unbuilt dist/ must not read as an audit
-    # record about the plan.
-    if not prover_js.is_file():
-        fail(f"prover not found at {prover_js}; nothing was proved, nothing executed")
-
-    command = [
-        "node", str(prover_js),
-        "--plan", str(plan_path),
-        "--changed-files", str(changed_files_path),
-        "--policy", str(policy_path),
-        # One argument, not two: a branch name may begin with `-` (git accepts it),
-        # and as a separate argv element parseArgs reads it as an option and throws
-        # — turning re-proof into an unconditional failure for that pull request.
-        f"--head-branch={head_branch}",
-    ]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=PROVER_TIMEOUT_SECONDS)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        fail(f"prover could not run ({exc}); nothing was proved, nothing executed")
-        return  # unreachable; keeps the type checker honest about fallthrough
-
-    if result.returncode == 0:
-        print(result.stdout, end="")
-        return
-    if result.returncode == 1:
-        fail(
-            "plan DISPROVED by the prover; counterexample follows (audit record):\n"
-            f"{result.stdout}"
-        )
-    # BOTH streams: an unreadable input reports on stderr, while a policy the
-    # solver could not decide reports UNDECIDED on stdout with every other verdict
-    # line. Either is exit 2, and which query gave up is the part an operator acts
-    # on, so neither stream may be dropped.
-    fail(
-        f"prover proved nothing (exit {result.returncode}); operational failure, "
-        f"not evidence about the plan:\n{result.stderr}{result.stdout}"
-    )
-
-
 def pr_snapshot(repo: str, pr_number: int, reviewed_head: str, reviewed_base_ref: str) -> dict:
     """Fetch the live PR, enforce the TOCTOU precondition, and return the
     delivery context in one call.
@@ -314,8 +246,6 @@ def main() -> None:
     parser.add_argument("--pr-root", required=True, type=Path,
                         help="Quarantine-fetched tree of the reviewed head SHA — the anchor source.")
     parser.add_argument("--policy", required=True, type=Path)
-    parser.add_argument("--prover", default=DEFAULT_PROVER, type=Path,
-                        help="Built prove-cli.js (default: the repo's dist/plan/prove-cli.js).")
     # Which delivery THIS JOB may perform, declared by the job rather than derived
     # from the plan. The lane routes on plan structure to choose between a job
     # holding pull-requests: write and one also holding contents: write, and the
@@ -399,11 +329,6 @@ def main() -> None:
     except Rejection as exc:
         fail("the bundle's commanded finding(s) are not an accepted review's findings: "
              f"{redact_line(str(exc), policy)}")
-    # Written out because the prover takes a PATH, not a parsed list: pointing it
-    # at the bundle's copy would prove the frame condition against the very list
-    # this executor declined to trust. One list, both gates.
-    changed_files_path = args.artifact_dir / "changed_files.fetched.json"
-    changed_files_path.write_text(json.dumps(changed_files), encoding="utf-8")
 
     # Re-verification happens HERE, where the write token lives. The plan
     # job's claim to have verified anything is not trusted — the posture
@@ -421,12 +346,6 @@ def main() -> None:
         # design, and this print is the emit path the transcript redaction never
         # covered.
         fail(f"plan rejected, nothing executed: {redact_line(str(exc), policy)}")
-
-    # And re-proved: the ordering/frame/taint policies live in the TypeScript
-    # prover (ADR-0003), reached as a subprocess. Fail-closed either way. The head
-    # branch goes to both gates or the prover admits what the verifier refuses.
-    run_prover(args.prover, plan_path, changed_files_path, args.policy,
-               head_branch=reviewed_head_ref)
 
     try:
         delivery = decide_delivery(plan["steps"])
