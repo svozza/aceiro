@@ -13,12 +13,10 @@ assertion run in reverse. The ADR also states the stakes — "without that asser
 the disclosure should be refused outright" — which is why this file exists at all
 and why its own calibration is asserted rather than assumed.
 
-Lives here rather than in test_plan_gate_differential.py, which it was written
-into. That file carries `pytestmark = skipif(not PROVER_JS.exists())` for the
-built prover, and CI's Python-only test_verifier job is right to have no Node — so
-a pure-Python token scan placed there is skipped in the one job that runs the
-whole suite. Nothing was hidden (test_gate_differential builds and does run it),
-but the placement made the guard's reach depend on a build it does not use.
+Written into test_plan_gate_differential.py originally, moved here when that
+file's prover skip made this pure-Python scan's reach depend on a build it did
+not use — and the differential file itself is gone now (the ADR superseding
+ADR-0003), so this is where the guard lives, full stop.
 """
 
 import ast

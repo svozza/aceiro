@@ -7,6 +7,7 @@ the TS suite pins a closure from ADR-0004, the same case appears here with the
 same name, so a divergence shows up as a one-sided test change in review.
 """
 
+import ast
 import copy
 import json
 import sys
@@ -397,6 +398,74 @@ class TestPlanPolicyKeysAreAllowlisted:
         # The allowlist and the shipped policy must agree, or one of them is wrong.
         import plan_verify
         assert set(PLAN_POLICY) == plan_verify.PLAN_POLICY_KEYS
+
+
+class TestEveryPlanPolicyKeyHasAReader:
+    """The differential oracle's purpose, inherited (the ADR superseding
+    ADR-0003). The defect that oracle caught was a policy key enforced by one
+    gate and invisible to the other; with one gate left, the equivalent failure
+    is a key NO check reads. check_plan_policy_keys bounds the key SET, but its
+    refusal instructs the author to add the key to PLAN_POLICY_KEYS — after
+    which the allowlist is satisfied whether or not a reader exists. So the
+    allowlist and this scan guard different halves: membership there, a
+    consuming read here.
+
+    The scan is over whole string literals in plan_verify.py with the allowlist
+    and its checker EXCISED, because both spell every key by construction — the
+    same tautology the differential excluded ts/plan/policy.ts for. A reader
+    names the key as the entire literal (`policy_plan["max_steps"]`), and no
+    docstring or message prose ever equals a key outright, so whole-literal
+    equality needs no comment filtering.
+    """
+
+    EXCISED = ("PLAN_POLICY_KEYS", "check_plan_policy_keys")
+
+    @classmethod
+    def gate_without_the_allowlist(cls) -> ast.Module:
+        module = ast.parse(Path(plan_verify.__file__).read_text())
+        module.body = [
+            node for node in module.body
+            if not (isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id in cls.EXCISED
+                for target in node.targets))
+            and not (isinstance(node, ast.FunctionDef) and node.name in cls.EXCISED)
+        ]
+        return module
+
+    @classmethod
+    def read_literals(cls) -> set[str]:
+        return {
+            node.value
+            for node in ast.walk(cls.gate_without_the_allowlist())
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+
+    def test_every_shipped_plan_policy_key_is_read_by_a_check(self):
+        unread = sorted(set(PLAN_POLICY) - self.read_literals())
+        assert not unread, (
+            f"policy.json's plan block carries keys nothing in plan_verify.py reads: {unread}; "
+            "a bound with no reader constrains nothing while reading as enforcement"
+        )
+
+    def test_the_scan_can_say_no(self):
+        # A scanner that finds everything asserts nothing.
+        assert "a_key_nothing_reads" not in self.read_literals()
+
+    def test_the_excision_is_load_bearing(self):
+        # Both excised nodes must exist in the real module and be absent from the
+        # scanned one: if either stops being excised, every key passes through its
+        # spelling in the allowlist and the scan is the tautology it exists to avoid.
+        assert plan_verify.PLAN_POLICY_KEYS and plan_verify.check_plan_policy_keys
+        module = self.gate_without_the_allowlist()
+        assert not [
+            node for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name in self.EXCISED
+        ]
+        assert not [
+            target.id for node in module.body if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name) and target.id in self.EXCISED
+        ]
 
 
 class TestSpecsAreValidatedEagerly:
