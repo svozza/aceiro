@@ -893,6 +893,17 @@ six `holds` lines will credit the harness with a taint analysis it does not perf
 `taint: n/a — no source kind in this policy` when no source kind is declared would cost one
 conditional and remove the wrong impression.
 
+**FIXED (2026-08-15, commit `1375968`).** `proveTaint` now returns an `inapplicable` result
+when the policy declares no source kind, and the CLI renders it as
+`taint: n/a — no read_pr_file kind in this policy, so no plan under it can taint anything;
+nothing was examined`. `holds` stays `true`, so exit codes are untouched and the fix lane cannot
+fail closed on it — verified: the genuine plan still exits 0, every crafted violation still exits
+1, and the schema rejections still exit 2. Both branches are covered through the CLI (n/a under
+the shipped policy, `holds` under one declaring the source kind), so `n/a` cannot silently become
+the permanent answer if the vocabulary ever grows. 170 TS tests and 2059 Python tests pass; the
+Python executor never parsed the verdict lines, so nothing downstream was coupled to the old
+wording.
+
 ### F2b — what actually enforces §20's property, and it is not the prover
 
 The property §20 wanted — untrusted PR content must not reach a privileged write — *is*
