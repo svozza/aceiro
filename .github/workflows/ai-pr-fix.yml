@@ -395,6 +395,7 @@ jobs:
             --output-dir "$RUNNER_TEMP/plan-output"
 
       - name: Assemble plan bundle
+        id: assemble
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/bundle"
@@ -409,9 +410,19 @@ jobs:
              "$RUNNER_TEMP/context/changed_files.json" \
              "$RUNNER_TEMP/context/pr.json" \
              "$RUNNER_TEMP/bundle/" 2>/dev/null || true
+          # A step failing BEFORE the agent leaves the bundle empty; uploading it
+          # anyway makes "No files were found" the job's last line, burying the
+          # refusing step's own reason. Skipped instead — the guard on a run that
+          # produced output is the upload step's if-no-files-found: error.
+          if [ -n "$(ls -A "$RUNNER_TEMP/bundle")" ]; then
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+            echo "bundle is empty: the job stopped before producing output — the failing step above has the reason"
+          fi
 
       - name: Upload plan artifact
-        if: always()
+        if: always() && steps.assemble.outputs.has_files == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ai-fix-plan-${{ github.event.issue.number }}-${{ github.run_id }}

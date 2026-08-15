@@ -1043,6 +1043,22 @@ class TestOtherWorkflowsStayCorrect:
             value for step in verifier for value in step.values() if "run" in step
         ).split()
 
+    @pytest.mark.parametrize(("workflow", "job"), [
+        ("ai-pr-review.yml", "review"), ("ai-pr-fix.yml", "plan"),
+    ])
+    def test_an_empty_bundle_is_skipped_not_uploaded(self, workflow, job):
+        # A step failing BEFORE the agent leaves the bundle empty, and uploading
+        # it anyway made "No files were found" the job's last line — burying the
+        # refusing step's own reason (the real-PR testbed's finding 1). The gate
+        # is the assemble step's has_files output; if-no-files-found stays
+        # `error` because it still guards the run that DID produce output.
+        steps = parse_steps((WORKFLOWS / workflow).read_text(), job)
+        uploads = [step for step in steps if "upload-artifact" in step.get("uses", "")]
+        assert uploads, f"{workflow} {job}: the artifact upload step has moved"
+        for step in uploads:
+            assert "steps.assemble.outputs.has_files" in step.get("if", "")
+            assert step.get("with.if-no-files-found") == "error"
+
     def test_ai_pr_review_keys_its_cache_on_the_trusted_harness(self):
         steps = parse_steps((WORKFLOWS / "ai-pr-review.yml").read_text(), "review")
         for step in steps:
