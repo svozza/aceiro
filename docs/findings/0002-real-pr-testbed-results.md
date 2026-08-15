@@ -46,6 +46,8 @@ the evidence each verdict rests on is quoted inline.
 | F0 | where the prover runs | live | **once, in `execute`** — the `plan` job cannot prove |
 | F1 | 16 crafted plans, one per policy | live | **PASS — 16/16 refused** |
 | F2 | taint reachability | live + source | **unreachable by construction** (5 live policies, not 6) |
+| F2a | can taint be switched on? | live | **no** — reservation gate refuses widened policy; verdict line is vacuous |
+| F2b | what enforces §20's property instead | source | range-restriction, not flow-tracing; markdown excludes `link`/`image` |
 | F3 | injection aimed at the plan session (C9) | live | **PASS** — plan session did not obey |
 
 **No vector produced a successful attack.** Nothing injected into a PR title, body, diff,
@@ -836,6 +838,76 @@ encoding is future-proofing for a policy that admits bindings, deliberately buil
 ahead of need (ADR-0004's first consequence). Worth stating precisely because "an SMT taint
 analysis guards the fix lane" is a stronger claim than the code makes: today the *schema*
 guards it, by forbidding the dataflow entirely.
+
+### F2a — taint is locked shut twice, and the second lock is permanent
+
+Pursued because taint is what §20 wanted a solver *for*, so "it never fires" deserves more
+than one sentence. It is unreachable for two independent reasons, and only one of them is
+removable.
+
+**Lock 1 — there is no taint source in the vocabulary.** `proveTaint` originates taint from
+exactly one place, `step.kind === 'read_pr_file'` (`prove.ts:387`), and `read_pr_file` is **not
+a declared step kind** — the shipped policy declares `patch`, `suggest`, `push_branch`,
+`open_pr`, `label`. This lock is soft: adding the kind to a policy is accepted, and I did so
+with no complaint from any gate.
+
+**Lock 2 — propagation needs bindings, and the reservation gate refuses to allow them.** With
+`read_pr_file` added *and* a `push_branch` present in the same plan, `taint` still reported
+`holds` (2.5 ms — the solver genuinely ran). Taint can only reach a write through an argument
+binding, and widening the policy to permit one is refused outright:
+
+```
+policy.plan.argument_forms: this prover only implements ["literal"], got ["literal","binding"]
+policy.plan.control_flow:   this prover implements straight-line plans only, got ["if"]
+```
+
+Both exit 2. So **taint cannot be switched on by editing policy** — ADR-0004 addendum A's
+"a reservation refuses its shape, in code" holds under direct attack. That is a real
+protection, and it is the reason the dormancy is safe rather than merely tolerated.
+
+**Why it is vacuous rather than merely unused**, in ADR-0004's own words: the generator reads
+PR content at *generation* time, so "by the time an artifact exists, every literal in it is
+model-authored and already PR-derived, so there is no `read_pr_file` node to taint from."
+Taint is a *relation between steps*, and there is no untainted baseline to relate to when the
+entire artifact is downstream of untrusted input.
+
+**Which makes the verdict line the actual defect.** The prover prints `taint: holds`, and
+`holds` means "no write-class step takes PR-derived data". The true state of affairs is the
+opposite — *every* literal is PR-derived — and the proof succeeds only because the source node
+was removed from the model. It is vacuously true in the encoding while false in the world.
+Nothing insecure follows, but it is precisely the risk ADR-0003 names about itself ("the
+solver's answer is no more trustworthy than the encoding behind it"), and an auditor reading
+six `holds` lines will credit the harness with a taint analysis it does not perform. Reporting
+`taint: n/a — no source kind in this policy` when no source kind is declared would cost one
+conditional and remove the wrong impression.
+
+### F2b — what actually enforces §20's property, and it is not the prover
+
+The property §20 wanted — untrusted PR content must not reach a privileged write — *is*
+enforced. It is done by **range-restricting the write** rather than by tracing the flow, which
+is the sounder choice here, because provenance cannot be traced through a language model but
+the emitted values can be bounded:
+
+| surface | what bounds it | live? |
+|---|---|---|
+| which files a patch may touch | `proveFrame` — frame *and* denylist in one Z3 query | yes, ~80–270 ms |
+| branch names, labels | `proveWriteTargets` — `smtithy/` prefix; label allowlist is **empty** | yes |
+| free text that gets published (`suggest.note`, `open_pr.body`) | `check_plan_markdown` → `check_markdown_field`, and `markdown.allowed_nodes` **excludes `link` and `image`** with `link_host_allowlist: []` | yes |
+| credentials anywhere in the plan | `check_plan_secrets` — four representations, including invisible-stripped and `old` fused with `new` | yes |
+
+The markdown row is the one I expected to be a gap and was not: a beacon URL or tracking image
+in a fix-lane `note` or PR body is **structurally impossible**, not filtered — `link` and
+`image` are not in the allowed node set at all. That is the fix-lane counterpart of A5, which
+only tested the review lane.
+
+So the honest summary is that the solver's live remit is what ADR-0004 says it is — "frame
+conditions and ordering among the mutating actions rather than taint" — and the surrounding
+Python gates carry the content-provenance load. Two caveats worth stating plainly rather than
+implying: both live solver policies are ∀-shaped over *finite, enumerated* domains (≤20 steps
+means ≤400 ordered pairs; the frame's file domain is interned from `changed_files` ∪ the plan's
+own paths), so both are decidable by iteration. What Z3 buys here is a uniform encoding and
+free counterexample extraction, not tractability — worth knowing before citing the solver as
+evidence of rigour.
 
 ### F3 — C9, live: injection aimed at the plan session: **PASS**
 
