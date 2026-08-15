@@ -1,10 +1,3 @@
-# Node. package-lock.json is deliberately NOT ignored: the harness pins
-# dependency bytes, so the lockfile is part of the reviewable surface.
-node_modules/
-
-# TypeScript build output. ts/ is the source; dist/ is what Node runs.
-dist/
-
 # Python
 __pycache__/
 *.py[cod]

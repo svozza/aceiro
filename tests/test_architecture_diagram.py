@@ -8,9 +8,9 @@ rendered no diagram at all — every node, edge and lane silently absent while t
 file looked correct in review, because prose containing an apostrophe is exactly
 what prose contains.
 
-Node is already required for the prover's suite, so this needs no new dependency
-— and it skips rather than fails where Node is absent, matching the plan-gate
-differential's rule: CI's Python-only test_verifier job is right to have no Node.
+Node here is a dev-box convenience, not a project dependency (the harness is all
+Python): the check skips rather than fails where Node is absent, so CI's
+Python-only test_verifier job is right to have no Node.
 """
 
 import re
