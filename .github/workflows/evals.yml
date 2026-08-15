@@ -96,6 +96,12 @@ on:
         description: "Run only this scenario (default: all)."
         required: false
         type: string
+      workers:
+        description: "Concurrent scenarios per suite. Lower it if Bedrock starts throttling; watch api_errors in results.json."
+        required: false
+        default: "4"
+        type: choice
+        options: ["1", "2", "4", "6"]
   schedule:
     # Weekly on the default branch. Catches upstream model drift, which is the
     # one regression no pull request of ours would ever trigger.
@@ -328,12 +334,19 @@ jobs:
           # fixtures land.
           RUNS: ${{ inputs.runs || '1' }}
           SCENARIO: ${{ inputs.scenario }}
+          # Peak concurrent `claude` processes, and therefore peak concurrent
+          # Bedrock request streams. The two suites are sequential STEPS, so this
+          # is the whole run's ceiling rather than half of it. Measured at 4 with
+          # --runs 3: 0 api_errors, 0 backoff seconds — so 4 is the default
+          # because it is known-safe here, not because it is cautious.
+          WORKERS: ${{ inputs.workers || '4' }}
         run: |
           set -euo pipefail
           python src/smtithy/evals/run_evals.py \
             --output-dir "$RUNNER_TEMP/eval-output" \
             --cache-dir "$RUNNER_TEMP/eval-base-cache" \
             --runs "$RUNS" \
+            --workers "$WORKERS" \
             ${SCENARIO:+--scenario "$SCENARIO"}
       # The plan generator's suite (run_plan_evals.py), same credential, same
       # session. `if: always() && ...` so a review-scenario failure still
@@ -354,11 +367,13 @@ jobs:
           DISABLE_AUTOUPDATER: "1"
           CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
           RUNS: ${{ inputs.runs || '1' }}
+          WORKERS: ${{ inputs.workers || '4' }}
         run: |
           set -euo pipefail
           python src/smtithy/evals/run_plan_evals.py \
             --output-dir "$RUNNER_TEMP/plan-eval-output" \
-            --runs "$RUNS"
+            --runs "$RUNS" \
+            --workers "$WORKERS"
       - name: Upload eval results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
