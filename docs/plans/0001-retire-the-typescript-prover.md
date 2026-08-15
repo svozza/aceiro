@@ -1,6 +1,9 @@
 # Plan: retire the TypeScript prover and consolidate on Python
 
-**Status:** ready to execute. Not started.
+**Status:** EXECUTED 2026-08-15 — merged as PR #4 (`f6e076e..80d195c`, fast-forward);
+step 1 took Option A; step 7 ran on `smtithy-redteam` PR #5 (review run 31881954142,
+fix run 31882103527: one suggestion delivered, no Node step in `execute`).
+See [ADR-0016](../adr/0016-retire-the-typescript-prover-consolidate-on-python.md).
 **Written:** 2026-08-15. **Author of the decision:** svozza.
 **Prerequisite reading:** ADR-0003, ADR-0004, and `docs/findings/0002-real-pr-testbed-results.md`
 block F (F2a–F2e). This plan assumes none of it — everything needed is restated below — but
