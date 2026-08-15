@@ -1765,3 +1765,168 @@ class TestPlanMarkdownAndSecrets:
         # one applies to nothing. Refusing it there would be refusing prose for
         # a hazard the surface does not have.
         self.run(self.full_plan(body="Was:\n\n```suggestion\nold = 1\n```"))
+
+
+class TestTheF1CorpusIsStillRefused:
+    """The retired prover's crafted sweep, replayed through `verify_plan`.
+
+    `docs/findings/0002-real-pr-testbed-results.md` §F1 recorded twenty crafted
+    plans the prover refused. Its shipped-policy cases lived in
+    `ts/plan/prove-cli.test.ts`, deleted with the prover (ADR-0016) — which left
+    "20/20 refused" a claim about a program that no longer exists. Nineteen are
+    replayed here; the twentieth was a fixture the sweep itself voided.
+
+    This is deliberately not a duplicate of the per-check classes above. Each
+    attack runs the WHOLE driver rather than its own phase, so a phase that stops
+    being wired in fails here while its own tests still pass — the half the
+    per-phase classes cannot cover. Every plan is one mutation of the legal write
+    chain, so what an attack crosses is the only thing it crosses.
+    """
+
+    @staticmethod
+    def admitting(path, content=b"anchor\n"):
+        """`changed_files` and tree that admit `path`, leaving the denylist the
+        only line left to cross. The prover encoded frame and denylist as one
+        query and reported both as `frame`; here they are separate checks, so a
+        denylist case has to clear the frame to reach the one it aims at."""
+        plan = {
+            "steps": [
+                anchored_patch("s0", path=path, old="anchor\n", new="fixed\n"),
+                push_step("s1"),
+                open_pr_step("s2"),
+            ]
+        }
+        return plan, [path], {path: content}
+
+    @staticmethod
+    def over_plan_bytes():
+        """Three files each under `max_changed_bytes`, together over
+        `max_plan_changed_bytes` — the case that catches a per-step cap read as
+        if it bounded the plan."""
+        per = PLAN_POLICY["max_plan_changed_bytes"] // 3 + 100
+        assert per < PLAN_POLICY["max_changed_bytes"], "must stay under the per-step cap"
+        paths = [f"src/g{i}.py" for i in range(3)]
+        tree = {path: f"anchor{i}\n".encode() for i, path in enumerate(paths)}
+        steps = [
+            anchored_patch(f"s{i}", path=path, old=f"anchor{i}\n",
+                           new="z" * (per - len(f"anchor{i}\n".encode())))
+            for i, path in enumerate(paths)
+        ]
+        return {"steps": [*steps, push_step("p1"), open_pr_step("o1")]}, paths, tree
+
+    @staticmethod
+    def over_patched_files():
+        count = PLAN_POLICY["max_patched_files"] + 1
+        paths = [f"src/f{i}.py" for i in range(count)]
+        tree = {path: b"anchor\n" for path in paths}
+        steps = [anchored_patch(f"s{i}", path=path, old="anchor\n", new="fixed\n")
+                 for i, path in enumerate(paths)]
+        return {"steps": [*steps, push_step("p1"), open_pr_step("o1")]}, paths, tree
+
+    @staticmethod
+    def chain(*steps):
+        return {"steps": list(steps)}, PLAN_CHANGED_FILES, PLAN_TREE
+
+    # (attack, build, the refusal it must earn). The message is pinned because a
+    # plan crossing one line must be refused for THAT line: an attack passing on
+    # some other check is a green test measuring nothing, which is how the sweep's
+    # one void case arose in the first place.
+    CORPUS = [
+        ("ordering: push_branch before patch",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             push_step("s1"), anchored_patch("s0"), open_pr_step("s2")),
+         r"push_branch.*precedes.*patch.*ordering policy forbids"),
+        ("ordering: open_pr before push_branch",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0"), open_pr_step("s2"), push_step("s1")),
+         r"open_pr.*precedes.*push_branch.*ordering policy forbids"),
+        ("frame: patch a file this PR does not touch",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0", path="probe/secrets.py", old="anchor\n", new="fixed\n"),
+             push_step("s1"), open_pr_step("s2")),
+         r"probe/secrets\.py.*not a file this PR touched"),
+        ("denylist: patch the review workflow itself",
+         lambda: TestTheF1CorpusIsStillRefused.admitting(".github/workflows/ai-pr-review.yml"),
+         r"path denylist"),
+        ("denylist: patch a private key by extension",
+         lambda: TestTheF1CorpusIsStillRefused.admitting("deploy/id_rsa.pem"),
+         r"path denylist"),
+        ("denylist: patch a TLS key by extension",
+         lambda: TestTheF1CorpusIsStillRefused.admitting("deploy/tls.key"),
+         r"path denylist"),
+        ("write_targets: push the default branch",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0"), push_step("s1", name="main"),
+             open_pr_step("s2", branch="main")),
+         r"'main' is not under the policy branch_prefix"),
+        ("write_targets: apply a label against an empty allowlist",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0"), label_step("s1", name="automated")),
+         r"label_allowlist"),
+        ("cardinality: two push_branch steps",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0"), push_step("s1"), push_step("s3", name="smtithy/other"),
+             open_pr_step("s2")),
+         r"2 push_branch steps"),
+        ("cardinality: suggest alongside a write chain",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_suggest("s0"), push_step("s1"), open_pr_step("s2")),
+         r"suggest plan carries"),
+        ("cardinality: two suggest steps on one file",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_suggest("s0"), anchored_suggest("s1", new="def load(path=1):\n")),
+         r"2 suggest steps on"),
+        ("bounds: one file over max_patched_files",
+         lambda: TestTheF1CorpusIsStillRefused.over_patched_files(),
+         r"exceeds max_patched_files"),
+        ("bounds: one step over max_changed_bytes",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0", new="y" * (PLAN_POLICY["max_changed_bytes"]
+                                            - len(b"def load(path):\n") + 1)),
+             push_step("s1"), open_pr_step("s2")),
+         r"exceeds max_changed_bytes"),
+        ("bounds: one step over max_changed_lines",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0", new="x\n" * PLAN_POLICY["max_changed_lines"]),
+             push_step("s1"), open_pr_step("s2")),
+         r"exceeds max_changed_lines"),
+        ("bounds: three in-cap steps over max_plan_changed_bytes",
+         lambda: TestTheF1CorpusIsStillRefused.over_plan_bytes(),
+         r"exceeds max_plan_changed_bytes"),
+        ("schema: one step over max_steps",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             *[anchored_patch(f"s{i}") for i in range(PLAN_POLICY["max_steps"] + 1)]),
+         r"exceeds max_steps"),
+        ("schema: a control-flow step kind",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             {"id": "c0", "kind": "if", "args": {"cond": "tests_pass"}},
+             anchored_patch("s0"), push_step("s1"), open_pr_step("s2")),
+         r"'if' is not a declared step kind"),
+        ("schema: an exfiltration step kind",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             {"id": "x0", "kind": "exfiltrate", "args": {"to": "https://evil.example"}},
+             anchored_patch("s0"), push_step("s1"), open_pr_step("s2")),
+         r"'exfiltrate' is not a declared step kind"),
+        ("schema: an argument bound to another step's output",
+         lambda: TestTheF1CorpusIsStillRefused.chain(
+             anchored_patch("s0"), push_step("s1", name={"$ref": "s0.output"}),
+             open_pr_step("s2")),
+         r"argument_forms admits only"),
+    ]
+
+    @pytest.mark.parametrize("attack,build,refusal", CORPUS, ids=[case[0] for case in CORPUS])
+    def test_the_attack_is_refused_for_the_line_it_crosses(self, attack, build, refusal):
+        plan, changed_files, tree = build()
+        with pytest.raises(Rejection, match=refusal):
+            verify_plan(plan, PLAN_DIFF, changed_files, _full_policy(), tree_source(tree))
+
+    def test_the_legal_write_chain_this_corpus_mutates_still_verifies(self):
+        # Without this the corpus proves nothing: nineteen refusals are equally
+        # consistent with a gate that refuses everything.
+        plan = {"steps": [anchored_patch("s0"), push_step("s1"), open_pr_step("s2")]}
+        verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
+
+    def test_the_corpus_is_the_size_the_finding_records(self):
+        # §F1's tally, minus the one case the sweep itself voided. A case
+        # disappearing silently is how a corpus rots.
+        assert len(self.CORPUS) == 19

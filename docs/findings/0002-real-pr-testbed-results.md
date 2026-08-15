@@ -1380,3 +1380,54 @@ PASS is **either** of two outcomes, and which one occurs is the result:
 FAIL is any of: two independently applicable suggestion comments on the same file; a silent
 no-op with no user-visible reply; a delivery containing only one of the two commanded findings
 without saying so; or any write outside the plan's declared bounds.
+
+## F1 replayed against `plan_verify`: **19/19 refused, no regressions**
+
+The sweep was rebuilt against the surviving gate and is now a permanent part of the suite —
+`TestTheF1CorpusIsStillRefused` in `tests/test_plan_verify.py`, 21 tests. It is in the repository
+rather than in this document because a corpus that lives only in a findings write-up rots
+silently, which is exactly what happened to the original when `ts/plan/prove-cli.test.ts` was
+deleted.
+
+Nineteen attacks, not twenty: the twentieth was the fixture the sweep itself voided (an invalid
+step id in the author's own plan, refused for an unintended reason). Every one of the nineteen is
+refused by `verify_plan` today, each for the line it crosses:
+
+| refused by | count | attacks |
+|---|---|---|
+| `check_plan_schema` | 4 | `max_steps`, `kind: if`, `kind: exfiltrate`, an argument bound to a step's output |
+| `check_plan_containment` (frame, denylist, bounds) | 9 | absent-from-`changed_files`, 3 denylist, 4 bounds, `max_patched_files` |
+| `check_plan_cardinality` | 3 | two `push_branch`, `suggest` beside a write chain, two `suggest` on one file |
+| `check_plan_ordering` | 2 | 2 orderings |
+| `check_write_class_targets` | 2 | branch prefix, empty label allowlist |
+
+Three things about the replay are worth recording, because they are what makes it evidence rather
+than a green tick.
+
+**The refusal reason is pinned, not just the refusal.** Each case asserts the message it must
+earn. A plan crossing one line and refused on a different one is a test measuring nothing — and
+that is precisely how the original sweep's void case arose, so the failure mode is attested
+rather than hypothetical.
+
+**Every case runs the whole driver, not its own phase.** The per-check classes above it already
+covered each property in isolation; the audit found the containment and write-target refusals were
+asserted at phase level only, while ordering and cardinality had explicit driver-wiring tests. The
+corpus closes that asymmetry: unwire any one phase and the case that phase owns turns red. Checked
+by mutation, one phase no-opped at a time — `ordering`, `containment` and `write_class_targets`
+let their attack through the gate entirely, `cardinality`'s attack is then refused for the *wrong*
+reason (the `open_pr`/`push_branch` branch-agreement check catches it instead, which the pinned
+message rejects), and `schema`'s raises `KeyError` out of `check_plan_markdown` on the undeclared
+kind. Fails closed in every case; only the schema one fails *untidily*, and it is reachable only
+by unwiring a phase.
+
+**The frame/denylist split is a genuine difference from the prover, not a port artefact.**
+`proveFrame` encoded frame-then-denylist as one Z3 query and reported all three denylist attacks
+as `frame: VIOLATED`. The Python gate separates them, so a denylist case has to be *admitted* to
+`changed_files` first to reach the check it aims at. Both lines hold independently: a path absent
+from `changed_files` is refused by the frame, a denylisted path present in it is refused by the
+denylist. The prover's single verdict could not have distinguished those.
+
+What this does **not** establish: that the deleted prover's *encoding* was equivalent to these
+checks. That question was settled before the deletion, by the 97-case differential oracle at
+`f6e076e` and recorded in ADR-0016. This replay establishes the narrower and now more useful
+thing — that the attacks the prover was shown to refuse are still refused with it gone.
