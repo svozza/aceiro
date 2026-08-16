@@ -845,6 +845,9 @@ def check_secrets(artifact: dict, policy: dict) -> None:
         for text in texts:
             if re.search(pattern, text):
                 raise Rejection(f"secret scan: content matches pattern {pattern!r}")
+    for value in policy.get("_tainted_secret_values", ()):
+        if any(value in text for text in texts):
+            raise Rejection("secret scan: content reproduces a redacted input candidate")
 
 
 # ----------------------------------------------------------------- driver --

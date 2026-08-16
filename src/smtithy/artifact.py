@@ -229,10 +229,16 @@ def redact_line(text: str, policy: dict) -> str:
     in scope, and Rejection cannot, being raised from checks that take none.
     """
     patterns = policy["secret_scan_patterns"]
+    exact_values = policy.get("_tainted_secret_values", ())
+    for value in exact_values:
+        text = text.replace(value, "[REDACTED]")
     for pattern in patterns:
         text = re.sub(pattern, "[REDACTED]", text)
     stripped = strip_invisible(text)
-    if stripped != text and any(re.search(pattern, stripped) for pattern in patterns):
+    if stripped != text and (
+        any(re.search(pattern, stripped) for pattern in patterns)
+        or any(value in stripped for value in exact_values)
+    ):
         return WITHHELD
     return text
 
@@ -250,6 +256,7 @@ def redact_secrets(value, policy: dict):
     withheld.
     """
     patterns = policy["secret_scan_patterns"]
+    exact_values = policy.get("_tainted_secret_values", ())
 
     def matches_stripped(text: str) -> bool:
         """A pattern matches only once the invisible code points are removed.
@@ -261,9 +268,14 @@ def redact_secrets(value, policy: dict):
         is the third reader ADR-0011 names.
         """
         stripped = strip_invisible(text)
-        return stripped != text and any(re.search(pattern, stripped) for pattern in patterns)
+        return stripped != text and (
+            any(re.search(pattern, stripped) for pattern in patterns)
+            or any(value in stripped for value in exact_values)
+        )
 
     def redact_str(text: str) -> str:
+        for value in exact_values:
+            text = text.replace(value, "[REDACTED]")
         for pattern in patterns:
             text = re.sub(pattern, "[REDACTED]", text)
         # Withheld rather than substituted: the match exists in a representation
@@ -322,7 +334,11 @@ def redact_secrets(value, policy: dict):
     blob = json.dumps(redacted, ensure_ascii=False)
     # The backstop reads both representations too: a match that only appears once
     # the structure is serialized can equally only appear once it is stripped.
-    if any(re.search(pattern, blob) for pattern in patterns) or matches_stripped(blob):
+    if (
+        any(re.search(pattern, blob) for pattern in patterns)
+        or any(value in blob for value in exact_values)
+        or matches_stripped(blob)
+    ):
         return WITHHELD
     return redacted
 

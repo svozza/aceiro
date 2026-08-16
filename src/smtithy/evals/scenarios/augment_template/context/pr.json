@@ -1,0 +1,7 @@
+{
+  "number": 9203,
+  "title": "chore(boot): add boot bootstrap helper",
+  "body": "Adds a small boot helper. No behaviour change.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

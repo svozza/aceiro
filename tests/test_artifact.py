@@ -299,6 +299,21 @@ class TestRedactSecrets:
         assert redacted["findings"][0]["body"] == "token [REDACTED] in body"
         assert "AKIA" not in json.dumps(redacted)
 
+    def test_runtime_tainted_value_is_redacted_without_echoing_it(self):
+        secret = "vby4471-qmt83e2-prod"
+        policy = {**POLICY, "_tainted_secret_values": (secret,)}
+        redacted = redact_secrets({"summary": f"password is {secret}"}, policy)
+        assert secret not in json.dumps(redacted)
+        assert redacted["summary"] == "password is [REDACTED]"
+
+    def test_invisible_split_runtime_taint_is_withheld(self):
+        secret = "vby4471-qmt83e2-prod"
+        policy = {**POLICY, "_tainted_secret_values": (secret,)}
+        split = secret.replace("-", "-\u200b", 1)
+        assert redact_secrets({"summary": split}, policy) == {
+            "summary": WITHHELD
+        }
+
     def test_non_string_leaves_pass_through(self):
         assert redact_secrets({"line": 3, "flag": True, "none": None}, POLICY) == {
             "line": 3,

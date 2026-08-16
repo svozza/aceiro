@@ -34,7 +34,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
@@ -808,6 +810,8 @@ def guarded(name: str, run) -> dict:
         return {
             "name": name,
             "passed": False,
+            "valid": False,
+            "invalid_reason": f"harness error: {type(exc).__name__}: {exc}",
             "reason": f"harness error: {type(exc).__name__}: {exc}",
             "api_errors": 0,
             "backoff_seconds": 0.0,
@@ -828,8 +832,6 @@ def _run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dic
     # "context_from", so variants (e.g. fault injection over the same planted
     # bug) don't carry drifting copies.
     fixture_dir = SCENARIOS_DIR / expect["context_from"] if "context_from" in expect else scenario_dir
-    context_dir = fixture_dir / "context"
-    pr_root = fixture_dir / "pr_root"
     scenario_output = output_dir / name
 
     # BASE is per-scenario now, not one checkout shared by all: fetched from the
@@ -838,38 +840,82 @@ def _run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dic
     # the BASE of the fixtures it reuses.
     base_root = materialise_base(fixture_dir, cache_root)
 
-    verify_fn = make_injected_verify(expect.get("inject_rejections", 0))
-    exit_code = run_loop(base_root, pr_root, context_dir, scenario_output, verify_fn=verify_fn)
-    review_path = scenario_output / "review.json"
-    transcript_path = scenario_output / "transcript.jsonl"
-    # Read before the no-artifact early return: a run lost to API errors is the
-    # one whose count matters most.
-    events = transcript_events(transcript_path) if transcript_path.exists() else []
+    with tempfile.TemporaryDirectory(prefix=f"smtithy-eval-{name}-") as work:
+        work_root = Path(work)
+        context_dir = work_root / "context"
+        pr_root = work_root / "pr_root"
+        shutil.copytree(fixture_dir / "context", context_dir)
+        shutil.copytree(fixture_dir / "pr_root", pr_root)
 
-    if exit_code != 0 or not review_path.exists():
-        return {
-            "name": name,
-            "passed": False,
-            "reason": f"generator exited {exit_code}, no artifact produced",
-            **api_error_stats(events),
-        }
+        verify_fn = make_injected_verify(expect.get("inject_rejections", 0))
+        exit_code = run_loop(base_root, pr_root, context_dir, scenario_output, verify_fn=verify_fn)
+        review_path = scenario_output / "review.json"
+        transcript_path = scenario_output / "transcript.jsonl"
+        # Read before the no-artifact early return: a run lost to API errors is
+        # the one whose count matters most.
+        events = transcript_events(transcript_path) if transcript_path.exists() else []
 
-    review = json.loads(review_path.read_text())
-    diff_text = read_contributor_text(context_dir / "diff.patch")
-    changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
-    # The harness's own policy, not one read out of the tree under review. Same
-    # correction as cc_loop.py: base_root is the CONSUMER's content, so sourcing
-    # the policy from it lets the reviewed repository supply the rules it is
-    # graded against — and here it would also mean the empty BASE has no policy
-    # at all.
-    policy = json.loads(read_harness_text(POLICY_PATH))
+        if exit_code != 0 or not review_path.exists():
+            terminal = next(
+                (
+                    record.get("reason")
+                    for record in reversed(events)
+                    if record.get("event") == "run_failed"
+                ),
+                None,
+            )
+            reason = f"generator exited {exit_code}, no artifact produced"
+            if terminal:
+                reason = f"{reason}: {terminal}"
+            return {
+                "name": name,
+                "passed": False,
+                "valid": False,
+                "invalid_reason": reason,
+                "reason": reason,
+                **api_error_stats(events),
+            }
 
-    try:
-        grade(review, expect, diff_text, changed_files, policy, events, base_root, pr_root=pr_root)
-    except EvalFailure as exc:
-        return {"name": name, "passed": False, "reason": str(exc), **api_error_stats(events)}
+        try:
+            review = json.loads(review_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            reason = f"artifact could not be read as JSON: {type(exc).__name__}: {exc}"
+            return {
+                "name": name,
+                "passed": False,
+                "valid": False,
+                "invalid_reason": reason,
+                "reason": reason,
+                **api_error_stats(events),
+            }
+        # Grade against the original fixture. The temporary copy is intentionally
+        # redacted in place before generation; redaction must not make the oracle
+        # forget which exact source and line the scenario planted.
+        diff_text = read_contributor_text(fixture_dir / "context/diff.patch")
+        changed_files = json.loads(read_harness_text(fixture_dir / "context/changed_files.json"))
+        # The harness's own policy, not one read out of the tree under review.
+        policy = json.loads(read_harness_text(POLICY_PATH))
 
-    return {"name": name, "passed": True, "reason": None, **api_error_stats(events)}
+        try:
+            grade(review, expect, diff_text, changed_files, policy, events, base_root, pr_root=pr_root)
+        except EvalFailure as exc:
+            return {
+                "name": name,
+                "passed": False,
+                "valid": True,
+                "invalid_reason": None,
+                "reason": str(exc),
+                **api_error_stats(events),
+            }
+
+    return {
+        "name": name,
+        "passed": True,
+        "valid": True,
+        "invalid_reason": None,
+        "reason": None,
+        **api_error_stats(events),
+    }
 
 
 def main() -> int:
@@ -930,16 +976,25 @@ def main() -> int:
 
         (run_dir / "results.json").write_text(json.dumps(results, indent=2))
 
-        failed = [r for r in results if not r["passed"]]
-        total_failed += len(failed)
+        invalid = [r for r in results if not r.get("valid", True)]
+        failed = [r for r in results if r.get("valid", True) and not r["passed"]]
+        total_failed += len(failed) + len(invalid)
         for result in results:
-            status = "PASS" if result["passed"] else "FAIL"
+            if not result.get("valid", True):
+                status = "INVALID"
+            elif result["passed"]:
+                status = "PASS"
+            else:
+                status = "FAIL"
             note = f" -- {result['reason']}" if result["reason"] else ""
             if result.get("api_errors"):
                 note += f" [{result['api_errors']} api_error(s), {result['backoff_seconds']}s backoff]"
             print(f"[{status}] {result['name']}{note}")
 
-        print(f"\n{len(results) - len(failed)}/{len(results)} scenarios passed")
+        print(
+            f"\n{len(results) - len(failed) - len(invalid)}/{len(results)} scenarios passed; "
+            f"{len(failed)} behavioral failure(s), {len(invalid)} invalid sample(s)"
+        )
 
         # Reported even on a clean pass: a suite that spent minutes backing off
         # is close to losing a review to it.

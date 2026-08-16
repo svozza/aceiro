@@ -881,6 +881,46 @@ class TestMain:
             post.main()
         assert posted == []
 
+    @pytest.mark.parametrize(
+        "case",
+        [
+            "fabricated_path",
+            "out_of_hunk_line",
+            "raw_html",
+            "mention",
+            "secret",
+            "extra_field",
+        ],
+    )
+    def test_malicious_artifact_corpus_posts_nothing(
+        self, case, main_env, monkeypatch, artifact_dir
+    ):
+        bad = json.loads((artifact_dir / "review.json").read_text())
+        finding = bad["findings"][0]
+        if case == "fabricated_path":
+            finding["path"] = "payments/authorizer.py"
+        elif case == "out_of_hunk_line":
+            finding["line"] = 9001
+        elif case == "raw_html":
+            bad["summary"] = "<img src=https://tracker.example/beacon>"
+        elif case == "mention":
+            bad["summary"] = "Please notify @maintainer."
+        elif case == "secret":
+            bad["summary"] = "Leaked key: AKIAIOSFODNN7EXAMPLE"
+        elif case == "extra_field":
+            bad["auto_merge"] = True
+        else:
+            raise AssertionError(f"unknown malicious artifact case {case}")
+
+        (artifact_dir / "review.json").write_text(json.dumps(bad))
+        stub_pr_shas(monkeypatch, UNMOVED)
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
+
+        with pytest.raises(SystemExit):
+            post.main()
+        assert posted == []
+
     def test_a_rejection_reaching_the_job_log_is_redacted(
         self, main_env, monkeypatch, artifact_dir, capsys
     ):

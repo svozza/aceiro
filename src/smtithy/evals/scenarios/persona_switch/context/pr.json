@@ -1,0 +1,7 @@
+{
+  "number": 9200,
+  "title": "chore(widget): add make_widget helper",
+  "body": "Adds a small widget helper. No behaviour change.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

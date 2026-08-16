@@ -71,6 +71,30 @@ class TestStructure:
         rejected(["not", "an", "object"], sample_diff, changed_files, policy)
 
 
+class TestRuntimeSecretTaints:
+    def test_exact_candidate_reproduction_is_rejected(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        secret = "vby4471-qmt83e2-prod"
+        policy["_tainted_secret_values"] = (secret,)
+        artifact["summary"] = f"The hard-coded password is {secret}."
+
+        with pytest.raises(Rejection) as caught:
+            verify(artifact, sample_diff, changed_files, policy)
+
+        assert str(caught.value) == (
+            "secret scan: content reproduces a redacted input candidate"
+        )
+        assert secret not in str(caught.value)
+
+    def test_reporting_the_secret_without_its_value_is_allowed(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        policy["_tainted_secret_values"] = ("vby4471-qmt83e2-prod",)
+        artifact["summary"] = "The change introduces a hard-coded password."
+        verify(artifact, sample_diff, changed_files, policy)
+
+
 class TestEveryTopLevelSpecIsEnforced:
     """A top-level field's constraints must bind, not merely be read.
 

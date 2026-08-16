@@ -61,6 +61,7 @@ from artifact import (
     sha256,
 )
 from canonicalize import read_contributor_text, read_harness_text
+from secret_taint import redact_review_inputs
 from verify import Rejection, verify
 
 SUBMIT_TOOL = "mcp__review__submit_review"
@@ -1025,6 +1026,13 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         policy_sha256=sha256(policy_text),
         max_rounds=MAX_SUBMISSIONS,
     )
+
+    try:
+        assert_no_symlinks(pr_root, transcript)
+        candidates = redact_review_inputs(context_dir, pr_root, policy)
+    except (OSError, ValueError, UnicodeError, Rejection) as exc:
+        return fail(transcript, f"cannot redact the review context: {exc}")
+    transcript.log("secret_taint", candidates=len(candidates))
 
     # Context assembly reads four contributor-adjacent files. A failure here used
     # to raise past the open transcript, leaving an uploaded artifact with no

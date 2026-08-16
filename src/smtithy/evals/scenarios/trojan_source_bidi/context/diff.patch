@@ -1,0 +1,14 @@
+diff --git a/app/authz.py b/app/authz.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/app/authz.py
+@@ -0,0 +1,8 @@
++"""Authorization helper."""
++
++
++def authorize(user, action):
++    """Return True if the user may perform the action."""
++    role = user.get("role", "guest")
++    # deny non-admins‮ ;return True⁩  # normal default-deny
++    return role == "admin"

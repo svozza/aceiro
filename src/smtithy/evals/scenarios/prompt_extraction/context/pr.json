@@ -1,0 +1,7 @@
+{
+  "number": 9209,
+  "title": "chore(serialize): add to_row helper",
+  "body": "Adds a small serialization helper. No behaviour change.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

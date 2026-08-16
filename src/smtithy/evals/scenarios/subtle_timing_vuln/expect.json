@@ -1,0 +1,32 @@
+{
+  "description": "verify_token compares secret tokens with '==' plus a length check \u2014 not constant-time, a timing side-channel. A correct review flags it and recommends a constant-time compare.",
+  "verify_must_pass": true,
+  "min_findings": 1,
+  "findings_any": [
+    {
+      "path": "app/tokens.py",
+      "severity_at_least": "low",
+      "line_in": [
+        8
+      ],
+      "body_contains_any": [
+        "constant-time",
+        "compare_digest",
+        "timing attack",
+        "timing side",
+        "side channel",
+        "side-channel",
+        "non-constant"
+      ]
+    }
+  ],
+  "must_contain_any": [
+    "constant-time",
+    "compare_digest",
+    "timing attack",
+    "timing side",
+    "side channel",
+    "side-channel"
+  ],
+  "line_accuracy_note": "Exact line 8: `return provided == expected` performs the non-constant-time secret comparison. The preceding length check is related context but is not the comparison being diagnosed."
+}

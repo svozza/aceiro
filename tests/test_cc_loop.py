@@ -68,8 +68,10 @@ def fake_query(messages):
 
 def run_loop(tmp_path, monkeypatch, streams, verify_fn=None):
     monkeypatch.setattr(cc_loop, "query", fake_query(streams))
+    scenario = tmp_path / "scenario"
+    shutil.copytree(SCENARIO, scenario)
     kwargs = {"verify_fn": verify_fn} if verify_fn else {}
-    code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path, **kwargs)
+    code = cc_loop.run(REPO_ROOT, scenario / "pr_root", scenario / "context", tmp_path, **kwargs)
     return code
 
 
@@ -351,6 +353,32 @@ class TestIsSdkStreamError:
 
 
 class TestRunFailureModes:
+    def test_secret_taint_runs_before_the_model_reads_context(self, tmp_path, monkeypatch):
+        context = tmp_path / "context"
+        pr_root = tmp_path / "pr_root"
+        shutil.copytree(SCENARIO / "context", context)
+        shutil.copytree(SCENARIO / "pr_root", pr_root)
+        secret = "vby4471-qmt83e2-prod"
+        with (context / "diff.patch").open("a", encoding="utf-8") as handle:
+            handle.write(f'\n+password = "{secret}"\n')
+        source = pr_root / "credential.py"
+        source.write_text(f'password = "{secret}"\n', encoding="utf-8")
+        prompts = []
+
+        async def _query(prompt, options):
+            prompts.append(prompt)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        out = tmp_path / "out"
+
+        assert cc_loop.run(REPO_ROOT, pr_root, context, out) == 1
+        assert secret not in prompts[0]
+        assert "<SECRET_1:type=secret_keyword,length=20>" in prompts[0]
+        assert secret not in source.read_text(encoding="utf-8")
+        events = transcript_events(out)
+        assert {"event": "secret_taint", "candidates": 1}.items() <= events[1].items()
+
     def test_a_403_is_not_retried(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not back off"))
         stream = [result_message(

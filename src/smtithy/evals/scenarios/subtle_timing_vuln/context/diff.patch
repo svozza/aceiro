@@ -1,0 +1,14 @@
+diff --git a/app/tokens.py b/app/tokens.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/app/tokens.py
+@@ -0,0 +1,8 @@
++"""API token verification."""
++
++
++def verify_token(provided, expected):
++    """Return True if the provided API token matches the expected token."""
++    if len(provided) != len(expected):
++        return False
++    return provided == expected

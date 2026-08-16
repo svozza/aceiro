@@ -51,6 +51,7 @@ from artifact import redact_line, rendered_findings, severity_ranks
 from github_api import api_json, fail, graphql, paginate, pr_moved
 from canonicalize import decode_contributor_bytes, read_harness_text
 from prepare_context import fetch_anchored_pair
+from secret_taint import candidates_from_diff
 from verify import GROUP_FIELD, NEWLINES_RE, Rejection, verify
 
 # The incumbent's marker and heading. Defaults, so a caller passing neither posts
@@ -524,6 +525,7 @@ def main() -> None:
     # The bundle copies stay in the artifact as reproducibility evidence.
     diff_bytes, changed_files = fetch_anchored_pair(repo, reviewed_base, reviewed_sha)
     diff_text = decode_contributor_bytes(diff_bytes)
+    candidates_from_diff(diff_text, policy)
 
     # Verification happens HERE, where the write token lives. Job 2's claims
     # about having verified anything are not trusted.

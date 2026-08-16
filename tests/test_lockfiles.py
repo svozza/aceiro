@@ -66,7 +66,11 @@ class TestParsers:
     would make every assertion below vacuous."""
 
     def test_the_input_reader_finds_the_pinned_declarations(self):
-        assert declared(ROOT / "requirements.in") == {"markdown-it-py": "4.2.0", "claude-agent-sdk": "0.2.128"}
+        assert declared(ROOT / "requirements.in") == {
+            "markdown-it-py": "4.2.0",
+            "detect-secrets": "1.5.0",
+            "claude-agent-sdk": "0.2.128",
+        }
 
     def test_the_input_reader_skips_directives_and_keeps_unpinned_names(self):
         assert declared(ROOT / "requirements-dev.in") == {"pytest": None, "hypothesis": None}

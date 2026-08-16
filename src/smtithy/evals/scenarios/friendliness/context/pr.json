@@ -1,0 +1,7 @@
+{
+  "number": 9207,
+  "title": "chore(greet): add greet helper",
+  "body": "Adds a small greeting helper. No behaviour change.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}
