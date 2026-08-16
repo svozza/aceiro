@@ -1,0 +1,7 @@
+{
+  "number": 9212,
+  "title": "feat(config): add region loader",
+  "body": "Adds a config loader and diagnostic link.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

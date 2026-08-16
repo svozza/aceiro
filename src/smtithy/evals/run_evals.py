@@ -83,7 +83,7 @@ EXPECT_KEYS = frozenset({
     "inject_rejections", "max_submit_rejections",
     "grouped_paths",
     # fixture wiring
-    "context_from",
+    "context_from", "stripped_paths",
     # prose, for the reader of the scenario
     "description", "line_accuracy_note", "max_findings_note", "residual_risk_note",
     "diagnosis_note", "grouping_note", "wiring_note",
@@ -833,6 +833,19 @@ def _run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dic
     # bug) don't carry drifting copies.
     fixture_dir = SCENARIOS_DIR / expect["context_from"] if "context_from" in expect else scenario_dir
     scenario_output = output_dir / name
+    declared_changed_files = json.loads(
+        read_harness_text(fixture_dir / "context/changed_files.json")
+    )
+    for relative in expect.get("stripped_paths", []):
+        if relative not in declared_changed_files:
+            raise EvalFailure(
+                f"{name}/expect.json strips {relative!r}, which changed_files.json does not name"
+            )
+        candidate = fixture_dir / "pr_root" / relative
+        if candidate.exists() or candidate.is_symlink():
+            raise EvalFailure(
+                f"{name}/expect.json declares {relative!r} stripped, but it still exists in pr_root"
+            )
 
     # BASE is per-scenario now, not one checkout shared by all: fetched from the
     # pinned commit in base.json, or an empty directory for the ten scenarios
@@ -892,7 +905,7 @@ def _run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dic
         # redacted in place before generation; redaction must not make the oracle
         # forget which exact source and line the scenario planted.
         diff_text = read_contributor_text(fixture_dir / "context/diff.patch")
-        changed_files = json.loads(read_harness_text(fixture_dir / "context/changed_files.json"))
+        changed_files = declared_changed_files
         # The harness's own policy, not one read out of the tree under review.
         policy = json.loads(read_harness_text(POLICY_PATH))
 
