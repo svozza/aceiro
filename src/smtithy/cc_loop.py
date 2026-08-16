@@ -256,6 +256,24 @@ def is_permanent_api_error(detail: str) -> bool:
     return any(marker in lowered for marker in PERMANENT_API_ERROR_MARKERS)
 
 
+# The text the SDK's message reader stamps on the ProcessError it replaces when
+# the CLI emits an error result and then exits non-zero on purpose
+# (claude_agent_sdk/_internal/query.py:385-388).
+SDK_STREAM_ERROR_PREFIX = "Claude Code returned an error result: "
+
+
+def is_sdk_stream_error(exc: BaseException) -> bool:
+    """Whether an exception is the SDK's bare-Exception wrapper for a CLI that
+    reported an error result and then exited, i.e. teardown noise once the
+    result envelope has already arrived (ADR-0019).
+
+    Exact type, not isinstance: the SDK raises `Exception` itself
+    (receive_messages), and every exception of our own is a subclass that must
+    keep propagating — a crashed harness must never read as anything else.
+    """
+    return type(exc) is Exception and str(exc).startswith(SDK_STREAM_ERROR_PREFIX)
+
+
 def configured_model() -> str | None:
     """The model this run was CONFIGURED to use, or None if nothing named one.
 
@@ -570,6 +588,17 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
                         total_cost_usd=getattr(message, "total_cost_usd", None),
                         stop_reason=getattr(message, "stop_reason", None),
                     )
+    except Exception as exc:
+        # The CLI exits non-zero on purpose after an error result, and the SDK
+        # re-raises that exit as a bare Exception AFTER the result envelope has
+        # been delivered in-order — so once `result` is set, the exception says
+        # nothing the envelope doesn't. Returning the envelope hands the ending
+        # to the retry ladder, which once lost a verified artifact to this very
+        # exception (ADR-0019). Without an envelope it stays a crash: the
+        # reader's in-order delivery means that can only be an SDK fault, and a
+        # crashed harness must never read as anything else.
+        if result is None or not is_sdk_stream_error(exc):
+            raise
     finally:
         # Redacted before being written, not after: the whole output_dir is
         # uploaded as a CI artifact, so writing the raw capture would route a
@@ -830,18 +859,30 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # Reports `subtype: success` with no submission, so it must be matched
         # on terminal_reason or a dead run counts as a successful one. No
         # session resume on retry, since the session may have died mid-turn.
-        if result is not None and result.terminal_reason == "api_error":
+        #
+        # `is_error` with `subtype: success` is the same class by another name:
+        # the CLI's documented shape for a failing API call (it is the one
+        # combination that carries api_error_status), matched as well because
+        # terminal_reason is nullable on envelopes that bypassed the query loop.
+        if result is not None and (
+            result.terminal_reason == "api_error"
+            or (result.is_error and result.subtype == "success")
+        ):
             detail = str(result.result or "")
             permanent = is_permanent_api_error(detail)
             retrying = not permanent and attempt < MAX_ATTEMPTS
             backoff = API_ERROR_BACKOFF_SECONDS * 2 ** (attempt - 1) if retrying else 0
             # One record per occurrence, so counting `event == "api_error"`
             # across transcripts gives the error rate and summing
-            # `backoff_seconds` gives what the waiting cost.
+            # `backoff_seconds` gives what the waiting cost. api_error_status
+            # is recorded, not decided on: the permanence markers were each
+            # placed off a real incident, and the accumulated records are the
+            # dataset a status-based rule would have to earn itself from.
             transcript.log(
                 "api_error",
                 round=attempt,
                 reason=detail[:500],
+                api_error_status=result.api_error_status,
                 num_turns=result.num_turns,
                 api_ms=result.duration_api_ms,
                 wall_ms=result.duration_ms,
@@ -864,6 +905,24 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
 
         if result is None:
             return fail(transcript, "stream ended without a result envelope")
+
+        # Any error envelope the arms above did not claim. Named by its own
+        # subtype and errors, because the fallthrough below would report it as
+        # "completed without calling submit_review" — a false reason for a
+        # session that died. Not retried: an unrecognized error class gets the
+        # ClaudeSDKError treatment, a clean fail that names itself. The
+        # artifact check mirrors the api_error arm's — an error at the end of
+        # a session is not a verdict on what the verifier already accepted.
+        if result.is_error and result.subtype != "error_max_turns":
+            if verified is not None:
+                return deliver(verified)
+            return fail(
+                transcript,
+                f"CLI reported an error result (subtype={result.subtype}): "
+                f"{'; '.join(result.errors or [])[:300]}",
+                num_turns=result.num_turns,
+                tool_calls=state["tool_calls"],
+            )
 
         transcript.log(
             "model_response",
