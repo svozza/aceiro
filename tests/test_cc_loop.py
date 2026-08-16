@@ -329,6 +329,27 @@ class TestIsPermanentApiError:
         assert not cc_loop.is_permanent_api_error("")
 
 
+class TestIsSdkStreamError:
+    """ADR-0019's predicate: only the SDK's own bare-Exception wrapper for a
+    CLI that reported an error result may be treated as teardown noise. Every
+    exception of ours is a subclass and must keep propagating — a crashed
+    harness must never read as anything else."""
+
+    def test_the_sdk_wrapper_shape_matches(self):
+        exc = Exception(cc_loop.SDK_STREAM_ERROR_PREFIX + "success")
+        assert cc_loop.is_sdk_stream_error(exc)
+
+    def test_a_subclass_does_not_match_even_with_the_prefix(self):
+        exc = TypeError(cc_loop.SDK_STREAM_ERROR_PREFIX + "success")
+        assert not cc_loop.is_sdk_stream_error(exc)
+
+    def test_an_unprefixed_bare_exception_does_not_match(self):
+        # The reader wraps ALL its fatal errors (stream corruption, decode
+        # failures) as bare Exception too, without the prefix. Those have no
+        # envelope backing them and stay crashes.
+        assert not cc_loop.is_sdk_stream_error(Exception("Fatal error in message reader: boom"))
+
+
 class TestRunFailureModes:
     def test_a_403_is_not_retried(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not back off"))
@@ -701,6 +722,144 @@ class TestRunFailureModes:
         assert run_loop(tmp_path, monkeypatch, [[]]) == 1
         reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
         assert "without a result envelope" in reasons[0]["reason"]
+
+
+class TestTheEnvelopeOutranksTheTeardownException:
+    """ADR-0019. The CLI exits non-zero on purpose after an error result and
+    the SDK re-raises that exit as a bare Exception AFTER delivering the
+    envelope — an exception that escaped every arm of the retry ladder and
+    once killed a run over a process-teardown anomaly (notes §11). Once the
+    envelope arrived, it classifies the session; without one, the exception
+    stays a crash."""
+
+    API_ERROR_ENVELOPE = dict(
+        subtype="success", is_error=True, terminal_reason="api_error",
+        result="API Error: 503 ServiceUnavailable", api_error_status=503,
+    )
+    TEARDOWN_EXC_TEXT = cc_loop.SDK_STREAM_ERROR_PREFIX + "success"
+
+    def spy_submit(self, monkeypatch):
+        created = []
+        original = cc_loop.make_submit_tool
+        monkeypatch.setattr(
+            cc_loop, "make_submit_tool",
+            lambda *a, **k: created.append(original(*a, **k)) or created[-1],
+        )
+        return created
+
+    def test_a_teardown_exception_after_an_api_error_envelope_is_retried(self, tmp_path, monkeypatch):
+        # The §11 reproduction: envelope delivered, then the bare Exception.
+        # Before the fix this escaped run() entirely; now the envelope reaches
+        # the api_error arm and the run retries into a successful session.
+        waits = []
+        monkeypatch.setattr(cc_loop.time, "sleep", waits.append)
+        created = self.spy_submit(monkeypatch)
+        artifact = {"summary": "ok", "findings": [], "residual_risk": ""}
+        sessions = []
+
+        async def _query(prompt, options):
+            sessions.append(len(sessions) + 1)
+            if len(sessions) == 1:
+                yield result_message(**self.API_ERROR_ENVELOPE)
+                raise Exception(self.TEARDOWN_EXC_TEXT)
+            await created[-1].handler(artifact)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert waits == [cc_loop.API_ERROR_BACKOFF_SECONDS]
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        errors = [e for e in transcript_events(tmp_path) if e["event"] == "api_error"]
+        assert errors and errors[0]["api_error_status"] == 503
+
+    def test_a_verified_artifact_survives_the_teardown_exception(self, tmp_path, monkeypatch):
+        # The production stake: the session got a review through the verifier,
+        # then died on teardown. Delivering beats retrying, exactly as on the
+        # api_error arm this envelope now reaches.
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must deliver, not retry"))
+        created = self.spy_submit(monkeypatch)
+        artifact = {"summary": "a complete verified review", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            await created[-1].handler(artifact)
+            yield result_message(**self.API_ERROR_ENVELOPE)
+            raise Exception(self.TEARDOWN_EXC_TEXT)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+
+    def test_the_exception_without_an_envelope_stays_a_crash(self, tmp_path, monkeypatch):
+        # In-order delivery means the prefixed text without an envelope can
+        # only be an SDK fault; swallowing it would read a crashed harness as
+        # a session ending.
+        async def _query(prompt, options):
+            raise Exception(self.TEARDOWN_EXC_TEXT)
+            yield  # pragma: no cover — makes this an async generator
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        with pytest.raises(Exception, match="returned an error result"):
+            cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+
+    def test_an_unprefixed_exception_after_an_envelope_stays_a_crash(self, tmp_path, monkeypatch):
+        # The reader's OTHER fatal errors carry no prefix and no claim that an
+        # error result preceded them; the envelope does not launder those.
+        async def _query(prompt, options):
+            yield result_message()
+            raise Exception("Fatal error in message reader: boom")
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        with pytest.raises(Exception, match="message reader"):
+            cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+
+    def test_the_documented_error_shape_is_matched_without_terminal_reason(self, tmp_path, monkeypatch):
+        # is_error with subtype "success" is the CLI's documented shape for a
+        # failing API call (the one combination carrying api_error_status), and
+        # terminal_reason is nullable — the shape alone must reach the arm.
+        waits = []
+        monkeypatch.setattr(cc_loop.time, "sleep", waits.append)
+        failing = [result_message(
+            subtype="success", is_error=True, terminal_reason=None,
+            result="API Error: 529 Overloaded", api_error_status=529,
+        )]
+        assert run_loop(tmp_path, monkeypatch, [failing, [result_message()]]) == 1
+        assert waits == [cc_loop.API_ERROR_BACKOFF_SECONDS]
+        errors = [e for e in transcript_events(tmp_path) if e["event"] == "api_error"]
+        assert errors and errors[0]["api_error_status"] == 529 and errors[0]["retrying"]
+
+    def test_an_unclaimed_error_envelope_fails_with_its_own_name(self, tmp_path, monkeypatch):
+        # An error envelope no arm recognizes must not fall through to
+        # "completed without calling submit_review" — a false reason for a
+        # session that died. It fails clean, named by its own subtype, and is
+        # not retried: an unrecognized error class gets the ClaudeSDKError
+        # treatment.
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not retry"))
+        stream = [result_message(
+            subtype="error_during_execution", is_error=True, terminal_reason=None,
+            errors=["engine exploded"],
+        )]
+        assert run_loop(tmp_path, monkeypatch, [stream]) == 1
+        reasons = [e for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
+        assert "error_during_execution" in reasons[0]["reason"]
+        assert "engine exploded" in reasons[0]["reason"]
+        assert "without calling" not in reasons[0]["reason"]
+
+    def test_a_verified_artifact_survives_an_unclaimed_error_envelope(self, tmp_path, monkeypatch):
+        # An error at the end of a session is not a verdict on what the
+        # verifier already accepted, on this arm as on every other.
+        created = self.spy_submit(monkeypatch)
+        artifact = {"summary": "ok", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            await created[-1].handler(artifact)
+            yield result_message(subtype="error_during_execution", is_error=True, terminal_reason=None)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
 
 
 class TestTheConsumersBudgetGovernsTheSession:
