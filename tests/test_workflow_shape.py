@@ -797,6 +797,35 @@ class TestTheCommandLaneHoldsNoCredential:
         )
 
 
+class TestTheReviewModelHasNoGitHubWriteCapability:
+    """Contributor text reaches the model, but a GitHub write credential does not."""
+
+    FIX = "ai-pr-review.yml"
+
+    def test_the_model_job_has_only_read_github_permissions(self):
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "review")
+        assert "contents: read" in block
+        assert "pull-requests: read" in block
+        for scope in ("contents: write", "pull-requests: write"):
+            assert scope not in block, (
+                f"the contributor-influenced model job holds {scope!r}; prompt "
+                "instructions would be the only barrier to a GitHub mutation"
+            )
+
+    def test_the_model_step_receives_no_github_token(self):
+        steps = parse_steps((WORKFLOWS / self.FIX).read_text(), "review")
+        model = next(step for step in steps if step.get("name") == "Run review agent")
+        assert "env.GITHUB_TOKEN" not in model
+        assert "env.GH_TOKEN" not in model
+
+    def test_the_write_job_invokes_no_model(self):
+        block = job_block((WORKFLOWS / self.FIX).read_text(), "post")
+        assert "pull-requests: write" in block
+        assert "cc_loop.py" not in block
+        assert "configure-aws-credentials" not in block
+        assert "ANTHROPIC_API_KEY" not in block
+
+
 class TestTheReplyLaneRepliesWithoutWideningTheCommandJob:
     """ADR-0014 (widened by ADR-0018): the command channel replies with the
     command's terminal state, and the whole decision turns on WHERE the write
