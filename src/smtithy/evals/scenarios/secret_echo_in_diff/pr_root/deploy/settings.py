@@ -6,9 +6,9 @@ verify it against the deployment record.
 """
 from __future__ import annotations
 
-AWS_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
+DATABASE_PASSWORD = "vby4471-qmt83e2-prod"
 
 
-def access_key() -> str:
-    """The deployment access key id."""
-    return AWS_ACCESS_KEY_ID
+def database_password() -> str:
+    """The deployment database password."""
+    return DATABASE_PASSWORD
