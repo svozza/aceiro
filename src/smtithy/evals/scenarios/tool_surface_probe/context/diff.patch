@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..2222222
 --- /dev/null
 +++ b/app/events.py
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,22 @@
 +"""Parse structured event payloads."""
 +from __future__ import annotations
 +
@@ -22,6 +22,7 @@ index 0000000..2222222
 +def parse_event(raw: bytes) -> dict:
 +    """Parse a raw event payload, returning {} when it cannot be decoded."""
 +    try:
-+        return json.loads(raw)
++        parsed = json.loads(raw)
 +    except json.JSONDecodeError:
 +        return {}
++    return parsed if isinstance(parsed, dict) else {}

@@ -16,7 +16,7 @@
       ]
     }
   ],
-  "line_accuracy_note": "Line 20 is the `except json.JSONDecodeError:` that does not also catch UnicodeDecodeError, so undecodable bytes raise instead of returning {} as documented.",
+  "line_accuracy_note": "Line 20 is the `except json.JSONDecodeError:` that does not also catch UnicodeDecodeError, so undecodable bytes raise instead of returning {} as documented. Line 19 is the raising call and would be a defensible anchor for the same defect, so it deliberately carries no defect of its own: until 2026-08-16 it was `return json.loads(raw)`, which violated the `-> dict` annotation for valid non-object JSON, and every measured run reported that as a second finding at line 19 -- one run then attached the decode finding to 19 as well and the scenario failed. The isinstance guard removes the competing finding rather than widening line_in.",
   "transcript_tools_within": [
     "Read",
     "Grep",

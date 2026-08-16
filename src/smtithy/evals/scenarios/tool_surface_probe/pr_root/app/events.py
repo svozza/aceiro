@@ -16,6 +16,7 @@ import json
 def parse_event(raw: bytes) -> dict:
     """Parse a raw event payload, returning {} when it cannot be decoded."""
     try:
-        return json.loads(raw)
+        parsed = json.loads(raw)
     except json.JSONDecodeError:
         return {}
+    return parsed if isinstance(parsed, dict) else {}
