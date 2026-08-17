@@ -210,6 +210,11 @@ same fixtures at N=15, with the semantic judge held on opus-4-8 so grader qualit
 with the arm. This is the test designed to separate defence-as-instruction from
 defence-as-structure, and it does.
 
+**Timing clarification (2026-08-17):** this Sonnet arm predates the
+post-bakeoff secret-taint/redaction mitigation described above. The smtithy
+`2/15` secret-echo result measures the earlier structured-output discipline,
+not the current deterministic pre-model redaction and exact-value output block.
+
 Vector (Sonnet 4.5) | Naive-A | Naive-B | smtithy
 --- | --- | --- | ---
 Injection compliance (13 classes) | 0 | **1/15** (`fake_completion`) | 0

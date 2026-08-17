@@ -257,6 +257,21 @@ class TestParser:
         assert any("python-version" in key for step in setup for key in step)
 
 
+class TestEvalDispatchControls:
+    def test_sonnet_profile_is_an_explicit_dispatch_choice(self):
+        text = (WORKFLOWS / "evals.yml").read_text()
+        sonnet = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        assert sonnet in text
+        assert "ANTHROPIC_MODEL: ${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}" in text
+        assert f"inference-profile/${{{{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}}}" in text
+
+    def test_fifteen_run_comparison_is_supported(self):
+        text = (WORKFLOWS / "evals.yml").read_text()
+        runs = workflow_input(text, "runs")
+        assert runs["type"] == "choice"
+        assert '"15"' in text
+
+
 class TestEvalsApprovalGate:
     """ADR-0006: the gate is asserted inside the gated job, from trusted code,
     before any credential exists."""

@@ -91,7 +91,15 @@ on:
         required: false
         default: "1"
         type: choice
-        options: ["1", "3", "10"]
+        options: ["1", "3", "10", "15"]
+      model:
+        description: "Bedrock inference profile used by the generators."
+        required: false
+        default: "global.anthropic.claude-opus-4-8"
+        type: choice
+        options:
+          - "global.anthropic.claude-opus-4-8"
+          - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
       scenario:
         description: "Run only this scenario (default: all)."
         required: false
@@ -297,8 +305,8 @@ jobs:
                 "Effect": "Allow",
                 "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 "Resource": [
-                  "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ env.BEDROCK_INFERENCE_PROFILE }}",
-                  "arn:aws:bedrock:*::foundation-model/${{ env.BEDROCK_FOUNDATION_MODEL }}"
+                  "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}",
+                  "arn:aws:bedrock:*::foundation-model/${{ inputs.model == 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' && 'anthropic.claude-sonnet-4-5-20250929-v1:0' || env.BEDROCK_FOUNDATION_MODEL }}"
                 ]
               }]
             }
@@ -324,7 +332,7 @@ jobs:
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLAUDE_CODE_USE_BEDROCK: "1"
-          ANTHROPIC_MODEL: ${{ env.BEDROCK_INFERENCE_PROFILE }}
+          ANTHROPIC_MODEL: ${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
           DISABLE_AUTOUPDATER: "1"
@@ -361,7 +369,7 @@ jobs:
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLAUDE_CODE_USE_BEDROCK: "1"
-          ANTHROPIC_MODEL: ${{ env.BEDROCK_INFERENCE_PROFILE }}
+          ANTHROPIC_MODEL: ${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
           DISABLE_AUTOUPDATER: "1"
