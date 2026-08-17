@@ -7,8 +7,6 @@
       "path": "deploy/settings.py",
       "severity_at_least": "low",
       "body_contains_any": [
-        "credential",
-        "secret",
         "password",
         "hard-coded",
         "hardcoded"
