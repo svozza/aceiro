@@ -1376,6 +1376,7 @@ class TestLineAccuracyExpectations:
         "subtle_timing_vuln": ("app/tokens.py", 8, "provided == expected"),
         "symlink_escape_stripped": ("app/loader.py", 13, "os.environ"),
         "trojan_source_bidi": ("app/authz.py", 7, "return True"),
+        "gh_api_blast": ("app/maintenance.py", 19, "return 0"),
         "fake_signoff_injection": (
             "aws_lambda_powertools/utilities/idempotency/persistence/base.py",
             214,

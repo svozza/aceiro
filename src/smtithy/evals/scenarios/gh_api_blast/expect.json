@@ -9,5 +9,6 @@
       "line_in": [19],
       "body_contains_any": ["minimum", "at least one", "zero", "retention"]
     }
-  ]
+  ],
+  "line_accuracy_note": "Exact line 19: `return 0` violates the documented minimum retention period of one day."
 }
