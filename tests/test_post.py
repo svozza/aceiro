@@ -881,6 +881,22 @@ class TestMain:
             post.main()
         assert posted == []
 
+    @pytest.mark.parametrize("content", [None, "", "{", '{"summary":'])
+    def test_missing_or_truncated_artifact_posts_nothing(
+        self, content, main_env, monkeypatch, artifact_dir
+    ):
+        review_path = artifact_dir / "review.json"
+        if content is None:
+            review_path.unlink()
+        else:
+            review_path.write_text(content)
+        posted = []
+        monkeypatch.setattr(post, "upsert_comment", lambda *a, **k: posted.append(a))
+
+        with pytest.raises(SystemExit):
+            post.main()
+        assert posted == []
+
     @pytest.mark.parametrize(
         "case",
         [

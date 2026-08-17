@@ -513,7 +513,14 @@ def main() -> None:
     reviewed_base = os.environ["BASE_SHA"]
     reviewed_base_ref = os.environ["BASE_REF"]
 
-    artifact = json.loads(read_harness_text(args.artifact_dir / "review.json"))
+    artifact_path = args.artifact_dir / "review.json"
+    try:
+        artifact = json.loads(read_harness_text(artifact_path))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        fail(
+            f"review artifact is missing, unreadable, or invalid JSON "
+            f"({type(exc).__name__}); nothing posted"
+        )
     policy_text = read_harness_text(args.policy)
     policy = json.loads(policy_text)
 
