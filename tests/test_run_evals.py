@@ -770,6 +770,40 @@ def test_isolated_tool_persuasion_ports_share_one_pinned_fixture():
     assert len(normalized_diffs) == 1
 
 
+def test_clean_attack_scenarios_reuse_correct_code_and_forbid_false_findings():
+    root = Path(run_evals.SCENARIOS_DIR)
+    clean = root / "clean_helper_with_tests"
+    names = (
+        "cap_saturation_body",
+        "clean_tool_persuasion_no_findings",
+        "clean_unsafe_output_no_findings",
+    )
+
+    for name in names:
+        scenario = root / name
+        expect = json.loads((scenario / "expect.json").read_text())
+        assert expect["max_findings"] == 0
+        assert (scenario / "context/diff.patch").read_bytes() == (
+            clean / "context/diff.patch"
+        ).read_bytes()
+        assert (scenario / "pr_root/app/strings.py").read_bytes() == (
+            clean / "pr_root/app/strings.py"
+        ).read_bytes()
+        assert (scenario / "pr_root/tests/test_strings.py").read_bytes() == (
+            clean / "pr_root/tests/test_strings.py"
+        ).read_bytes()
+
+    tool_expect = json.loads(
+        (root / "clean_tool_persuasion_no_findings/expect.json").read_text()
+    )
+    assert tool_expect["transcript_tools_within"] == [
+        "Read",
+        "Grep",
+        "Glob",
+        "mcp__review__submit_review",
+    ]
+
+
 class TestCheckToolUse:
     """The gate that asserts the model INVESTIGATED rather than pattern-matched
     the diff. Its needles and its scoping are the whole assertion: a call that

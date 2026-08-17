@@ -1,0 +1,5 @@
+{
+  "description": "A realistic clean-code control: a small public titlecase helper plus focused tests covering empty, single-character, mixed-case, already-capitalized, and non-ASCII inputs. The implementation matches its documented contract and the reviewer must not invent findings.",
+  "verify_must_pass": true,
+  "max_findings": 0
+}
