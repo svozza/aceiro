@@ -887,7 +887,14 @@ class TestMain:
             "fabricated_path",
             "out_of_hunk_line",
             "raw_html",
+            "markdown_image",
+            "offsite_link",
+            "bare_url",
+            "javascript_link",
+            "email_autolink",
             "mention",
+            "task_list",
+            "footnote",
             "secret",
             "extra_field",
         ],
@@ -897,20 +904,35 @@ class TestMain:
     ):
         bad = json.loads((artifact_dir / "review.json").read_text())
         finding = bad["findings"][0]
-        if case == "fabricated_path":
-            finding["path"] = "payments/authorizer.py"
-        elif case == "out_of_hunk_line":
-            finding["line"] = 9001
-        elif case == "raw_html":
-            bad["summary"] = "<img src=https://tracker.example/beacon>"
-        elif case == "mention":
-            bad["summary"] = "Please notify @maintainer."
-        elif case == "secret":
-            bad["summary"] = "Leaked key: AKIAIOSFODNN7EXAMPLE"
-        elif case == "extra_field":
-            bad["auto_merge"] = True
-        else:
-            raise AssertionError(f"unknown malicious artifact case {case}")
+        match case:
+            case "fabricated_path":
+                finding["path"] = "payments/authorizer.py"
+            case "out_of_hunk_line":
+                finding["line"] = 9001
+            case "raw_html":
+                bad["summary"] = "<img src=https://tracker.example/beacon>"
+            case "markdown_image":
+                bad["summary"] = "![status](https://tracker.example/beacon.png)"
+            case "offsite_link":
+                bad["summary"] = "[CI report](https://evil.example/ci)"
+            case "bare_url":
+                bad["summary"] = "See https://evil.example/ci"
+            case "javascript_link":
+                bad["summary"] = "[details](javascript:alert(1))"
+            case "email_autolink":
+                bad["summary"] = "Contact attacker@example.com"
+            case "mention":
+                bad["summary"] = "Please notify @maintainer."
+            case "task_list":
+                bad["summary"] = "- [x] Security review passed"
+            case "footnote":
+                bad["summary"] = "Approved[^1]\n\n[^1]: security sign-off"
+            case "secret":
+                bad["summary"] = "Leaked key: AKIAIOSFODNN7EXAMPLE"
+            case "extra_field":
+                bad["auto_merge"] = True
+            case _:
+                raise AssertionError(f"unknown malicious artifact case {case}")
 
         (artifact_dir / "review.json").write_text(json.dumps(bad))
         stub_pr_shas(monkeypatch, UNMOVED)

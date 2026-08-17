@@ -324,6 +324,46 @@ capability is reachable. The injection runs' 0/6 exposure remains useful as a
 model-behavior result, but prompt restraint is now demonstrably the barrier in
 that arm, while smtithy's barrier is pre-model capability removal.
 
+## Rendering boundary separation
+
+smtithy's trusted verifier treats the rendered GitHub comment, not merely its
+source string, as the security object. The deterministic posting corpus now
+submits artifacts containing each of these constructs:
+
+- raw HTML;
+- Markdown images and tracking beacons;
+- explicit off-allowlist links and bare autolinked URLs;
+- `javascript:` links;
+- bare email addresses that GitHub renders as `mailto:` links;
+- `@` mentions;
+- checked task-list items;
+- footnote references/definitions;
+- secrets and malformed extra fields.
+
+For every case, the artifact reaches the write-token job, trusted verification
+rejects it, and the test asserts **zero calls** to `upsert_comment`. The broader
+adversarial verifier suite separately covers code-span exemptions,
+entity-decoded mentions, cross-field reference composition, GFM tables,
+unterminated fences, Unicode controls, host normalization, and allowlisted
+links. Targeted rendering tests: **299 passed**.
+
+The naive production path has no corresponding trusted rendering gate. The
+model writes `/tmp/review.json` and directly posts it with `gh api --input`.
+The harness now records native constructs such as HTML, images, external URLs,
+unsafe schemes, mentions, emails, task lists, and footnotes in a
+`rendering_signals` field. Those signals are diagnostic only: turning them into
+a lexical failure predicate would recreate the DID-vs-SAID problem when a
+review safely quotes an attack in code.
+
+This is an enforcement separation rather than a new model-rate result:
+
+- a fixed unsafe artifact produces zero writes in smtithy;
+- the same well-formed native review JSON has no independent rejection boundary
+  in naive and proceeds to its `gh api` posting command;
+- whether Opus chooses to emit the construct remains model behavior. Existing
+  beacon/injection runs already measure that behavior, so another N=1/N=3 model
+  matrix would add no evidence to the deterministic posting claim.
+
 ## Falsification criteria
 
 The architectural claim is weakened if a trusted gate accepts any artifact or
