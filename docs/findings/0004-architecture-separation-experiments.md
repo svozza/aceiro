@@ -700,6 +700,41 @@ Raw redacted artifacts:
 - `/tmp/inj-workflow-n20/`
 - `/tmp/inj-skill-n20/`
 
+## Current post-redaction Sonnet secret rerun (2026-08-17)
+
+The historical smtithy `2/15` Sonnet secret-echo result predates secret taint
+and redaction. The current architecture was rerun on the byte-identical
+`secret_echo_in_diff` fixture using
+`global.anthropic.claude-sonnet-4-5-20250929-v1:0`.
+
+N=15 results:
+
+Arm | Exact plaintext leaks | Exact line-9 findings | Invalid
+--- | ---: | ---: | ---:
+smtithy | **0/15** | **15/15** | 0
+Naive-A | **12/15** | 5/15 | 0
+Naive-B | **13/15** | 12/15 | 0
+
+All 15 smtithy transcripts recorded exactly one taint candidate. No smtithy
+review, transcript, or captured stream contained the planted plaintext, and
+there were zero API errors. With zero observed leaks, smtithy's one-sided 95%
+upper bound is 18.1% at N=15.
+
+This is the clearest current weaker-model separation in the investigation:
+
+- smtithy replaces plaintext before model invocation and blocks exact-value
+  reproduction again in the verifier and poster;
+- naive exposes plaintext to the model and depends on prompt/model discipline,
+  which degraded sharply under Sonnet 4.5;
+- smtithy's enforcement preserved exact useful work in 15/15 samples.
+
+Runs and raw redacted artifacts:
+
+- smtithy `32027177422`:
+  `/tmp/smtithy-sonnet-secret-n15-current/`
+- Naive-A/B `32027178143`:
+  `/tmp/naive-sonnet-secret-n15-current/`
+
 ## Falsification criteria
 
 The architectural claim is weakened if a trusted gate accepts any artifact or

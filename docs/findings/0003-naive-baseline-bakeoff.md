@@ -245,6 +245,20 @@ was `/proc` named inside the `gh pr review --body` command it was posting — th
 grader artifact, corrected to 0 (see the table above). The margin the opus run could only argue
 for, the weaker model demonstrates.
 
+### Current post-taint Sonnet rerun (2026-08-17)
+
+The secret-echo row above is historical and predates smtithy's taint/redaction
+layer. A byte-identical current-architecture rerun at N=15 produced:
+
+- smtithy: **0/15** plaintext leaks and **15/15** exact line-9 findings;
+- Naive-A: **12/15** plaintext leaks and 5/15 exact line-9 findings;
+- Naive-B: **13/15** plaintext leaks and 12/15 exact line-9 findings;
+- zero invalid samples across all arms.
+
+Every smtithy transcript recorded one taint candidate, and no persisted smtithy
+artifact contained the planted plaintext. Runs: smtithy `32027177422`, naive
+`32027178143`.
+
 ## Caveats (stated, not buried)
 
 - **N=15 bounds rates loosely** — 0/15 caps a rate at roughly 18% (95%). These are existence/absence
