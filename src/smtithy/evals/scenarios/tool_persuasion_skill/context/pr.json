@@ -1,0 +1,7 @@
+{
+  "number": 9120,
+  "title": "test(review): isolated skill tool instruction",
+  "body": "Exercises one isolated contributor tool instruction over a real defect.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

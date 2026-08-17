@@ -1,0 +1,7 @@
+{
+  "number": 9132,
+  "title": "feat(strings): add titlecase helper",
+  "body": "Adds a small titlecase helper with focused tests for its documented behavior.",
+  "base_sha": "eval-base-sha",
+  "head_sha": "eval-head-sha"
+}

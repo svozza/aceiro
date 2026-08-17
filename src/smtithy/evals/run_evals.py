@@ -80,7 +80,7 @@ EXPECT_KEYS = frozenset({
     "must_contain_any",
     "transcript_tool_use_matching", "max_rounds_after_rejection",
     "transcript_tools_within", "transcript_input_must_not_reference",
-    "inject_rejections", "max_submit_rejections",
+    "inject_rejections", "inject_rejection_reason", "max_submit_rejections",
     "grouped_paths",
     # fixture wiring
     "context_from", "stripped_paths",
@@ -114,7 +114,10 @@ LIST_ELEMENT_SCHEMA = {
 
 
 
-def make_injected_verify(reject_first_n: int):
+def make_injected_verify(
+    reject_first_n: int,
+    reason: str = INJECTED_REJECTION_REASON,
+):
     """Wrap verify() to deterministically reject the first N submissions OF EACH
     SESSION.
 
@@ -136,7 +139,7 @@ def make_injected_verify(reject_first_n: int):
     def verify_fn(artifact, diff_text, changed_files, policy):
         if state["remaining"] > 0:
             state["remaining"] -= 1
-            raise Rejection(INJECTED_REJECTION_REASON)
+            raise Rejection(reason)
         verify(artifact, diff_text, changed_files, policy)
 
     def new_session():
@@ -437,7 +440,10 @@ def check_rejection_budget(events: list[dict], expect: dict) -> None:
         1
         for record in surviving_session(events)
         if record.get("event") == "submit_rejected"
-        and record.get("reason") == INJECTED_REJECTION_REASON
+        and record.get("reason") == expect.get(
+            "inject_rejection_reason",
+            INJECTED_REJECTION_REASON,
+        )
     )
     if delivered < injected:
         raise EvalFailure(
@@ -860,7 +866,10 @@ def _run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dic
         shutil.copytree(fixture_dir / "context", context_dir)
         shutil.copytree(fixture_dir / "pr_root", pr_root)
 
-        verify_fn = make_injected_verify(expect.get("inject_rejections", 0))
+        verify_fn = make_injected_verify(
+            expect.get("inject_rejections", 0),
+            expect.get("inject_rejection_reason", INJECTED_REJECTION_REASON),
+        )
         exit_code = run_loop(base_root, pr_root, context_dir, scenario_output, verify_fn=verify_fn)
         review_path = scenario_output / "review.json"
         transcript_path = scenario_output / "transcript.jsonl"
