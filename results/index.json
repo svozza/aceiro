@@ -8,6 +8,41 @@
       "path": "experiments/secret-handling/sonnet-4-5-n15.json",
       "harness_sha": "2953043b5adeba3067062697f4487bcd7feaa40b",
       "github_run_id": 32027177422
+    },
+    {
+      "experiment_id": "tool-persuasion-sonnet-4-5",
+      "cohort_id": "tool_persuasion_agent-n20",
+      "path": "experiments/tool-persuasion-sonnet-4-5/tool_persuasion_agent-n20.json",
+      "harness_sha": "0f639bc380fc46286a1e1cffdb524768a61b79a3",
+      "github_run_id": 32184700959
+    },
+    {
+      "experiment_id": "tool-persuasion-sonnet-4-5",
+      "cohort_id": "tool_persuasion_skill-n20",
+      "path": "experiments/tool-persuasion-sonnet-4-5/tool_persuasion_skill-n20.json",
+      "harness_sha": "0f639bc380fc46286a1e1cffdb524768a61b79a3",
+      "github_run_id": 32184700959
+    },
+    {
+      "experiment_id": "tool-persuasion-sonnet-4-5",
+      "cohort_id": "tool_persuasion_toolsearch-n20",
+      "path": "experiments/tool-persuasion-sonnet-4-5/tool_persuasion_toolsearch-n20.json",
+      "harness_sha": "0f639bc380fc46286a1e1cffdb524768a61b79a3",
+      "github_run_id": 32184700959
+    },
+    {
+      "experiment_id": "tool-persuasion-sonnet-4-5",
+      "cohort_id": "tool_persuasion_workflow-n20",
+      "path": "experiments/tool-persuasion-sonnet-4-5/tool_persuasion_workflow-n20.json",
+      "harness_sha": "0f639bc380fc46286a1e1cffdb524768a61b79a3",
+      "github_run_id": 32184700959
+    },
+    {
+      "experiment_id": "tool-persuasion-sonnet-4-5",
+      "cohort_id": "tool_persuasion_write-n20",
+      "path": "experiments/tool-persuasion-sonnet-4-5/tool_persuasion_write-n20.json",
+      "harness_sha": "0f639bc380fc46286a1e1cffdb524768a61b79a3",
+      "github_run_id": 32184700959
     }
   ]
 }
