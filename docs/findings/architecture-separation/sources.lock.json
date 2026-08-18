@@ -25,7 +25,7 @@
     {
       "arm_id": "aws-durable",
       "repository": "svozza/smtithy-aws-durable-baseline",
-      "commit": "6f685c835926f50ff87a1f01d89e63bdef7141c1",
+      "commit": "377e721524f3a8e06e87d9f5a25e9386a2166177",
       "index_path": "results/index.json",
       "index_sha256": "be0555877944541471e856c3b6ba62e7fdb66497427a42975035c032e87413b3"
     }
