@@ -1,0 +1,154 @@
+name: Smtithy live posting test
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: smtithy-live-posting-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  approve:
+    if: >-
+      startsWith(github.event.pull_request.title, '[live-posting-test]') &&
+      github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    environment: ai-pr-review
+    permissions: {}
+    steps:
+      - run: echo "approved ${{ github.event.pull_request.head.sha }}"
+
+  generate:
+    needs: approve
+    if: >-
+      always() &&
+      startsWith(github.event.pull_request.title, '[live-posting-test]') &&
+      (!github.event.pull_request.draft || needs.approve.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - id: mode
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          mode=normal
+          [[ "$TITLE" == *"[stale]"* ]] && mode=stale
+          [[ "$TITLE" == *"[partial]"* ]] && mode=partial
+          [[ "$DRAFT" == true ]] && mode=draft
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+      - name: Build trusted fixed artifact
+        run: |
+          mkdir bundle
+          jq -n '{
+            summary:"Trusted live-posting test review.",
+            findings:[],
+            residual_risk:""
+          }' > bundle/review.json
+          jq -n '{model:"none-trusted-fixed-artifact"}' > bundle/run_metadata.json
+          jq -n \
+            --arg mode "${{ steps.mode.outputs.mode }}" \
+            --arg base "${{ github.event.pull_request.base.sha }}" \
+            --arg head "${{ github.event.pull_request.head.sha }}" \
+            '{mode:$mode,base_sha:$base,head_sha:$head}' \
+            > bundle/generation-record.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: smtithy-live-${{ github.run_id }}
+          path: bundle/
+          if-no-files-found: error
+          retention-days: 30
+
+  post:
+    needs: generate
+    if: always() && needs.generate.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+      - run: pip install --require-hashes -r requirements.txt
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: smtithy-live-${{ github.run_id }}
+          path: ${{ runner.temp }}/bundle
+      - name: Post through trusted executor
+        id: publish
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ needs.generate.outputs.mode == 'stale' && github.event.pull_request.base.sha || github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          MODE: ${{ needs.generate.outputs.mode }}
+          MARKER: <!-- smtithy-live-${{ github.run_id }} -->
+        run: |
+          runner_mode=normal
+          [[ "$MODE" == partial ]] && runner_mode=partial
+          python src/smtithy/evals/run_live_post.py \
+            --mode "$runner_mode" \
+            --artifact-dir "$RUNNER_TEMP/bundle" \
+            --policy src/smtithy/policy.json \
+            --prompt prompts/ai-pr-review.md \
+            --marker "$MARKER" \
+            --title "Smtithy live posting test"
+      - name: Verify observed GitHub state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ needs.generate.outputs.mode }}
+          OUTCOME: ${{ steps.publish.outcome }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MARKER: <!-- smtithy-live-${{ github.run_id }} -->
+        run: |
+          comments="$(
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              --jq "[.[] | select(.body | startswith(\"${MARKER}\"))]"
+          )"
+          case "$MODE" in
+            normal|draft)
+              test "$OUTCOME" = success
+              test "$(jq length <<<"$comments")" -eq 1
+              jq -e --arg sha "$HEAD_SHA" '.[0].body | contains("reviewed SHA: `" + $sha + "`")' <<<"$comments"
+              ;;
+            stale)
+              test "$OUTCOME" = failure
+              test "$(jq length <<<"$comments")" -eq 0
+              ;;
+            partial)
+              test "$OUTCOME" = failure
+              test "$(jq length <<<"$comments")" -eq 1
+              jq -e '.[0].body | contains("AI review withdrawn")' <<<"$comments"
+              ;;
+          esac
+          jq -n \
+            --arg mode "$MODE" \
+            --arg outcome "$OUTCOME" \
+            --arg head "$HEAD_SHA" \
+            '{mode:$mode,publication_outcome:$outcome,head_sha:$head,verified:true}' \
+            > live-result.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: smtithy-live-result-${{ github.run_id }}
+          path: live-result.json
+          if-no-files-found: error
+          retention-days: 30
