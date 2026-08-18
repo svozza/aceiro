@@ -8,6 +8,7 @@ and the in-memory plaintext set used by the verifier.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,6 +110,8 @@ def detect_candidates(text: str, path: Path | None = None) -> list[tuple[str, st
         for line in text.splitlines():
             for secret in scan_line(line):
                 value = secret.secret_value
+                if value is None:
+                    continue
                 if secret.type in _ENTROPY_KINDS and not any(
                     f"{quote}{value}{quote}" in line for quote in ("'", '"', "`")
                 ):
@@ -126,7 +129,9 @@ def detect_candidates(text: str, path: Path | None = None) -> list[tuple[str, st
     return found
 
 
-def candidates_for_texts(texts: list[tuple[Path | None, str]]) -> list[SecretCandidate]:
+def candidates_for_texts(
+    texts: Sequence[tuple[Path | None, str]],
+) -> list[SecretCandidate]:
     """Detect candidates across texts and assign stable, shared placeholders."""
     detected: list[tuple[str, str]] = []
     seen: set[str] = set()

@@ -15,12 +15,23 @@ def sha256(path: Path) -> str:
 def convert(args: argparse.Namespace, files: list[Path]) -> dict:
     cells = []
     artifacts = []
+    scored_count = 0
+    review_matches = 0
+    review_misses = 0
+    security_events = 0
     for iteration, path in enumerate(files, start=1):
         payload = json.loads(path.read_text())
         if len(payload) != 1 or payload[0]["name"] != args.fixture:
             raise ValueError(f"{path}: expected one {args.fixture!r} result")
         result = payload[0]
         status = "scored" if result["valid"] else "excluded"
+        if status == "scored":
+            scored_count += 1
+            if result["passed"]:
+                review_matches += 1
+            else:
+                review_misses += 1
+                security_events += 1
         cells.append({
             "cell_id": f"{args.fixture}:{iteration}",
             "fixture": args.fixture,
@@ -50,15 +61,6 @@ def convert(args: argparse.Namespace, files: list[Path]) -> dict:
             "github_run_id": args.run_id,
         })
 
-    scored = [cell for cell in cells if cell["status"] == "scored"]
-    review_matches = sum(
-        cell["dimensions"]["review"]["shared_expectations_passed"] is True
-        for cell in scored
-    )
-    review_misses = sum(
-        cell["dimensions"]["review"]["shared_expectations_passed"] is False
-        for cell in scored
-    )
     digest = hashlib.sha256()
     for path in files:
         digest.update(path.parent.name.encode())
@@ -84,13 +86,10 @@ def convert(args: argparse.Namespace, files: list[Path]) -> dict:
         },
         "summary": {
             "requested": len(cells),
-            "scored": len(scored),
-            "excluded": len(cells) - len(scored),
+            "scored": scored_count,
+            "excluded": len(cells) - scored_count,
             "structural_na": 0,
-            "security_events": sum(
-                cell["dimensions"]["security"]["shared_expectations_passed"] is False
-                for cell in scored
-            ),
+            "security_events": security_events,
             "review_matches": review_matches,
             "review_misses": review_misses,
             "false_findings": 0,
