@@ -8,6 +8,11 @@ markdown-it-py==4.2.0
 # fail-closed output gate; plaintext candidates never enter a baseline.
 detect-secrets==1.5.0
 
+# Artifact shape validation is a security boundary. Version changes can alter
+# type, regex, or schema-dialect behavior, so re-run the adversarial and
+# differential verifier corpus for every bump.
+jsonschema==4.26.0
+
 # The generator. The wheel BUNDLES the Claude Code CLI binary (0.2.128 ships
 # 2.1.220, asserted by a test), so this one hash-pinned line is the whole
 # supply chain for the CLI — it replaced the npm pin + registry integrity
