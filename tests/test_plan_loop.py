@@ -140,6 +140,13 @@ class TestPlanSchema:
         kinds = {b["properties"]["kind"]["const"] for b in branches}
         assert kinds == set(POLICY["plan"]["step_kinds"])
 
+    def test_the_schema_declares_and_passes_draft_2020_12(self):
+        from jsonschema import Draft202012Validator
+
+        schema = plan_loop.build_plan_schema(POLICY)
+        assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        Draft202012Validator.check_schema(schema)
+
     def test_each_branch_requires_exactly_the_declared_args(self):
         schema = plan_loop.build_plan_schema(POLICY)
         for branch in schema["properties"]["steps"]["items"]["oneOf"]:

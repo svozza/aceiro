@@ -46,8 +46,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import cast
 
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
+
+from artifact import _scalar_to_json_schema
 from canonicalize import strip_invisible
 from verify import (
+    ContractValidator,
     SCALAR_KEYS,
     Rejection,
     check_markdown_field,
@@ -56,15 +60,8 @@ from verify import (
     fence_info_strings,
     parse_diff_hunks,
     scanned_representations,
+    validation_message,
 )
-
-# Ids exist so steps can be referred to; a duplicate makes a reference
-# ambiguous, and a counterexample naming a step becomes unactionable. Kept
-# conservative: this is what appears in audit output.
-ID_RE = re.compile(r"[a-z][a-z0-9_]{0,39}")
-
-PLAN_KEYS = frozenset({"steps"})
-STEP_KEYS = frozenset({"id", "kind", "args"})
 
 # Every key of the policy's `plan` section, being exactly the ones this gate
 # reads. This gate once read its keys ad hoc, so an unknown key was silently
@@ -211,6 +208,104 @@ def check_plan_arg_specs(policy_plan: dict) -> None:
             check_scalar_spec(arg_spec, where)
 
 
+def build_plan_schema(policy: dict) -> dict:
+    """Translate policy.json's plan section into the submit_plan contract."""
+    plan = policy["plan"]
+    step_branches = []
+    for kind, spec in plan["step_kinds"].items():
+        step_branches.append({
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$"},
+                "kind": {"const": kind},
+                "args": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        name: _scalar_to_json_schema(arg) for name, arg in spec["args"].items()
+                    },
+                    "required": list(spec["args"]),
+                },
+            },
+            "required": ["id", "kind", "args"],
+        })
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "steps": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": plan["max_steps"],
+                "items": {"oneOf": step_branches},
+            },
+        },
+        "required": ["steps"],
+    }
+
+
+def _plan_error_path(error: ValidationError, step_index: int | None = None) -> str:
+    where = "plan"
+    if step_index is not None:
+        where += f".steps[{step_index}]"
+    for part in error.absolute_path:
+        where += f"[{part}]" if isinstance(part, int) else f".{part}"
+    return where
+
+
+def _format_plan_error(error: ValidationError, step_index: int | None = None) -> str:
+    where = _plan_error_path(error, step_index)
+    if error.validator == "required" and where == "plan":
+        return "plan: missing steps"
+    if error.validator == "minItems" and where == "plan.steps":
+        return "plan.steps: empty, so the plan does nothing"
+    if error.validator == "maxItems" and where == "plan.steps":
+        return f"plan.steps: {len(error.instance)} steps exceeds max_steps {error.validator_value}"
+    if error.validator in ("pattern", "type") and where.endswith(".id"):
+        return f"{where}: expected a short lowercase identifier, got {error.instance!r}"
+    if error.validator == "type":
+        if where == "plan" and error.validator_value == "object":
+            return "plan: expected a JSON object"
+        if ".args." in where and isinstance(error.instance, (dict, list)):
+            return (
+                f"{where}: expected a literal, got {type(error.instance).__name__} — "
+                'argument_forms admits only ["literal"], so bindings are not accepted'
+            )
+        expected = error.validator_value
+        article = "an " if expected in ("array", "object") else ""
+        return f"{where}: expected {article}{expected}, got {type(error.instance).__name__}"
+    return f"{where}: {validation_message(error)}"
+
+
+def _plan_validation_message(
+    error: ValidationError, candidate, schema: dict, policy_plan: dict
+) -> str:
+    if error.validator != "oneOf" or len(error.absolute_path) != 2:
+        return _format_plan_error(error)
+    _, raw_step_index = error.absolute_path
+    if not isinstance(raw_step_index, int):
+        return _format_plan_error(error)
+    step_index = raw_step_index
+    step = candidate["steps"][step_index]
+    if missing := sorted({"id", "kind", "args"} - set(step)):
+        return f"plan.steps[{step_index}]: missing keys {missing}"
+    kind = step.get("kind")
+    kinds = policy_plan["step_kinds"]
+    if not isinstance(kind, str):
+        return f"plan.steps[{step_index}].kind: expected a string"
+    if kind not in kinds:
+        return (
+            f"plan.steps[{step_index}].kind: {kind!r} is not a declared step kind "
+            f"({', '.join(sorted(kinds))})"
+        )
+    branches = schema["properties"]["steps"]["items"]["oneOf"]
+    branch = next(item for item in branches if item["properties"]["kind"]["const"] == kind)
+    selected = next(ContractValidator(branch).iter_errors(step), error)
+    return _format_plan_error(selected, step_index)
+
+
 def parse_plan(candidate, policy_plan: dict) -> tuple[Step, ...]:
     """Raise Rejection on the first structural violation; return the parsed
     steps if the plan is well-shaped. A parser, not a validator (ADR-0017):
@@ -226,96 +321,37 @@ def parse_plan(candidate, policy_plan: dict) -> tuple[Step, ...]:
     check_plan_policy_keys(policy_plan)
     check_reserved_closures(policy_plan)
     check_plan_arg_specs(policy_plan)
-    if not isinstance(candidate, dict):
-        raise Rejection("plan: expected a JSON object")
-
-    extra = set(candidate) - PLAN_KEYS
-    if extra:
-        raise Rejection(f"plan: unexpected keys {sorted(extra)}")
-    if "steps" not in candidate:
-        raise Rejection("plan: missing steps")
+    try:
+        schema = build_plan_schema({"plan": policy_plan})
+        Draft202012Validator.check_schema(schema)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise Rejection(f"policy error: cannot build plan schema: {exc}") from exc
+    except SchemaError as exc:
+        raise Rejection(f"policy error: generated plan schema is invalid: {exc}") from exc
+    if error := next(ContractValidator(schema).iter_errors(candidate), None):
+        raise Rejection(_plan_validation_message(error, candidate, schema, policy_plan))
 
     steps = candidate["steps"]
-    if not isinstance(steps, list):
-        raise Rejection("plan.steps: expected an array")
-    if not steps:
-        # An empty plan is not a safe no-op to wave through: something asked
-        # for a remediation and nothing would happen, which is a failure the
-        # commander has to see rather than a success with no effect.
-        raise Rejection("plan.steps: empty, so the plan does nothing")
-    if len(steps) > policy_plan["max_steps"]:
-        raise Rejection(f"plan.steps: {len(steps)} steps exceeds max_steps {policy_plan['max_steps']}")
-
-    step_kinds = policy_plan["step_kinds"]
     seen_ids = set()
     parsed: list[Step] = []
 
     for index, step in enumerate(steps):
         where = f"plan.steps[{index}]"
-        if not isinstance(step, dict):
-            raise Rejection(f"{where}: expected an object")
-
-        extra = set(step) - STEP_KEYS
-        if extra:
-            raise Rejection(f"{where}: unexpected keys {sorted(extra)}")
-        missing = STEP_KEYS - set(step)
-        if missing:
-            raise Rejection(f"{where}: missing keys {sorted(missing)}")
-
         step_id = step["id"]
-        if not isinstance(step_id, str) or not ID_RE.fullmatch(step_id):
-            raise Rejection(f"{where}.id: expected a short lowercase identifier, got {step_id!r}")
         if step_id in seen_ids:
             raise Rejection(f"{where}.id: duplicate id {step_id!r}")
         seen_ids.add(step_id)
 
         kind = step["kind"]
-        if not isinstance(kind, str):
-            raise Rejection(f"{where}.kind: expected a string")
-        if kind not in step_kinds:
-            # Allowlist, not denylist: an unknown kind is not a no-op the
-            # executor can skip. It is a request the harness does not
-            # understand, and the only safe reading of it is to reject the
-            # whole plan.
-            raise Rejection(
-                f"{where}.kind: {kind!r} is not a declared step kind ({', '.join(sorted(step_kinds))})"
-            )
-
         args = step["args"]
-        if not isinstance(args, dict):
-            raise Rejection(f"{where}.args: expected an object")
-        declared = step_kinds[kind]["args"]
-        extra = set(args) - set(declared)
-        if extra:
-            raise Rejection(f"{where}.args: unexpected keys {sorted(extra)}")
-        missing = set(declared) - set(args)
-        if missing:
-            raise Rejection(f"{where}.args: missing keys {sorted(missing)}")
-
-        for arg_name, arg_spec in declared.items():
-            value = args[arg_name]
+        for arg_name, value in args.items():
             arg_where = f"{where}.args.{arg_name}"
-            # ADR-0004's second closure lands exactly here. An execution-time
-            # binding would arrive as {"$ref": "step1.output"} — an object
-            # where a scalar is expected — so it rejects today with no
-            # per-argument wrapper. Named explicitly because check_scalar's
-            # bare "expected string" would send someone hunting a typo
-            # instead of reading ADR-0004.
-            if isinstance(value, (dict, list)):
-                raise Rejection(
-                    f"{arg_where}: expected a literal, got {type(value).__name__} — "
-                    "argument_forms admits only [\"literal\"], so bindings are not accepted"
-                )
-            # Before check_scalar, which is total on a surrogate: len works and
-            # NFC is a no-op, so the value would pass every declared bound and
-            # reach a phase that encodes.
             if isinstance(value, str) and (found := SURROGATE_RE.search(value)):
                 raise Rejection(
                     f"{arg_where}: contains an unpaired surrogate (U+{ord(found.group()):04X}) at "
                     f"position {found.start()}, which is not encodable text; a plan argument must "
                     "be a string this gate can write to a file and to the audit log"
                 )
-            check_scalar(value, arg_spec, arg_where)
 
         # A copy behind a read-only view: the Step must stay what was proved
         # even if the caller's dict is mutated after.

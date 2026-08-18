@@ -256,7 +256,7 @@ def _python_fullmatch(validator, pattern, instance, schema):
         yield ValidationError(f"does not fully match Python pattern {pattern!r}")
 
 
-ArtifactValidator = validators.extend(
+ContractValidator = validators.extend(
     Draft202012Validator,
     {
         "minLength": _nfc_min_length,
@@ -273,7 +273,7 @@ def _instance_path(error: ValidationError) -> str:
     return where
 
 
-def _validation_message(error: ValidationError) -> str:
+def validation_message(error: ValidationError) -> str:
     if error.validator == "required":
         missing = sorted(set(error.validator_value) - set(error.instance))
         return f"missing keys {missing}"
@@ -305,8 +305,8 @@ def check_schema(artifact: dict, policy: dict) -> None:
     except SchemaError as exc:
         raise Rejection(f"policy error: generated artifact schema is invalid: {exc}") from exc
 
-    if error := next(ArtifactValidator(schema).iter_errors(artifact), None):
-        raise Rejection(f"{_instance_path(error)}: {_validation_message(error)}")
+    if error := next(ContractValidator(schema).iter_errors(artifact), None):
+        raise Rejection(f"{_instance_path(error)}: {validation_message(error)}")
 
     check_group_cardinality(artifact["findings"], policy_schema["findings"])
 

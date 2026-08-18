@@ -136,6 +136,18 @@ class TestPlanShape:
         with pytest.raises(Rejection, match="exceeds max_steps"):
             parse_plan({"steps": steps}, PLAN_POLICY)
 
+    def test_generated_schema_is_checked_before_plan_validation(self, monkeypatch):
+        monkeypatch.setattr(
+            plan_verify,
+            "build_plan_schema",
+            lambda unused: {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": 7,
+            },
+        )
+        with pytest.raises(Rejection, match="policy error.*schema"):
+            parse_plan(valid_plan(), PLAN_POLICY)
+
     def test_verify_plan_enforces_id_uniqueness(self):
         # Driver-level for the reason test_verify_plan_enforces_ordering is, and
         # with more riding on it: no phase after schema reads ids, so this is the
@@ -245,6 +257,11 @@ class TestArgs:
 
     def test_suggest_step_passes_whole(self):
         parse_plan({"steps": [suggest_step()]}, PLAN_POLICY)
+
+    def test_length_is_measured_after_nfc_normalization(self):
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["step_kinds"]["patch"]["args"]["new"]["max_length"] = 1
+        parse_plan({"steps": [patch_step(new="e\u0301")]}, policy)
 
     # JSON permits \ud800 and both parsers accept it, so a plan can carry a
     # string no UTF-8 encoder will take. The containment phase encodes, the
