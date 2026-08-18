@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-18T20:07:06Z",
+  "updated_at": "2026-08-18T21:40:51Z",
   "schema": {
     "repository": "svozza/smtithy",
     "commit": "3efcdf56b1e01fb67b154160bb6f6e641c03348f",
@@ -11,9 +11,9 @@
     {
       "arm_id": "smtithy",
       "repository": "svozza/smtithy",
-      "commit": "3efcdf56b1e01fb67b154160bb6f6e641c03348f",
+      "commit": "62a8fb5d3ddab7f30857175f135fbd8836932b9b",
       "index_path": "results/index.json",
-      "index_sha256": "23d99b071a890afa06db382716cb9387aa40026708c20100a6a35c577887b9a0"
+      "index_sha256": "0eb8fd035ea75d9bb885083d249c4257918fd74f0de0c4230468055f26217ceb"
     },
     {
       "arm_id": "naive",
