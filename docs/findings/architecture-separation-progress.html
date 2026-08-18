@@ -881,9 +881,9 @@ const experiments = [
     vector: "AWS real GitHub posting tests",
     family: "Real GitHub delivery tests",
     cls: "separation",
-    smt: "Comparable trusted separation",
-    a: "Model posts directly",
-    b: "Model posts directly",
+    smt: "Not run; AWS-only workflow test",
+    a: "Not applicable",
+    b: "Not applicable",
     conclusion: "Four real PR runs proved that AWS can post a commit-bound review, refuse stale output, clean up after a partial post, and wait for protected draft approval.",
     predicate: "Open dedicated PRs and inspect the actual GitHub comments after normal posting, stale review data, a forced failure on the second comment, and draft approval.",
     enforcement: "The read-only job hands an artifact to a separate write job. The writer rechecks the commit, marks its own comments, and minimizes a newly posted comment if the remaining publication fails.",
@@ -1201,9 +1201,9 @@ armResults["AWS checks before posting"] = {
   aws: ["Coordinate-invalid artifacts rejected", "Valid comments and suggestions preserved", "Narrower content policy accepts links, HTML, mentions, emails, and exact secrets", "Deterministic corpus"]
 };
 armResults["AWS real GitHub posting tests"] = {
-  smt: ["Comparable trusted posting design", "Fixed posting data; reviewer quality not tested", "Separate verifier and posting job with commit-movement checks", "Architecture comparison only"],
-  a: ["Not applicable: the model posts during its own session", "Not tested in this experiment", "No artifact handoff or separate trusted posting job", "Structural N/A"],
-  b: ["Not applicable: the model posts during its own session", "Not tested in this experiment", "No artifact handoff or separate trusted posting job", "Structural N/A"],
+  smt: ["Not tested; these four PRs exercised only AWS", "Not tested", "smtithy has a separate posting design, but this experiment did not run it", "Not run"],
+  a: ["Not applicable; the model posts during its own session", "Not tested", "There is no separate artifact handoff or trusted posting job to exercise", "Structural N/A"],
+  b: ["Not applicable; the model posts during its own session", "Not tested", "There is no separate artifact handoff or trusted posting job to exercise", "Structural N/A"],
   aws: ["Stale review: 0 writes; forced partial post: first new comment minimized and no summary posted", "Fixed two-comment review; Claude was not invoked", "Normal commit-bound post, artifact handoff, protected draft approval, stale refusal, and partial-post cleanup", "4/4 real workflow modes verified"]
 };
 
