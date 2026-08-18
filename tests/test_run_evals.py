@@ -158,6 +158,23 @@ class TestARunCountBelowOneIsRefused:
         assert not out.exists(), "the run made an output directory for a suite it never ran"
 
 
+class TestScenarioSelection:
+    def test_comma_separated_names_select_only_requested_scenarios(self, tmp_path, monkeypatch):
+        for name in ("first", "second", "third"):
+            (tmp_path / name).mkdir()
+        monkeypatch.setattr(run_evals, "SCENARIOS_DIR", tmp_path)
+        selected = run_evals.select_scenarios("third, first")
+        assert [path.name for path in selected] == ["third", "first"]
+
+    def test_unknown_or_duplicate_names_fail_closed(self, tmp_path, monkeypatch):
+        (tmp_path / "known").mkdir()
+        monkeypatch.setattr(run_evals, "SCENARIOS_DIR", tmp_path)
+        with pytest.raises(run_evals.EvalFailure, match="no scenario named 'missing'"):
+            run_evals.select_scenarios("known,missing")
+        with pytest.raises(run_evals.EvalFailure, match="duplicate"):
+            run_evals.select_scenarios("known,known")
+
+
 class TestARunFailureIsThatScenariosResultNotTheSuites:
     """pool.map re-raises, so any exception escaping run_scenario loses every
     other scenario's result along with the run that failed."""

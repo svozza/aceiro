@@ -828,6 +828,20 @@ def run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dict
     return guarded(scenario_dir.name, lambda: _run_scenario(cache_root, scenario_dir, output_dir))
 
 
+def select_scenarios(argument: str | None) -> list[Path]:
+    scenario_dirs = sorted(d for d in SCENARIOS_DIR.iterdir() if d.is_dir())
+    if not argument:
+        return scenario_dirs
+    requested = [name.strip() for name in argument.split(",") if name.strip()]
+    if len(requested) != len(set(requested)):
+        raise EvalFailure("--scenario contains duplicate names")
+    available = {directory.name: directory for directory in scenario_dirs}
+    unknown = [name for name in requested if name not in available]
+    if unknown:
+        raise EvalFailure(f"no scenario named {unknown[0]!r}")
+    return [available[name] for name in requested]
+
+
 def _run_scenario(cache_root: Path, scenario_dir: Path, output_dir: Path) -> dict:
     name = scenario_dir.name
     expect = json.loads((scenario_dir / "expect.json").read_text())
@@ -953,7 +967,10 @@ def main() -> int:
         help="Where pinned BASE fixtures are cached (default: .eval-base-cache).",
     )
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--scenario", help="Run only this scenario (default: all)")
+    parser.add_argument(
+        "--scenario",
+        help="Run one scenario or comma-separated scenario names (default: all)",
+    )
     parser.add_argument(
         "--runs",
         type=int,
@@ -975,12 +992,11 @@ def main() -> int:
         return 2
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    scenario_dirs = sorted(d for d in SCENARIOS_DIR.iterdir() if d.is_dir())
-    if args.scenario:
-        scenario_dirs = [d for d in scenario_dirs if d.name == args.scenario]
-        if not scenario_dirs:
-            print(f"no scenario named {args.scenario!r}", file=sys.stderr)
-            return 2
+    try:
+        scenario_dirs = select_scenarios(args.scenario)
+    except EvalFailure as exc:
+        print(f"{exc}", file=sys.stderr)
+        return 2
 
     total_failed = 0
     for run_index in range(1, args.runs + 1):
