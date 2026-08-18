@@ -69,6 +69,7 @@ class TestParsers:
         assert declared(ROOT / "requirements.in") == {
             "markdown-it-py": "4.2.0",
             "detect-secrets": "1.5.0",
+            "jsonschema": "4.26.0",
             "claude-agent-sdk": "0.2.128",
         }
 

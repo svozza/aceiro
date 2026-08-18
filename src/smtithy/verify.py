@@ -27,8 +27,10 @@ import unicodedata
 from pathlib import Path
 from urllib.parse import unquote
 
+from jsonschema import Draft202012Validator, SchemaError, ValidationError, validators
 from markdown_it import MarkdownIt
 
+from artifact import build_artifact_schema
 from canonicalize import is_invisible, read_contributor_text, read_harness_text, strip_invisible
 from diff_map import walk_diff
 
@@ -128,6 +130,14 @@ def check_scalar_spec(spec: dict, where: str) -> None:
     compile (`\\p{L}` is a PatternError to Python's re), or the loader admits a
     policy that throws at enforcement time.
     """
+    kind = spec.get("type")
+    if kind not in SCALAR_KEYS:
+        raise Rejection(f"policy error: unknown scalar type {kind!r} at {where}")
+    if extra := set(spec) - SCALAR_KEYS[kind]:
+        raise Rejection(
+            f"policy error: scalar spec at {where} carries keys no reader consults "
+            f"{sorted(extra)} (allowed for {kind}: {sorted(SCALAR_KEYS[kind])})"
+        )
     if isinstance(spec.get("pattern"), str):
         try:
             re.compile(spec["pattern"])
@@ -163,12 +173,6 @@ def check_scalar_spec(spec: dict, where: str) -> None:
 
 
 def check_scalar(value, spec: dict, where: str) -> None:
-    if allowed := SCALAR_KEYS.get(spec["type"]):
-        if extra := set(spec) - allowed:
-            raise Rejection(
-                f"policy error: scalar spec at {where} carries keys no reader consults "
-                f"{sorted(extra)} (allowed for {spec['type']}: {sorted(allowed)})"
-            )
     match spec["type"]:
         case "string":
             if not isinstance(value, str):
@@ -237,44 +241,74 @@ def sweep_scalar_specs(schema: dict, where: str) -> None:
         check_scalar_spec(spec, f"{where}.{name}")
 
 
+def _nfc_min_length(validator, minimum, instance, schema):
+    if isinstance(instance, str) and len(unicodedata.normalize("NFC", instance)) < minimum:
+        yield ValidationError(f"is shorter than NFC-normalized minLength {minimum}")
+
+
+def _nfc_max_length(validator, maximum, instance, schema):
+    if isinstance(instance, str) and len(unicodedata.normalize("NFC", instance)) > maximum:
+        yield ValidationError(f"is longer than NFC-normalized maxLength {maximum}")
+
+
+def _python_fullmatch(validator, pattern, instance, schema):
+    if isinstance(instance, str) and re.fullmatch(pattern, instance) is None:
+        yield ValidationError(f"does not fully match Python pattern {pattern!r}")
+
+
+ArtifactValidator = validators.extend(
+    Draft202012Validator,
+    {
+        "minLength": _nfc_min_length,
+        "maxLength": _nfc_max_length,
+        "pattern": _python_fullmatch,
+    },
+)
+
+
+def _instance_path(error: ValidationError) -> str:
+    where = "artifact"
+    for part in error.absolute_path:
+        where += f"[{part}]" if isinstance(part, int) else f".{part}"
+    return where
+
+
+def _validation_message(error: ValidationError) -> str:
+    if error.validator == "required":
+        missing = sorted(set(error.validator_value) - set(error.instance))
+        return f"missing keys {missing}"
+    if error.validator == "additionalProperties":
+        expected = set(error.schema.get("properties", {})) if isinstance(error.schema, dict) else set()
+        extra = sorted(set(error.instance) - expected)
+        return f"unexpected keys {extra}"
+    if error.validator == "maximum":
+        return f"above maximum {error.validator_value}"
+    if error.validator == "minimum":
+        return f"below minimum {error.validator_value}"
+    if error.validator == "maxLength":
+        return f"exceeds max_length {error.validator_value}"
+    if error.validator == "minLength":
+        return f"shorter than min_length {error.validator_value}"
+    return error.message
+
+
 def check_schema(artifact: dict, policy: dict) -> None:
-    schema = policy["artifact_schema"]
-    # Before the artifact is looked at: a policy fault is not a claim about it.
-    sweep_scalar_specs(schema, "artifact_schema")
-    if not isinstance(artifact, dict):
-        raise Rejection("artifact: expected a JSON object")
-    extra = set(artifact) - set(schema)
-    if extra:
-        raise Rejection(f"artifact: unexpected keys {sorted(extra)}")
-    missing = set(schema) - set(artifact)
-    if missing:
-        raise Rejection(f"artifact: missing keys {sorted(missing)}")
+    policy_schema = policy["artifact_schema"]
+    # The policy is a small DSL shared with the plan gate. Refuse malformed or
+    # unsupported declarations before deriving a JSON Schema from them.
+    sweep_scalar_specs(policy_schema, "artifact_schema")
+    try:
+        schema = build_artifact_schema(policy)
+        Draft202012Validator.check_schema(schema)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise Rejection(f"policy error: cannot build artifact schema: {exc}") from exc
+    except SchemaError as exc:
+        raise Rejection(f"policy error: generated artifact schema is invalid: {exc}") from exc
 
-    for field, spec in top_level_scalars(schema).items():
-        check_scalar(artifact[field], spec, field)
+    if error := next(ArtifactValidator(schema).iter_errors(artifact), None):
+        raise Rejection(f"{_instance_path(error)}: {_validation_message(error)}")
 
-    findings_spec = schema["findings"]
-    findings = artifact["findings"]
-    if not isinstance(findings, list):
-        raise Rejection("findings: expected an array")
-    if len(findings) > findings_spec["max_items"]:
-        raise Rejection(f"findings: {len(findings)} items exceeds max {findings_spec['max_items']}")
-
-    item_fields = findings_spec["item_fields"]
-    for index, finding in enumerate(findings):
-        where = f"findings[{index}]"
-        if not isinstance(finding, dict):
-            raise Rejection(f"{where}: expected an object")
-        extra = set(finding) - set(item_fields)
-        if extra:
-            raise Rejection(f"{where}: unexpected keys {sorted(extra)}")
-        missing = set(item_fields) - set(finding)
-        if missing:
-            raise Rejection(f"{where}: missing keys {sorted(missing)}")
-        for field, spec in item_fields.items():
-            check_scalar(finding[field], spec, f"{where}.{field}")
-
-    check_group_cardinality(findings, findings_spec)
+    check_group_cardinality(artifact["findings"], policy_schema["findings"])
 
 
 def check_group_cardinality(findings: list[dict], findings_spec: dict) -> None:

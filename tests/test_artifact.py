@@ -504,6 +504,13 @@ class TestBuildArtifactSchema:
         schema = build_artifact_schema(POLICY)
         assert schema["required"] == ["summary", "findings", "residual_risk"]
 
+    def test_the_schema_declares_and_passes_draft_2020_12(self):
+        from jsonschema import Draft202012Validator
+
+        schema = build_artifact_schema(POLICY)
+        assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        Draft202012Validator.check_schema(schema)
+
     def test_extra_properties_are_refused_at_both_levels(self):
         # additionalProperties: False is what makes the CLI reject an invented
         # field before the verifier has to.

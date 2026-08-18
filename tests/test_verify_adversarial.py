@@ -70,6 +70,17 @@ class TestStructure:
     def test_non_dict_artifact(self, sample_diff, changed_files, policy):
         rejected(["not", "an", "object"], sample_diff, changed_files, policy)
 
+    def test_generated_schema_is_checked_before_instance_validation(
+        self, artifact, sample_diff, changed_files, policy, monkeypatch
+    ):
+        monkeypatch.setattr(
+            verify_module,
+            "build_artifact_schema",
+            lambda unused: {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": 7},
+        )
+        with pytest.raises(Rejection, match="policy error.*schema"):
+            verify(artifact, sample_diff, changed_files, policy)
+
 
 class TestRuntimeSecretTaints:
     def test_exact_candidate_reproduction_is_rejected(
