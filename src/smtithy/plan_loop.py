@@ -56,54 +56,13 @@ from cc_loop import (
     make_submit_tool,
     tool_guidance,
 )
-from plan_verify import tree_content_source, verify_plan
+from plan_verify import build_plan_schema, tree_content_source, verify_plan
 from verify import Rejection, verify
 
 SUBMIT_TOOL = "mcp__plan__submit_plan"
 
 _HARNESS_ROOT = Path(__file__).resolve().parent
 PLAN_PROMPT_PATH = _HARNESS_ROOT.parent.parent / "prompts" / "ai-pr-plan.md"
-
-
-def build_plan_schema(policy: dict) -> dict:
-    """Translate policy.json's plan section into a JSON Schema for the
-    generator's submit_plan tool input. One oneOf branch per step kind, so
-    the schema the model reads names each kind's exact argument set — but the
-    MCP layer never validates against it (build_review_server disables that
-    on purpose); verify_plan is the gate, and this is documentation."""
-    plan = policy["plan"]
-    step_branches = []
-    for kind, spec in plan["step_kinds"].items():
-        step_branches.append({
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$"},
-                "kind": {"const": kind},
-                "args": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        name: _scalar_to_json_schema(arg) for name, arg in spec["args"].items()
-                    },
-                    "required": list(spec["args"]),
-                },
-            },
-            "required": ["id", "kind", "args"],
-        })
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "steps": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": plan["max_steps"],
-                "items": {"oneOf": step_branches},
-            },
-        },
-        "required": ["steps"],
-    }
 
 
 def render_plan_constraints(policy: dict) -> str:
