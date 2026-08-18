@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-18T16:52:14Z",
+  "updated_at": "2026-08-18T20:07:06Z",
   "schema": {
     "repository": "svozza/smtithy",
     "commit": "3efcdf56b1e01fb67b154160bb6f6e641c03348f",
@@ -25,9 +25,9 @@
     {
       "arm_id": "aws-durable",
       "repository": "svozza/smtithy-aws-durable-baseline",
-      "commit": "377e721524f3a8e06e87d9f5a25e9386a2166177",
+      "commit": "fdb7390eeda51658017a89c8bc26e93e05c58ad3",
       "index_path": "results/index.json",
-      "index_sha256": "be0555877944541471e856c3b6ba62e7fdb66497427a42975035c032e87413b3"
+      "index_sha256": "e6ba1e115c34db8e337a137bbbbf8b79f8291bcdaa6d25470228d32f4224f69d"
     }
   ]
 }
