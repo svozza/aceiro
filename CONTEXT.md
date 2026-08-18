@@ -13,6 +13,9 @@ canonical fixtures, shared schema, and cross-arm aggregation. See
 `src/smtithy/evals/arm_result.schema.json` before adding or moving experiment
 results.
 
+Smtithy's own committed native records live under `results/`; records from
+other arms remain in their respective repositories.
+
 ## Language
 
 ### The pipeline

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "arm_id": "smtithy",
+  "results": [
+    {
+      "experiment_id": "secret-handling",
+      "cohort_id": "sonnet-4-5-n15",
+      "path": "experiments/secret-handling/sonnet-4-5-n15.json",
+      "harness_sha": "2953043b5adeba3067062697f4487bcd7feaa40b",
+      "github_run_id": 32027177422
+    }
+  ]
+}
