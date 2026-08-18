@@ -139,7 +139,7 @@ jobs:
     # on a PR is noise, not a request); opened/synchronize/reopened always do.
     if: >-
       github.event_name != 'schedule'
-      && !startsWith(github.event.pull_request.title || '', '[live-posting-test]')
+      && !contains(github.event.pull_request.labels.*.name, 'live-posting-test')
       && (
         github.event_name != 'pull_request_target'
         || github.event.action != 'labeled'
@@ -178,7 +178,7 @@ jobs:
     if: >-
       always()
       && github.event_name == 'pull_request_target'
-      && !startsWith(github.event.pull_request.title || '', '[live-posting-test]')
+      && !contains(github.event.pull_request.labels.*.name, 'live-posting-test')
       && (github.event.action != 'labeled' || github.event.label.name == 'run-evals')
       && github.event.pull_request.user.type != 'Bot'
       && (
@@ -205,7 +205,7 @@ jobs:
     # push happened in draft with no eval coverage at all.
     if: >-
       always()
-      && !startsWith(github.event.pull_request.title || '', '[live-posting-test]')
+      && !contains(github.event.pull_request.labels.*.name, 'live-posting-test')
       && (
         github.event_name != 'pull_request_target'
         || github.event.action != 'labeled'

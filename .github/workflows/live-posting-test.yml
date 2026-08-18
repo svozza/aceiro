@@ -13,7 +13,7 @@ concurrency:
 jobs:
   approve:
     if: >-
-      startsWith(github.event.pull_request.title, '[live-posting-test]') &&
+      contains(github.event.pull_request.labels.*.name, 'live-posting-test') &&
       github.event.pull_request.draft
     runs-on: ubuntu-latest
     environment: ai-pr-review
@@ -25,7 +25,7 @@ jobs:
     needs: approve
     if: >-
       always() &&
-      startsWith(github.event.pull_request.title, '[live-posting-test]') &&
+      contains(github.event.pull_request.labels.*.name, 'live-posting-test') &&
       (!github.event.pull_request.draft || needs.approve.result == 'success')
     runs-on: ubuntu-latest
     permissions:
