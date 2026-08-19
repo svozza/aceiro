@@ -6,29 +6,29 @@
       "experiment_id": "live-reachability",
       "cohort_id": "draft-approval",
       "path": "experiments/live-reachability/draft-approval.json",
-      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
-      "github_run_id": 32225663117
+      "harness_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
+      "github_run_id": 32253648790
     },
     {
       "experiment_id": "live-reachability",
       "cohort_id": "normal",
       "path": "experiments/live-reachability/normal.json",
-      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
-      "github_run_id": 32225658327
+      "harness_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
+      "github_run_id": 32253568942
     },
     {
       "experiment_id": "live-reachability",
       "cohort_id": "partial-cleanup",
       "path": "experiments/live-reachability/partial-cleanup.json",
-      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
-      "github_run_id": 32225662398
+      "harness_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
+      "github_run_id": 32253615843
     },
     {
       "experiment_id": "live-reachability",
       "cohort_id": "stale-head",
       "path": "experiments/live-reachability/stale-head.json",
-      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
-      "github_run_id": 32225659994
+      "harness_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
+      "github_run_id": 32253589886
     },
     {
       "experiment_id": "secret-handling",
