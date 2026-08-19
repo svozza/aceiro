@@ -265,6 +265,11 @@ class TestEvalDispatchControls:
         assert "ANTHROPIC_MODEL: ${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}" in text
         assert f"inference-profile/${{{{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}}}" in text
 
+    def test_semantic_judge_is_pinned_and_allowed_independently(self):
+        text = (WORKFLOWS / "evals.yml").read_text()
+        assert "SMTITHY_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8" in text
+        assert "inference-profile/${{ env.SMTITHY_EVAL_JUDGE_MODEL }}" in text
+
     def test_fifteen_run_comparison_is_supported(self):
         text = (WORKFLOWS / "evals.yml").read_text()
         runs = workflow_input(text, "runs")

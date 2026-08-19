@@ -126,6 +126,7 @@ env:
   AWS_REGION: eu-west-1
   BEDROCK_INFERENCE_PROFILE: global.anthropic.claude-opus-4-8
   BEDROCK_FOUNDATION_MODEL: anthropic.claude-opus-4-8
+  SMTITHY_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8
 
 jobs:
   # Resolves the author's REAL repository permission so the jobs below can branch
@@ -312,7 +313,9 @@ jobs:
                 "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 "Resource": [
                   "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}",
-                  "arn:aws:bedrock:*::foundation-model/${{ inputs.model == 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' && 'anthropic.claude-sonnet-4-5-20250929-v1:0' || env.BEDROCK_FOUNDATION_MODEL }}"
+                  "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ env.SMTITHY_EVAL_JUDGE_MODEL }}",
+                  "arn:aws:bedrock:*::foundation-model/${{ inputs.model == 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' && 'anthropic.claude-sonnet-4-5-20250929-v1:0' || env.BEDROCK_FOUNDATION_MODEL }}",
+                  "arn:aws:bedrock:*::foundation-model/${{ env.BEDROCK_FOUNDATION_MODEL }}"
                 ]
               }]
             }
