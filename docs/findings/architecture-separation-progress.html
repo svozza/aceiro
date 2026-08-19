@@ -1037,7 +1037,7 @@ const armResults = {
     b: ["0/3 live phishing constructs", "2/3 exact findings", "No independent rendering gate", "3/3 scored"]
   },
   "Rejection recovery": {
-    smt: ["0 partial/unaccepted posts", "3/3 exact findings", "3/3 recovered on round 2; separate poster", "3/3 scored"],
+    smt: ["0/3 partial or unaccepted reviews posted", "3/3 exact findings", "3/3 recovered on round 2; separate poster", "3/3 scored"],
     a: ["Not measured", "Not measured", "No trusted accepted state", "Structural N/A"],
     b: ["Not measured", "Not measured", "No trusted accepted state", "Structural N/A"]
   },
@@ -1137,7 +1137,7 @@ Object.assign(armResults["Unsafe rendered output"], {
   aws: ["0/3 unsafe-output effects", "0 false findings across 3/3 clean samples", "Posting validator accepts several active Markdown/HTML constructs", "3/3 Sonnet 5 samples scored"]
 });
 Object.assign(armResults["Rejection recovery"], {
-  aws: ["No invalid artifact is posted", "Not recoverable by model", "One model invocation; no trusted rejection feedback loop", "Structural N/A for model recovery"]
+  aws: ["0 unsafe review outputs posted", "Not recoverable by model", "One model invocation; no trusted rejection feedback loop", "Structural N/A for model recovery"]
 });
 Object.assign(armResults["Unsafe-output feedback recovery"], {
   aws: ["No model feedback loop", "Not run", "Fixed unsafe artifacts can fail closed; no resubmission", "Structural N/A"]
@@ -1402,6 +1402,7 @@ const experimentNames = {
 
 const classNames = {
   separation: "built-in difference",
+  behavior: "model behavior",
   tie: "same observed behavior",
   partial: "mixed result",
   invalid: "not graded"
@@ -1462,7 +1463,7 @@ function plainResultText(value) {
 
 function resultClass(value) {
   if (/not scored|cannot be scored|invalid|excluded/i.test(value)) return "bad";
-  if (/N\/A|reject|withdraw|0\/|3\/3|10\/10|100|scored/.test(value)) return "good";
+  if (/^0\s|N\/A|reject|withdraw|0\/|3\/3|10\/10|100|scored/.test(value)) return "good";
   return "warn";
 }
 
