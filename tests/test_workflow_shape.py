@@ -1225,15 +1225,22 @@ class TestOtherWorkflowsStayCorrect:
             assert "steps.assemble.outputs.has_files" in step.get("if", "")
             assert step.get("with.if-no-files-found") == "error"
 
-    def test_ai_pr_review_keys_its_cache_on_the_trusted_harness(self):
-        steps = parse_steps((WORKFLOWS / "ai-pr-review.yml").read_text(), "review")
-        setup_uv = next(step for step in steps if "setup-uv" in step.get("uses", ""))
-        assert setup_uv.get("with.enable-cache") == "true"
-        dependency = setup_uv.get("with.cache-dependency-glob")
-        assert dependency == "harness/uv.lock", (
-            "ai-pr-review.yml's cache key must come from the pinned harness checkout, "
-            f"not the consumer's tree; got {dependency!r}"
-        )
+    @pytest.mark.parametrize("workflow", ["ai-pr-review.yml", "ai-pr-fix.yml"])
+    def test_reusable_workflows_disable_uv_cache_writes(self, workflow):
+        text = (WORKFLOWS / workflow).read_text()
+        setup_steps = [
+            step
+            for job in job_names(text)
+            for step in parse_steps(text, job)
+            if "setup-uv" in step.get("uses", "")
+        ]
+        assert setup_steps, f"{workflow}: no setup-uv steps found"
+        for step in setup_steps:
+            assert step.get("with.enable-cache") == "false", (
+                f"{workflow} step {step.get('name')!r} may attempt an implicit cache write "
+                "with a caller token that has no writable cache scope"
+            )
+            assert "with.cache-dependency-glob" not in step
 
 
 
