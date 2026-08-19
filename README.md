@@ -50,7 +50,8 @@ flowchart LR
   has no repository write permission.
 - The **verifier** deterministically checks the complete proposal against
   [`policy.json`](src/aceiro/policy.json). If any part is invalid, the whole
-  proposal is rejected.
+  proposal is rejected. See [Policy language](docs/architecture.md#policy-language)
+  for the fields and constraints the policy can express.
 - The **executor** independently verifies the proposal again before posting a
   review, creating suggestions, or opening a follow-up pull request.
 

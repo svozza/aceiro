@@ -176,6 +176,124 @@ flowchart LR
     DERIVE_B --> CHECK_B
 ```
 
+### Policy language
+
+[`policy.json`](../src/aceiro/policy.json) is the reviewable security object
+interpreted by the deterministic verifiers. It describes the admissible shape
+and bounds of a review artifact and a remediation plan. The effective policy's
+SHA-256 digest is recorded with run evidence and rendered in the posted review,
+so an accepted object can be tied to the policy that admitted it.
+
+The policy is declarative, but it is not a general-purpose rule language. The
+enforced artifact and plan vocabularies are deliberately closed: an unknown
+constraint, a missing required field, an unsupported scalar constraint, or a
+reserved feature with no implemented semantics is a policy error. This prevents
+a policy from appearing to express a constraint that no verifier actually
+enforces.
+
+The top-level fields are:
+
+| Field | What it controls |
+| --- | --- |
+| `version` | Policy format metadata. The current verifiers do not dispatch on it. |
+| `description` | Maintainer-facing rationale for the shipped policy. It has no enforcement semantics. |
+| `artifact_schema` | The fields, types, value bounds, and cardinality limits of a review artifact. |
+| `provenance` | Whether each finding must name a changed file and a line inside a diff hunk. |
+| `markdown` | Which Markdown syntax may be published and which link destinations are trusted. |
+| `plan` | The grammar, ordering, containment, effect, and size bounds of remediation plans. |
+| `secret_scan_patterns` | Regular expressions for values that must not survive in accepted model output. |
+
+#### Artifact schema
+
+`artifact_schema` defines the complete review artifact. The shipped policy
+requires `summary`, `findings`, and `residual_risk`, and defines every field of
+a finding: `path`, `line`, `severity`, `group`, `title`, and `body`.
+
+Scalar specifications support this closed vocabulary:
+
+| Scalar type | Supported constraints |
+| --- | --- |
+| `string` | `min_length`, `max_length`, `pattern`, and `markdown` |
+| `integer` | `minimum` and `maximum` |
+| `enum` | `values` |
+
+String lengths are measured after NFC normalization. `pattern` is a Python
+regular expression matched as a full value, not a substring. `markdown: true`
+also subjects the value to the `markdown` policy.
+
+The findings array supports `max_items`, `item_fields`, and
+`max_distinct_groups`. The last field bounds how many separate defect groups an
+artifact may claim; group identity remains advisory and is never trusted to
+authorize or scope a remediation.
+
+`artifact_schema` can describe additional top-level scalar fields and finding
+fields using the same vocabulary, but every declared field is required. It
+cannot currently express optional fields, nested objects, multiple array
+shapes, conditional fields, or cross-field relationships other than the
+distinct-group bound.
+
+#### Provenance and Markdown
+
+`provenance.path_must_be_changed_file` confines finding paths to the pinned
+changed-file set. `provenance.line_must_be_in_diff_hunk` confines their anchors
+to new-side lines in the pinned diff. Both ship enabled.
+
+`markdown.allowed_nodes` is an allowlist of parsed Markdown node types.
+Anything outside it rejects the complete artifact or plan. Independently,
+`markdown.link_host_allowlist` restricts explicit links and link-like GitHub
+references to exact hosts or host-and-path prefixes. The shipped list is empty,
+so links fail closed until a consumer supplies trusted destinations.
+
+Some output protections are verifier invariants rather than policy options.
+For example, raw HTML, images, unsafe URL forms, bidirectional controls, and
+unverified secret candidates cannot be enabled merely by adding a policy
+field.
+
+#### Remediation plans
+
+`plan` defines a bounded, straight-line program:
+
+| Field | Meaning |
+| --- | --- |
+| `max_steps` | Maximum number of steps in one plan. |
+| `control_flow` | Reserved for future semantics; it must currently be empty. |
+| `argument_forms` | Permitted argument forms; currently exactly `["literal"]`. |
+| `step_kinds` | Closed set of step names, their argument schemas, and whether each is a write-class effect. |
+| `ordering` | Required before/after relationships between step kinds. |
+| `max_patched_files` | Maximum distinct files affected by `patch` or `suggest` steps. |
+| `max_changed_lines` | Per-step changed-line limit. |
+| `max_changed_bytes` | Per-step UTF-8 changed-byte limit. |
+| `max_plan_changed_bytes` | Aggregate UTF-8 changed-byte limit across the plan. |
+| `path_denylist` | Glob patterns that no patch or suggestion path may match. |
+| `branch_prefix` | Namespace required for every branch the plan may push or open as a pull request. |
+| `label_allowlist` | Exact labels a plan may apply. It ships empty. |
+
+The shipped step kinds are `patch`, `suggest`, `push_branch`, `open_pr`, and
+`label`. Each kind declares a complete argument schema using the same scalar
+vocabulary as review artifacts. Step arguments cannot refer to another step's
+output, and the plan cannot branch or loop. Ordering constraints apply to every
+matching pair of steps, not merely adjacent steps.
+
+Policy is only one layer of plan authorization. The verifier also checks the
+plan against run-specific facts that do not live in `policy.json`: the pinned
+changed-file set, exact base content, commanded findings, pull request base and
+head branches, and whether a proposed delivery can be represented atomically.
+
+#### Customization boundary
+
+Today the reusable workflows accept only narrow policy overlays. The supported
+overlay is `markdown.link_host_allowlist`, derived independently in generator
+and executor jobs from trusted caller configuration. Consumers cannot provide
+an arbitrary replacement policy through a workflow input.
+
+The verifier is designed so broader customization can be added without making
+Aceiro the authority on a consumer's risk tolerance: a consumer-selected policy
+would define what that deployment accepts, and the consumer would be
+responsible for reviewing its security properties. Before exposing that
+capability, the workflow still needs a trustworthy policy-loading and pinning
+mechanism, evidence that identifies the exact effective policy, and the same
+independent derivation at generation and execution time.
+
 ## Context acquisition system
 
 The context system creates a stable description of the change under review.
