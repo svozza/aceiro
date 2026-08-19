@@ -6,6 +6,7 @@ harness bug can't silently pass (or fail) an eval for the wrong reason.
 """
 
 import importlib
+import inspect
 import json
 import os
 import re
@@ -193,6 +194,12 @@ class TestARunFailureIsThatScenariosResultNotTheSuites:
         assert result["valid"] is False
         assert result["invalid_reason"] == "harness error: RuntimeError: materialise blew up"
         assert "materialise blew up" in result["reason"]
+
+
+def test_scenarios_use_process_isolation():
+    source = inspect.getsource(run_evals.main)
+    assert "ProcessPoolExecutor" in source
+    assert "ThreadPoolExecutor" not in source
 
 
 class TestApiErrorStats:
