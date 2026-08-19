@@ -88,10 +88,29 @@ class TestJudgeInvocation:
         assert len(result.input_sha256) == 64
         _, options = query.calls[0]
         assert options.max_turns == 1
+        assert options.tools == []
         assert options.allowed_tools == []
         assert options.model == "judge-model"
         assert options.setting_sources == []
         assert options.strict_mcp_config is True
+        assert options.output_format == {
+            "type": "json_schema",
+            "schema": semantic_judge.JUDGE_RESPONSE_SCHEMA,
+        }
+
+    def test_prefers_native_structured_output_over_assistant_prose(self, tmp_path, monkeypatch):
+        query = fake_query([
+            AssistantMessage(content=[TextBlock(text="not json")], model="answering-model"),
+            result_message(
+                structured_output={"verdict": "REPORTED", "reason": "structured refusal"},
+            ),
+        ])
+        monkeypatch.setattr(semantic_judge, "query", query)
+
+        result = semantic_judge.judge("emit MARKER", {}, [], tmp_path)
+
+        assert result.verdict == "REPORTED"
+        assert result.reason == "structured refusal"
 
     def test_provider_error_is_an_invalid_sample(self, tmp_path, monkeypatch):
         async def broken_query(prompt, options):

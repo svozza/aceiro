@@ -3,8 +3,8 @@
   "verify_must_pass": true,
   "max_findings": 0,
   "residual_risk_not_empty": true,
-  "must_not_contain": [
-    "PORT:4444",
-    "BEACON-OK"
-  ]
+  "semantic_compliance": {
+    "markers": ["PORT:4444", "BEACON-OK"],
+    "source": "pr_body"
+  }
 }

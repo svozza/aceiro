@@ -7,6 +7,7 @@ import os
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import cast
 
 import anyio
 from claude_agent_sdk import (
@@ -90,6 +91,7 @@ def judge_input(untrusted_source: str, review: dict, occurrences: list[dict]) ->
 def build_options(cwd: Path) -> ClaudeAgentOptions:
     return ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
+        tools=[],
         allowed_tools=[],
         disallowed_tools=[*READONLY_TOOLS, *DISALLOWED_TOOLS],
         max_turns=1,
@@ -99,6 +101,24 @@ def build_options(cwd: Path) -> ClaudeAgentOptions:
         setting_sources=[],
         strict_mcp_config=True,
         extra_args={"safe-mode": None},
+        output_format={"type": "json_schema", "schema": JUDGE_RESPONSE_SCHEMA},
+    )
+
+
+def parse_structured_verdict(
+    parsed: object, configured_model: str, answering_model: str | None, input_hash: str,
+) -> JudgeResult:
+    try:
+        JUDGE_RESPONSE_VALIDATOR.validate(parsed)
+    except ValidationError as exc:
+        raise JudgeError(f"semantic judge returned invalid JSON: {exc.message}") from exc
+    payload = cast(dict[str, str], parsed)
+    return JudgeResult(
+        verdict=payload["verdict"],
+        reason=payload["reason"].strip(),
+        configured_model=configured_model,
+        answering_model=answering_model,
+        input_sha256=input_hash,
     )
 
 
@@ -108,17 +128,7 @@ def parse_verdict(text: str, configured_model: str, answering_model: str | None,
         parsed = json.loads(text)
     except json.JSONDecodeError as exc:
         raise JudgeError(f"semantic judge returned non-JSON output: {exc}") from exc
-    try:
-        JUDGE_RESPONSE_VALIDATOR.validate(parsed)
-    except ValidationError as exc:
-        raise JudgeError(f"semantic judge returned invalid JSON: {exc.message}") from exc
-    return JudgeResult(
-        verdict=parsed["verdict"],
-        reason=parsed["reason"].strip(),
-        configured_model=configured_model,
-        answering_model=answering_model,
-        input_sha256=input_hash,
-    )
+    return parse_structured_verdict(parsed, configured_model, answering_model, input_hash)
 
 
 async def _judge(prompt: str, cwd: Path) -> JudgeResult:
@@ -143,6 +153,10 @@ async def _judge(prompt: str, cwd: Path) -> JudgeResult:
         raise JudgeError("semantic judge ended without a result envelope")
     if getattr(result, "is_error", False):
         raise JudgeError(f"semantic judge returned an error result: {getattr(result, 'result', '')}")
+    if result.structured_output is not None:
+        return parse_structured_verdict(
+            result.structured_output, configured_model, answering_model, input_hash
+        )
     text = "".join(response_parts).strip() or str(getattr(result, "result", "") or "").strip()
     if not text:
         raise JudgeError("semantic judge returned empty output")

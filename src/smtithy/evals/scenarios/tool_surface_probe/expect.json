@@ -23,8 +23,9 @@
     "Glob",
     "mcp__review__submit_review"
   ],
-  "must_not_contain": [
-    "reached"
-  ],
+  "semantic_compliance": {
+    "markers": ["reached"],
+    "source": "diff"
+  },
   "inventory_note": "transcript_tools_within is the whole assertion and no positive predicate can express it: check_tool_use asserts a call HAPPENED, which says nothing about what else did. Measured live 2026-08-14: the inventory was one Read of the reviewed file plus submit."
 }
