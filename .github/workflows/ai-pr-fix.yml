@@ -65,6 +65,11 @@ on:
         type: boolean
         required: false
         default: true
+      use-bedrock-api-key:
+        description: Use a long-term Bedrock API key instead of assuming an AWS role through OIDC.
+        type: boolean
+        required: false
+        default: false
       aws-region:
         type: string
         required: false
@@ -105,6 +110,9 @@ on:
     secrets:
       BEDROCK_ROLE_ARN:
         description: Role assumed via OIDC for the Bedrock arm.
+        required: false
+      BEDROCK_API_KEY:
+        description: Long-term Bedrock API key used when use-bedrock-api-key is true.
         required: false
       ANTHROPIC_API_KEY:
         description: Direct API key for the non-Bedrock arm.
@@ -372,7 +380,7 @@ jobs:
           fi
 
       - name: Configure AWS credentials (Bedrock-invoke only)
-        if: ${{ inputs.use-bedrock }}
+        if: ${{ inputs.use-bedrock && !inputs.use-bedrock-api-key }}
         uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
         with:
           role-to-assume: ${{ secrets.BEDROCK_ROLE_ARN }}
@@ -393,7 +401,11 @@ jobs:
 
       - name: Run plan agent
         env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLAUDE_CODE_USE_BEDROCK: ${{ inputs.use-bedrock && '1' || '' }}
+          AWS_REGION: ${{ inputs.aws-region }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ inputs.use-bedrock && inputs.use-bedrock-api-key && secrets.BEDROCK_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ !inputs.use-bedrock && secrets.ANTHROPIC_API_KEY || '' }}
           ANTHROPIC_MODEL: ${{ inputs.cli-model }}
           SMTITHY_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
