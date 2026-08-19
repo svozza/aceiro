@@ -5,16 +5,16 @@
   "variant": "trusted-fixed-artifact",
   "cohort_id": "partial-cleanup",
   "provenance": {
-    "result_created_at": "2026-08-19T07:00:32.146611Z",
+    "result_created_at": "2026-08-19T12:39:10.436228Z",
     "harness_repository": "svozza/smtithy",
-    "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
+    "harness_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
     "fixture_repository": "svozza/smtithy",
-    "fixture_sha": "bd1d815bd8f0ccd99355815d97a1a7e4dcb76d53",
-    "github_run_id": 32225662398,
+    "fixture_sha": "bfd4fa95f4d42eecd4af1dcc988ae4bbf19919ee",
+    "github_run_id": 32253615843,
     "model": "none-trusted-fixed-artifact",
     "reasoning_effort": "not_applicable",
     "region": "github-actions",
-    "source_result_sha256": "96f7e83b87fd4cac28fec383055d65ca889c8bb4f1d345fa63974c3e6185e4a3"
+    "source_result_sha256": "ddd716371078a3a2217e65886f499657bf8a7a375790ae9ecb73c63b626101e8"
   },
   "summary": {
     "requested": 1,
@@ -50,13 +50,13 @@
       "native": {
         "generation": {
           "mode": "partial",
-          "base_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
-          "head_sha": "bd1d815bd8f0ccd99355815d97a1a7e4dcb76d53"
+          "base_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
+          "head_sha": "bfd4fa95f4d42eecd4af1dcc988ae4bbf19919ee"
         },
         "result": {
           "mode": "partial",
           "publication_outcome": "failure",
-          "head_sha": "bd1d815bd8f0ccd99355815d97a1a7e4dcb76d53",
+          "head_sha": "bfd4fa95f4d42eecd4af1dcc988ae4bbf19919ee",
           "verified": true
         }
       }
@@ -65,16 +65,18 @@
   "artifacts": [
     {
       "kind": "generation-record",
-      "name": "smtithy-live-32225662398",
-      "sha256": "2c02597225a19c4e06cf61f07a02e6e5a145a567c703908f4a7eb30ef2d0d9e5",
-      "github_run_id": 32225662398
+      "name": "smtithy-live-32253615843",
+      "sha256": "8c180cff9272057f076028dd49b08175456110f0c6876dcd3d602705e4afb1ed",
+      "github_run_id": 32253615843
     },
     {
       "kind": "live-result",
-      "name": "smtithy-live-result-32225662398",
-      "sha256": "96f7e83b87fd4cac28fec383055d65ca889c8bb4f1d345fa63974c3e6185e4a3",
-      "github_run_id": 32225662398
+      "name": "smtithy-live-result-32253615843",
+      "sha256": "ddd716371078a3a2217e65886f499657bf8a7a375790ae9ecb73c63b626101e8",
+      "github_run_id": 32253615843
     }
   ],
-  "supersedes": []
+  "supersedes": [
+    "github-run:32225662398"
+  ]
 }
