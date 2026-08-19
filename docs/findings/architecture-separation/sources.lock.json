@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "updated_at": "2026-08-19T17:26:42Z",
+  "updated_at": "2026-08-19T18:17:04Z",
   "schema": {
     "repository": "svozza/aceiro",
-    "commit": "9d821d96241f15f85d8a391e4170308c721c8c4c",
+    "commit": "cdb1dfbdf7bccb5e14265b3a6ab51df4c3becc3c",
     "path": "src/aceiro/evals/arm_result.schema.json",
     "sha256": "77992fd02356e758b4902b20fc8bb6801245f59af4d282c010035d50e605ad0e"
   },
