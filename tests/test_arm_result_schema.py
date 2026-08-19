@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
-SCHEMA = ROOT / "src/smtithy/evals/arm_result.schema.json"
+SCHEMA = ROOT / "src/aceiro/evals/arm_result.schema.json"
 
 
 def test_arm_result_schema_has_closed_top_level_and_version() -> None:

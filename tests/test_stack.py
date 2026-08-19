@@ -31,11 +31,11 @@ from plan_verify import Step
 
 from test_plan_verify import PLAN_DIFF, tree_source
 
-POLICY = json.loads((Path(__file__).parent.parent / "src" / "smtithy" / "policy.json").read_text())
+POLICY = json.loads((Path(__file__).parent.parent / "src" / "aceiro" / "policy.json").read_text())
 
 SIGNATURES = anchor_signatures(PLAN_DIFF, content_source=tree_source())
 
-BOT = "smtithy[bot]"
+BOT = "aceiro[bot]"
 
 METADATA = {
     "model": "global.anthropic.claude-opus-4-8",
@@ -310,7 +310,7 @@ class TestTheMarkerCarriesTheKey:
         )
 
 
-def patch_plan(*paths, opens_from="smtithy/fix-7"):
+def patch_plan(*paths, opens_from="aceiro/fix-7"):
     # Hand-built Steps: the fixture convenience ADR-0017 reserves to tests.
     steps = [
         Step(id=f"p{i}", kind="patch",
@@ -318,7 +318,7 @@ def patch_plan(*paths, opens_from="smtithy/fix-7"):
         for i, path in enumerate(paths or ("src/app.py",))
     ]
     return steps + [
-        Step(id="push", kind="push_branch", args={"name": "smtithy/fix-7"}),
+        Step(id="push", kind="push_branch", args={"name": "aceiro/fix-7"}),
         Step(id="open", kind="open_pr",
              args={"branch": opens_from, "title": "Fix it", "body": "the body"}),
     ]
@@ -479,12 +479,12 @@ class TestTheDelivery:
         # verified value rather than a trusted one.
         deliver()
         ref = next(c for c in calls if c[0] == "ref")
-        assert ref[2] == "smtithy/fix-7"
+        assert ref[2] == "aceiro/fix-7"
 
     def test_the_pull_request_opens_from_that_same_branch(self, calls):
         deliver()
         pull = next(c for c in calls if c[0] == "pull")
-        assert pull[2] == "smtithy/fix-7"
+        assert pull[2] == "aceiro/fix-7"
 
     def test_the_base_comes_from_the_context_not_the_plan(self, calls):
         # ADR-0009 addendum, the load-bearing one: the base is the reviewed PR's
@@ -544,7 +544,7 @@ class TestTheDelivery:
         # same fail-closed reason: pushing to one branch and opening from another
         # delivers content this plan never described.
         with pytest.raises(stack.Refusal, match="branch"):
-            deliver(steps=patch_plan(opens_from="smtithy/somewhere-else"))
+            deliver(steps=patch_plan(opens_from="aceiro/somewhere-else"))
         assert calls == []
 
     def test_an_existing_branch_is_a_stranded_delivery_naming_it(self, calls, monkeypatch):
@@ -563,7 +563,7 @@ class TestTheDelivery:
                 {}, None)
 
         monkeypatch.setattr(stack, "create_ref", exists)
-        with pytest.raises(stack.StrandedDelivery, match="smtithy/fix-7") as caught:
+        with pytest.raises(stack.StrandedDelivery, match="aceiro/fix-7") as caught:
             deliver()
         assert "commit-sha" in str(caught.value), "the orphaned commit is not named"
         assert not any(c[0] == "pull" for c in calls)
@@ -600,7 +600,7 @@ class TestTheDelivery:
                 f"https://api/repos/{repo}/pulls", 403, "Forbidden", {}, None)
 
         monkeypatch.setattr(stack, "open_pull_request", forbidden)
-        with pytest.raises(stack.StrandedDelivery, match="smtithy/fix-7") as caught:
+        with pytest.raises(stack.StrandedDelivery, match="aceiro/fix-7") as caught:
             deliver()
         message = str(caught.value)
         assert "commit-sha" in message, (

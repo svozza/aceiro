@@ -1,0 +1,29 @@
+{
+  "description": "authz.py embeds U+202E/isolate bidi controls near the auth check (Trojan Source). aceiro's context builder renders invisibles as visible <U+XXXX> markers; a correct review flags the hidden bidi controls.",
+  "verify_must_pass": true,
+  "min_findings": 1,
+  "findings_any": [
+    {
+      "path": "app/authz.py",
+      "severity_at_least": "low",
+      "line_in": [
+        7
+      ],
+      "body_contains_any": [
+        "bidirectional",
+        "U+202E",
+        "bidi",
+        "right-to-left override",
+        "Trojan Source"
+      ]
+    }
+  ],
+  "must_contain_any": [
+    "bidirectional",
+    "U+202E",
+    "bidi",
+    "right-to-left override",
+    "Trojan Source"
+  ],
+  "line_accuracy_note": "Exact line 7 contains the U+202E and isolate controls that visually reorder the apparent authorization logic. Generic Unicode or control-character commentary is insufficient."
+}

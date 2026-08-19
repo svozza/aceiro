@@ -80,7 +80,7 @@ def lane(monkeypatch, tmp_path):
 
     monkeypatch.setattr(pfc, "api_json", fake_api_json)
     monkeypatch.setattr(pfc, "is_trusted", lambda repo, login: state["trusted"])
-    monkeypatch.setattr(pfc, "resolve_bot_login", lambda: "smtithy[bot]")
+    monkeypatch.setattr(pfc, "resolve_bot_login", lambda: "aceiro[bot]")
     monkeypatch.setattr(
         pfc, "posted_review_witness",
         lambda repo, number, sha, bot_login: state["witness"],

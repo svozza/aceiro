@@ -1,4 +1,4 @@
-# Developing Smtithy
+# Developing Aceiro
 
 This guide covers local setup, deterministic tests, type checking, dependency
 updates, and model evaluation commands. See
@@ -74,7 +74,7 @@ uv run --frozen --group test \
 
 Most tests need no credentials, internet access, or external services. Tests
 that inspect a fetched evaluation fixture skip unless its local cache exists or
-`SMTITHY_FETCH_FIXTURES=1` is set.
+`ACEIRO_FETCH_FIXTURES=1` is set.
 
 See [Testing Strategy](testing.md#test-layers) for what the deterministic suite
 does and does not establish.
@@ -86,7 +86,7 @@ uv run --frozen --group typecheck \
   ty check --python .venv/bin/python
 ```
 
-`ty.toml` limits checking to the harness under `src/smtithy` and excludes the
+`ty.toml` limits checking to the harness under `src/aceiro` and excludes the
 deliberately incomplete code stored inside evaluation scenarios.
 
 Run tests and type checking before opening a pull request:
@@ -132,11 +132,11 @@ Set the common evaluation environment:
 
 ```bash
 export ANTHROPIC_MODEL=global.anthropic.claude-opus-4-8
-export SMTITHY_EVAL_JUDGE_MODEL=global.anthropic.claude-opus-4-8
+export ACEIRO_EVAL_JUDGE_MODEL=global.anthropic.claude-opus-4-8
 export DISABLE_TELEMETRY=1
 export DISABLE_ERROR_REPORTING=1
 export DISABLE_AUTOUPDATER=1
-export CLAUDE_CONFIG_DIR=/tmp/smtithy-claude-config
+export CLAUDE_CONFIG_DIR=/tmp/aceiro-claude-config
 ```
 
 Then choose one authentication method.
@@ -158,7 +158,7 @@ export AWS_PROFILE=<profile>
 ```
 
 The credentials must allow invocation of the profiles selected by
-`ANTHROPIC_MODEL` and `SMTITHY_EVAL_JUDGE_MODEL`.
+`ANTHROPIC_MODEL` and `ACEIRO_EVAL_JUDGE_MODEL`.
 
 For the direct Anthropic API:
 
@@ -166,10 +166,10 @@ For the direct Anthropic API:
 unset CLAUDE_CODE_USE_BEDROCK
 export ANTHROPIC_API_KEY=<anthropic-api-key>
 export ANTHROPIC_MODEL=<anthropic-model>
-export SMTITHY_EVAL_JUDGE_MODEL=<anthropic-model>
+export ACEIRO_EVAL_JUDGE_MODEL=<anthropic-model>
 ```
 
-`SMTITHY_EVAL_JUDGE_MODEL` is used only by review scenarios that opt into
+`ACEIRO_EVAL_JUDGE_MODEL` is used only by review scenarios that opt into
 semantic compliance grading and only when a configured marker appears. The
 default is the Bedrock Opus inference profile shown above. Set it explicitly to
 a valid first-party model name for direct Anthropic runs.
@@ -178,9 +178,9 @@ Run the review scenarios:
 
 ```bash
 uv run --frozen \
-  python src/smtithy/evals/run_evals.py \
-  --output-dir /tmp/smtithy-review-evals \
-  --cache-dir /tmp/smtithy-eval-cache \
+  python src/aceiro/evals/run_evals.py \
+  --output-dir /tmp/aceiro-review-evals \
+  --cache-dir /tmp/aceiro-eval-cache \
   --runs 1 \
   --workers 4
 ```
@@ -189,8 +189,8 @@ Run the remediation-plan scenarios:
 
 ```bash
 uv run --frozen \
-  python src/smtithy/evals/run_plan_evals.py \
-  --output-dir /tmp/smtithy-plan-evals \
+  python src/aceiro/evals/run_plan_evals.py \
+  --output-dir /tmp/aceiro-plan-evals \
   --runs 1 \
   --workers 4
 ```
@@ -222,7 +222,7 @@ from the workflow run page or with:
 ```bash
 gh run download <run-id> \
   --name evals-<run-id> \
-  --dir /tmp/smtithy-eval-artifact
+  --dir /tmp/aceiro-eval-artifact
 ```
 
 Transcripts and streams are redacted before being written, but they still
@@ -234,8 +234,8 @@ does not recognize. See the testing strategy's
 
 | Path | Contents |
 | --- | --- |
-| `src/smtithy/` | Reviewer, verifier, remediation, and GitHub integration code |
-| `src/smtithy/evals/` | Evaluation runners and fixed scenarios |
+| `src/aceiro/` | Reviewer, verifier, remediation, and GitHub integration code |
+| `src/aceiro/evals/` | Evaluation runners and fixed scenarios |
 | `tests/` | Deterministic unit, property, adversarial, and workflow-shape tests |
 | `prompts/` | Model prompts |
 | `.github/workflows/` | CI and reusable GitHub Actions workflows |

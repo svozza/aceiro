@@ -25,7 +25,7 @@ from verify import Rejection, unterminated_fence
 
 from test_plan_verify import PLAN_CHANGED_FILES, PLAN_DIFF, PLAN_TREE, tree_source
 
-POLICY = json.loads((Path(__file__).parent.parent / "src" / "smtithy" / "policy.json").read_text())
+POLICY = json.loads((Path(__file__).parent.parent / "src" / "aceiro" / "policy.json").read_text())
 
 METADATA = {
     "model": "global.anthropic.claude-opus-4-8",
@@ -34,7 +34,7 @@ METADATA = {
     "run_url": "https://github.com/o/r/actions/runs/1",
 }
 
-BOT = "smtithy[bot]"
+BOT = "aceiro[bot]"
 
 # A fingerprint of the shape SUGGESTION_MARKER_RE accepts: 16 hex digits, which
 # is what suggestion_fingerprint emits. A shorter stand-in would be rejected by
@@ -875,7 +875,7 @@ class TestRetraction:
     def test_nothing_resolves_a_conversation(self):
         # The GraphQL resolve mutation must appear nowhere in the harness: the
         # bot states only what it knows.
-        source = (Path(__file__).parent.parent / "src" / "smtithy").glob("*.py")
+        source = (Path(__file__).parent.parent / "src" / "aceiro").glob("*.py")
         for path in source:
             assert "resolveReviewThread" not in path.read_text(), path
 

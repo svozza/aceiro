@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy" / "evals"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "aceiro" / "evals"))
 
 import cc_loop  # noqa: E402
 import run_plan_evals  # noqa: E402
@@ -36,7 +36,7 @@ from test_plan_verify import (  # noqa: E402
 
 def open_pr_step(step_id="s9"):
     return {"id": step_id, "kind": "open_pr",
-            "args": {"branch": "smtithy/fix-x", "title": "t", "body": "the fix"}}
+            "args": {"branch": "aceiro/fix-x", "title": "t", "body": "the fix"}}
 
 
 def label_step(step_id="s8"):

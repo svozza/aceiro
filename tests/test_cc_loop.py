@@ -19,7 +19,7 @@ from artifact import build_artifact_schema, redact_secrets, redact_text
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 from conftest import POLICY
 
-HARNESS_DIR = Path(__file__).parent.parent / "src" / "smtithy"
+HARNESS_DIR = Path(__file__).parent.parent / "src" / "aceiro"
 # base_root: the trusted pre-change tree the model may read. Upstream this was
 # the staging repo's root, three levels above .github/scripts/ai_review. Here the
 # harness IS the repo, so the repo root is base_root -- and since cc_loop no

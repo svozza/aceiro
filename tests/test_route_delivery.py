@@ -64,9 +64,9 @@ def patch(step_id="s0", path="src/app.py"):
 
 def chain():
     return [
-        {"id": "s8", "kind": "push_branch", "args": {"name": "smtithy/fix-x"}},
+        {"id": "s8", "kind": "push_branch", "args": {"name": "aceiro/fix-x"}},
         {"id": "s9", "kind": "open_pr",
-         "args": {"branch": "smtithy/fix-x", "title": "t", "body": "b"}},
+         "args": {"branch": "aceiro/fix-x", "title": "t", "body": "b"}},
     ]
 
 

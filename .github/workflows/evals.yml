@@ -126,7 +126,7 @@ env:
   AWS_REGION: eu-west-1
   BEDROCK_INFERENCE_PROFILE: global.anthropic.claude-opus-4-8
   BEDROCK_FOUNDATION_MODEL: anthropic.claude-opus-4-8
-  SMTITHY_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8
+  ACEIRO_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8
 
 jobs:
   # Resolves the author's REAL repository permission so the jobs below can branch
@@ -167,7 +167,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: python src/smtithy/author_trust.py
+        run: python src/aceiro/author_trust.py
 
   eval_approve:
     # The human gate. Authors with write-or-above on a non-draft pull request
@@ -334,7 +334,7 @@ jobs:
                 "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 "Resource": [
                   "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}",
-                  "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ env.SMTITHY_EVAL_JUDGE_MODEL }}",
+                  "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ env.ACEIRO_EVAL_JUDGE_MODEL }}",
                   "arn:aws:bedrock:*::foundation-model/${{ inputs.model == 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' && 'anthropic.claude-sonnet-4-5-20250929-v1:0' || env.BEDROCK_FOUNDATION_MODEL }}",
                   "arn:aws:bedrock:*::foundation-model/${{ env.BEDROCK_FOUNDATION_MODEL }}"
                 ]
@@ -350,7 +350,7 @@ jobs:
       # there as belt and braces over the role's own policy; against code that can
       # re-assume, it is neither.
       #
-      # smtithy's role grants two Bedrock actions and nothing else
+      # aceiro's role grants two Bedrock actions and nothing else
       # (infra/oidc-role.yaml), so nothing leaks here today. The exposure is a
       # CONSUMER supplying a wider role and relying on the inline policy, which
       # is exactly what that comment invites. Shadowed rather than argued about:

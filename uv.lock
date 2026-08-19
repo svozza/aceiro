@@ -584,7 +584,7 @@ wheels = [
 ]
 
 [[package]]
-name = "smtithy"
+name = "aceiro"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [

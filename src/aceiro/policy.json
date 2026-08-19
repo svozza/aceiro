@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "description": "Declarative safety policy for AI review artifacts. verify.py interprets this; the file's sha256 is stamped into the transcript and posted comment. This is the DEFAULT policy, and it is deliberately fail-closed: link_host_allowlist ships empty, so every link in a finding rejects until a consumer names the hosts it trusts. Entries are host+path prefixes: a trailing slash means prefix match (an org path under a forge, say), and a path-less entry matches that host and everything under it. Never list a host you do not control. plan.label_allowlist ships empty on the same principle, so a plan cannot apply any label until a consumer names the ones it accepts — a label is a control surface (this repo's own evals workflow triggers on one). plan.branch_prefix confines every branch a plan may push to a harness-owned namespace, so the push target cannot be the default branch or the contributor's own head branch. The bounding caps come in pairs because a line count and a byte count bound different things: max_changed_lines/max_changed_bytes per step, max_plan_changed_bytes over the whole plan, since a minified or generated line is one line carrying arbitrary content. findings.item_fields.group is bounded and never believed (ADR-0013): same-valued findings CLAIM to be one defect, whether that is true is a question no verifier can answer, and the field is advisory prose to the human choosing what to command — no code in the fix lane may read it. findings.max_distinct_groups bounds the PARTITION rather than the values: it is how finely one artifact may split its findings, where group.minimum/maximum bound each value. It must stay strictly BELOW min(findings.max_items, group.maximum - group.minimum + 1) to be a bound at all \u2014 at or above that number no artifact can reach it and the cap is vacuous, which is how it shipped at 10. So it moves whenever max_items or the group range moves, and a test asserts the shipped value is satisfiable so a future bump cannot silently re-vacate it.",
+  "artifact_schema": {
+    "summary": { "type": "string", "min_length": 1, "max_length": 4000, "markdown": true },
+    "findings": {
+      "type": "array",
+      "max_items": 10,
+      "item_fields": {
+        "path": {
+          "type": "string",
+          "min_length": 1,
+          "max_length": 500,
+          "pattern": "\\.?[A-Za-z0-9][A-Za-z0-9._/-]*"
+        },
+        "line": { "type": "integer", "minimum": 1 },
+        "severity": { "type": "enum", "values": ["critical", "high", "medium", "low"] },
+        "group": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "title": { "type": "string", "min_length": 1, "max_length": 120, "markdown": true, "pattern": "[^\\r\\n]+" },
+        "body": { "type": "string", "min_length": 1, "max_length": 2000, "markdown": true }
+      },
+      "max_distinct_groups": 4
+    },
+    "residual_risk": { "type": "string", "min_length": 0, "max_length": 2000, "markdown": true }
+  },
+  "provenance": {
+    "path_must_be_changed_file": true,
+    "line_must_be_in_diff_hunk": true
+  },
+  "markdown": {
+    "allowed_nodes": [
+      "text",
+      "paragraph",
+      "inline",
+      "em",
+      "strong",
+      "code_inline",
+      "code_block",
+      "fence",
+      "bullet_list",
+      "ordered_list",
+      "list_item",
+      "softbreak",
+      "hardbreak",
+      "s"
+    ],
+    "link_host_allowlist": []
+  },
+  "plan": {
+    "max_steps": 20,
+    "control_flow": [],
+    "argument_forms": ["literal"],
+    "step_kinds": {
+      "patch": {
+        "write_class": false,
+        "args": {
+          "path": { "type": "string", "min_length": 1, "max_length": 500, "pattern": "\\.?[A-Za-z0-9][A-Za-z0-9._/-]*" },
+          "old": { "type": "string", "min_length": 1, "max_length": 20000 },
+          "new": { "type": "string", "min_length": 0, "max_length": 20000 }
+        }
+      },
+      "suggest": {
+        "write_class": false,
+        "args": {
+          "path": { "type": "string", "min_length": 1, "max_length": 500, "pattern": "\\.?[A-Za-z0-9][A-Za-z0-9._/-]*" },
+          "line": { "type": "integer", "minimum": 1 },
+          "old": { "type": "string", "min_length": 1, "max_length": 20000 },
+          "new": { "type": "string", "min_length": 0, "max_length": 20000 },
+          "note": { "type": "string", "min_length": 1, "max_length": 1000, "markdown": true }
+        }
+      },
+      "push_branch": {
+        "write_class": true,
+        "args": {
+          "name": { "type": "string", "min_length": 1, "max_length": 240, "pattern": "[A-Za-z0-9][A-Za-z0-9._/-]*" }
+        }
+      },
+      "open_pr": {
+        "write_class": true,
+        "args": {
+          "branch": { "type": "string", "min_length": 1, "max_length": 240, "pattern": "[A-Za-z0-9][A-Za-z0-9._/-]*" },
+          "title": { "type": "string", "min_length": 1, "max_length": 120, "markdown": true, "pattern": "[^\\r\\n]+" },
+          "body": { "type": "string", "min_length": 1, "max_length": 4000, "markdown": true }
+        }
+      },
+      "label": {
+        "write_class": true,
+        "args": {
+          "name": { "type": "string", "min_length": 1, "max_length": 50, "pattern": "[A-Za-z0-9][A-Za-z0-9 ._/-]*" }
+        }
+      }
+    },
+    "ordering": [
+      { "before": "patch", "after": "push_branch" },
+      { "before": "push_branch", "after": "open_pr" }
+    ],
+    "max_patched_files": 3,
+    "max_changed_lines": 120,
+    "max_changed_bytes": 8000,
+    "max_plan_changed_bytes": 16000,
+    "path_denylist": [
+      ".github/**",
+      "**/*.pem",
+      "**/*.key"
+    ],
+    "branch_prefix": "aceiro/",
+    "label_allowlist": []
+  },
+  "secret_scan_patterns": [
+    "AKIA[0-9A-Z]{16}",
+    "ASIA[0-9A-Z]{16}",
+    "gh[pousr]_[A-Za-z0-9]{20,}",
+    "github_pat_[A-Za-z0-9_]{20,}",
+    "eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{10,}",
+    "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+    "xox[baprs]-[A-Za-z0-9-]{10,}",
+    "(?i:aws_secret_access_key)\\s*[=:]\\s*[A-Za-z0-9/+=]{30,}"
+  ]
+}

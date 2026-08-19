@@ -1,4 +1,4 @@
-name: Smtithy live posting test
+name: Aceiro live posting test
 
 on:
   pull_request_target:
@@ -7,7 +7,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: smtithy-live-posting-${{ github.event.pull_request.number }}
+  group: aceiro-live-posting-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -64,7 +64,7 @@ jobs:
             > bundle/generation-record.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: smtithy-live-${{ github.run_id }}
+          name: aceiro-live-${{ github.run_id }}
           path: bundle/
           if-no-files-found: error
           retention-days: 30
@@ -93,7 +93,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: smtithy-live-${{ github.run_id }}
+          name: aceiro-live-${{ github.run_id }}
           path: ${{ runner.temp }}/bundle
       - name: Post through trusted executor
         id: publish
@@ -106,17 +106,17 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           MODE: ${{ needs.generate.outputs.mode }}
-          MARKER: <!-- smtithy-live-${{ github.run_id }} -->
+          MARKER: <!-- aceiro-live-${{ github.run_id }} -->
         run: |
           runner_mode=normal
           [[ "$MODE" == partial ]] && runner_mode=partial
-          python src/smtithy/evals/run_live_post.py \
+          python src/aceiro/evals/run_live_post.py \
             --mode "$runner_mode" \
             --artifact-dir "$RUNNER_TEMP/bundle" \
-            --policy src/smtithy/policy.json \
+            --policy src/aceiro/policy.json \
             --prompt prompts/ai-pr-review.md \
             --marker "$MARKER" \
-            --title "Smtithy live posting test"
+            --title "Aceiro live posting test"
       - name: Verify observed GitHub state
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,7 +124,7 @@ jobs:
           OUTCOME: ${{ steps.publish.outcome }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          MARKER: <!-- smtithy-live-${{ github.run_id }} -->
+          MARKER: <!-- aceiro-live-${{ github.run_id }} -->
         run: |
           comments="$(
             gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
@@ -154,7 +154,7 @@ jobs:
             > live-result.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: smtithy-live-result-${{ github.run_id }}
+          name: aceiro-live-result-${{ github.run_id }}
           path: live-result.json
           if-no-files-found: error
           retention-days: 30

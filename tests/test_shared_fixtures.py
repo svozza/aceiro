@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
-MANIFEST = ROOT / "src/smtithy/evals/shared_fixtures.json"
+MANIFEST = ROOT / "src/aceiro/evals/shared_fixtures.json"
 
 
 def test_shared_fixture_manifest_is_data_only_and_resolves() -> None:

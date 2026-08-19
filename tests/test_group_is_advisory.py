@@ -28,7 +28,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-HARNESS_DIR = REPO_ROOT / "src" / "smtithy"
+HARNESS_DIR = REPO_ROOT / "src" / "aceiro"
 POLICY_PATH = HARNESS_DIR / "policy.json"
 FIX_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ai-pr-fix.yml"
 
@@ -61,9 +61,9 @@ def _entry_points() -> list[str]:
     it named 8 modules under a comment claiming EVERY module between a `/fix`
     command and a delivery, and the closure below is 19.
     """
-    found = sorted(set(re.findall(r"python\s+(?:\S*/)?src/smtithy/(\w+)\.py", FIX_WORKFLOW.read_text())))
+    found = sorted(set(re.findall(r"python\s+(?:\S*/)?src/aceiro/(\w+)\.py", FIX_WORKFLOW.read_text())))
     assert found, (
-        f"no `python src/smtithy/*.py` step found in {FIX_WORKFLOW.name}; the fix lane "
+        f"no `python src/aceiro/*.py` step found in {FIX_WORKFLOW.name}; the fix lane "
         "cannot be derived from the workflow and this whole file would scan nothing"
     )
     return found

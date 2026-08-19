@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "aceiro"))
 
 import author_trust  # noqa: E402
 import environment_gate  # noqa: E402

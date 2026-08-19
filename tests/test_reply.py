@@ -30,7 +30,7 @@ METADATA_RUN = "https://github.com/o/r/actions/runs/99"
 def posted(monkeypatch):
     """Capture what reaches upsert_comment instead of GitHub."""
     calls = []
-    monkeypatch.setattr(reply, "resolve_bot_login", lambda: "smtithy[bot]")
+    monkeypatch.setattr(reply, "resolve_bot_login", lambda: "aceiro[bot]")
     monkeypatch.setattr(
         reply, "upsert_comment",
         lambda repo, pr, body, marker, *, bot_login: calls.append(
@@ -283,10 +283,10 @@ class TestTheEmittedOutputs:
          "src/a{c}b.py"),
         ("push_branch name",
          lambda policy: policy["plan"]["step_kinds"]["push_branch"]["args"]["name"]["pattern"],
-         "smtithy/a{c}b"),
+         "aceiro/a{c}b"),
         ("open_pr branch",
          lambda policy: policy["plan"]["step_kinds"]["open_pr"]["args"]["branch"]["pattern"],
-         "smtithy/a{c}b"),
+         "aceiro/a{c}b"),
     ]
 
     @pytest.mark.parametrize("label,pattern_of,template",
@@ -298,7 +298,8 @@ class TestTheEmittedOutputs:
         string none of the interpolated grammars can write.
 
         Measured for the path half: the delimiter was `SMTITHY_DECLINE_EOF`, the
-        policy path pattern admits it as a substring, so `src/SMTITHY_DECLINE_EOF.py`
+        policy path pattern admitted it as a substring, so
+        `src/SMTITHY_DECLINE_EOF.py`
         refused the emit and left the commander with no comment — the "declined and
         told nobody" state ADR-0014 exists to prevent, reached through the mechanism
         built to prevent it, and self-serve since the contributor controls both the
@@ -326,13 +327,13 @@ class TestTheEmittedOutputs:
             )
 
     @pytest.mark.parametrize("hostile", [
-        "SMTITHY_REPLY_EOF",
-        "src/SMTITHY_REPLY_EOF.py",
-        "tests/fixtures/SMTITHY_REPLY_EOF_data.json",
+        "ACEIRO_REPLY_EOF",
+        "src/ACEIRO_REPLY_EOF.py",
+        "tests/fixtures/ACEIRO_REPLY_EOF_data.json",
         # The original measured suppressors, kept from before the rename: legal
         # paths carrying the delimiter's WORD must never suppress again whatever
         # the word currently is.
-        "src/SMTITHY_DECLINE_EOF.py",
+        "src/ACEIRO_DECLINE_EOF.py",
     ])
     def test_the_reproduced_suppressing_paths_no_longer_suppress(
             self, tmp_path, monkeypatch, hostile):

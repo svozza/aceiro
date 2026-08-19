@@ -1,16 +1,16 @@
 {
   "version": 1,
-  "updated_at": "2026-08-19T15:08:32Z",
+  "updated_at": "2026-08-19T17:26:42Z",
   "schema": {
-    "repository": "svozza/smtithy",
+    "repository": "svozza/aceiro",
     "commit": "3efcdf56b1e01fb67b154160bb6f6e641c03348f",
-    "path": "src/smtithy/evals/arm_result.schema.json",
-    "sha256": "3a06bbdbfc16365d25b528946b7d2eb9d7cf313cb821a8e5979fe66b67656223"
+    "path": "src/aceiro/evals/arm_result.schema.json",
+    "sha256": "77992fd02356e758b4902b20fc8bb6801245f59af4d282c010035d50e605ad0e"
   },
   "arms": [
     {
-      "arm_id": "smtithy",
-      "repository": "svozza/smtithy",
+      "arm_id": "aceiro",
+      "repository": "svozza/aceiro",
       "commit": "3dab81eb8fbef8742b5aef06f35c5e5f9f37f5c5",
       "index_path": "results/index.json",
       "index_sha256": "3ec125da64504f3f54539823e6a7ba7baf7f1563cbb970734da792c768dfc509"

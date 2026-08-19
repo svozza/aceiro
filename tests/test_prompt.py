@@ -31,7 +31,7 @@ from conftest import POLICY
 from verify import Rejection, check_schema
 
 PROMPT = PROMPT_PATH.read_text()
-SHIPPED_POLICY = json.loads((Path(__file__).parent.parent / "src" / "smtithy" / "policy.json").read_text())
+SHIPPED_POLICY = json.loads((Path(__file__).parent.parent / "src" / "aceiro" / "policy.json").read_text())
 EXAMPLES = re.findall(r"```json\n(.*?)```", PROMPT, re.S)
 
 

@@ -365,7 +365,7 @@ class TestSecretsSplitAcrossArgs:
             anchored_patch(),
             push_step("s1"),
             {"id": "s2", "kind": "open_pr",
-             "args": {"branch": "smtithy/fix-x", "title": "t",
+             "args": {"branch": "aceiro/fix-x", "title": "t",
                       "body": "uses AKIA**IOSF**ODNN7EXAMPLE internally"}},
         )
         rejected(plan)
@@ -380,7 +380,7 @@ class TestSecretsSplitAcrossArgs:
             anchored_patch(),
             push_step("s1"),
             {"id": "s2", "kind": "open_pr",
-             "args": {"branch": "smtithy/fix-x", "title": "t", "body": body}},
+             "args": {"branch": "aceiro/fix-x", "title": "t", "body": body}},
         )
 
     def test_entity_encoded_secret_in_an_open_pr_link_destination_rejects(self):
@@ -416,7 +416,7 @@ class TestOpenPrTitleIsPostedText:
             anchored_patch(),
             push_step("s1"),
             {"id": "s2", "kind": "open_pr",
-             "args": {"branch": "smtithy/fix-x", "title": title, "body": "the fix"}},
+             "args": {"branch": "aceiro/fix-x", "title": title, "body": "the fix"}},
         )
 
     def test_a_bidi_override_in_the_title_rejects(self):

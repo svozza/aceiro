@@ -1,6 +1,6 @@
 # Testing Strategy
 
-Smtithy uses separate test layers because deterministic code correctness and
+Aceiro uses separate test layers because deterministic code correctness and
 model behavior are different problems. A green unit suite cannot establish that
 a model follows the review contract, while a green model run cannot establish
 that the verifier fails closed for every malformed input.
@@ -38,7 +38,7 @@ uv run --frozen --group typecheck \
 ### Review evaluations
 
 Both evaluation suites require the model credentials and environment described
-in [Developing Smtithy](development.md#run-model-evaluations). They make real,
+in [Developing Aceiro](development.md#run-model-evaluations). They make real,
 non-deterministic model calls and may incur provider charges.
 
 `run_evals.py` invokes the real review generator against fixed pull request
@@ -58,9 +58,9 @@ Run the review suite:
 
 ```bash
 uv run --frozen \
-  python src/smtithy/evals/run_evals.py \
-  --output-dir /tmp/smtithy-review-evals \
-  --cache-dir /tmp/smtithy-eval-cache \
+  python src/aceiro/evals/run_evals.py \
+  --output-dir /tmp/aceiro-review-evals \
+  --cache-dir /tmp/aceiro-eval-cache \
   --runs 1 \
   --workers 4
 ```
@@ -110,8 +110,8 @@ Run the remediation suite:
 
 ```bash
 uv run --frozen \
-  python src/smtithy/evals/run_plan_evals.py \
-  --output-dir /tmp/smtithy-plan-evals \
+  python src/aceiro/evals/run_plan_evals.py \
+  --output-dir /tmp/aceiro-plan-evals \
   --runs 1 \
   --workers 4
 ```
@@ -299,7 +299,7 @@ Download CI evidence with:
 ```bash
 gh run download <run-id> \
   --name evals-<run-id> \
-  --dir /tmp/smtithy-eval-artifact
+  --dir /tmp/aceiro-eval-artifact
 ```
 
 Redaction happens before transcript and stream files are written. The artifact
@@ -309,7 +309,7 @@ can still contain reviewed source content, so inspect it before sharing.
 
 Redaction is defense in depth, not removal of all repository content.
 
-Before the review model runs, Smtithy scans contributor-controlled pull request
+Before the review model runs, Aceiro scans contributor-controlled pull request
 metadata, the diff, and text files in the quarantined PR head with
 `detect-secrets`. Enabled detectors cover common cloud, source-control, package
 registry, messaging, payment, private-key, JWT, and secret-keyword formats, plus
@@ -324,7 +324,7 @@ The original values remain only in memory as run-scoped taints. The verifier
 rejects model output that reproduces a tainted value, and the same values are
 used when redacting transcripts and captured streams.
 
-Before a transcript record or model-stream line is written, Smtithy scrubs:
+Before a transcript record or model-stream line is written, Aceiro scrubs:
 
 - exact run-scoped tainted values detected in the contributor input;
 - values matching `secret_scan_patterns` in the effective policy, including
@@ -351,4 +351,4 @@ Review it before sharing it outside the repository's normal Actions audience.
 
 Durable redacted experiment records owned by this repository live under
 `results/` and follow the schema and ownership rules described in
-[Smtithy experiment results](../results/README.md).
+[Aceiro experiment results](../results/README.md).
