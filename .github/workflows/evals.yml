@@ -254,6 +254,16 @@ jobs:
           version: "0.12.3"
           enable-cache: false
 
+      - name: Resolve the trusted harness source path
+        working-directory: trusted-base
+        run: |
+          if [ -d src/aceiro ]; then
+            HARNESS_ROOT=src/aceiro
+          else
+            HARNESS_ROOT=src/smtithy
+          fi
+          echo "HARNESS_ROOT=$HARNESS_ROOT" >> "$GITHUB_ENV"
+
       # ADR-0006: asserted INSIDE the gated job, before any credential exists AND
       # before the PR's code is on disk. A missing or protection-free environment
       # makes eval_approve succeed automatically. Stdlib-only, so it needs no
@@ -268,7 +278,7 @@ jobs:
           GATE_ENVIRONMENT: ai-pr-review
           AUTHOR_TRUSTED: ${{ needs.eval_author_trust.outputs.trusted }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
-        run: python src/smtithy/environment_gate.py
+        run: python "$HARNESS_ROOT/environment_gate.py"
 
       - name: Check out the PR head (the code under test)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -285,6 +295,17 @@ jobs:
           # Do not wipe trusted-base/ while cleaning the workspace root; the PR
           # tree still lands in the root, where every step below expects it.
           clean: false
+      - name: Resolve the PR-head harness source path
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        run: |
+          if [ -d src/aceiro ]; then
+            HARNESS_ROOT=src/aceiro
+          else
+            HARNESS_ROOT=src/smtithy
+          fi
+          echo "HARNESS_ROOT=$HARNESS_ROOT" >> "$GITHUB_ENV"
       # The generator (claude-agent-sdk) installs here too: the SDK wheel
       # bundles the Claude Code CLI binary, so the lock below covers both.
       # tests/test_cc_loop.py asserts the bundled CLI version, so a wheel that
@@ -359,7 +380,7 @@ jobs:
           WORKERS: ${{ inputs.workers || '4' }}
         run: |
           set -euo pipefail
-          uv run --frozen python src/smtithy/evals/run_evals.py \
+          uv run --frozen python "$HARNESS_ROOT/evals/run_evals.py" \
             --output-dir "$RUNNER_TEMP/eval-output" \
             --cache-dir "$RUNNER_TEMP/eval-base-cache" \
             --runs "$RUNS" \
@@ -387,7 +408,7 @@ jobs:
           WORKERS: ${{ inputs.workers || '4' }}
         run: |
           set -euo pipefail
-          uv run --frozen python src/smtithy/evals/run_plan_evals.py \
+          uv run --frozen python "$HARNESS_ROOT/evals/run_plan_evals.py" \
             --output-dir "$RUNNER_TEMP/plan-eval-output" \
             --runs "$RUNS" \
             --workers "$WORKERS"

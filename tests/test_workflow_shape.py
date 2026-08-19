@@ -507,6 +507,39 @@ class TestNoUntrustedInfluencedCache:
                         )
 
 
+class TestEvalHarnessSourceTransition:
+    """The base workflow must run both the old and renamed PR-head layouts."""
+
+    def test_the_trusted_gate_resolves_both_source_paths(self):
+        text = (WORKFLOWS / "evals.yml").read_text()
+        resolver = text.split("- name: Resolve the trusted harness source path", 1)[1]
+        resolver = resolver.split("\n      - name:", 1)[0]
+        assert "working-directory: trusted-base" in resolver
+        assert "if [ -d src/aceiro ]; then" in resolver
+        assert "HARNESS_ROOT=src/aceiro" in resolver
+        assert "HARNESS_ROOT=src/smtithy" in resolver
+        assert 'echo "HARNESS_ROOT=$HARNESS_ROOT" >> "$GITHUB_ENV"' in resolver
+
+        gate = text.split("- name: Assert the approval gate was real", 1)[1]
+        gate = gate.split("\n      - name:", 1)[0]
+        assert 'python "$HARNESS_ROOT/environment_gate.py"' in gate
+
+    def test_the_pr_head_resolves_both_source_paths_for_both_eval_suites(self):
+        text = (WORKFLOWS / "evals.yml").read_text()
+        checkout_index = text.index("- name: Check out the PR head (the code under test)")
+        resolver_index = text.index("- name: Resolve the PR-head harness source path")
+        assert checkout_index < resolver_index
+
+        resolver = text[resolver_index:].split("\n      - name:", 1)[0]
+        assert "if [ -d src/aceiro ]; then" in resolver
+        assert "HARNESS_ROOT=src/aceiro" in resolver
+        assert "HARNESS_ROOT=src/smtithy" in resolver
+        assert 'echo "HARNESS_ROOT=$HARNESS_ROOT" >> "$GITHUB_ENV"' in resolver
+
+        assert 'python "$HARNESS_ROOT/evals/run_evals.py"' in text
+        assert 'python "$HARNESS_ROOT/evals/run_plan_evals.py"' in text
+
+
 def job_names(text: str) -> list[str]:
     """Top-level keys under `jobs:` — two-space indented, colon-terminated."""
     names, in_jobs = [], False
