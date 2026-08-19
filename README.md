@@ -1,8 +1,5 @@
 # Aceiro
 
-Aceiro was formerly named Smtithy. Historical ADRs, findings, experiment
-records, and run references retain the name that was current when recorded.
-
 Aceiro is an AI code reviewer for GitHub pull requests that treats every model
 response as untrusted.
 
@@ -321,3 +318,6 @@ Interfaces may still change.
 - [Architecture decisions](docs/adr/)
 - [Research findings](docs/findings/)
 - [Experiment results](results/)
+
+Aceiro was named Smtithy during early development. Historical records may
+retain the name that was current when they were created.

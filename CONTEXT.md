@@ -1,7 +1,5 @@
 # Aceiro
 
-Aceiro was formerly named Smtithy. Historical records keep the original name.
-
 A harness for agents that are never trusted, only verified: a model proposes,
 a deterministic checker finds no counterexample, and a trusted executor acts.
 The AI PR reviewer is the first application; review-and-remediate, where the
