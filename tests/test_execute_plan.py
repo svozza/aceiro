@@ -50,11 +50,11 @@ def patch(step_id="s0", path="src/app.py", old="def load(path):\n"):
             "args": {"path": path, "old": old, "new": "def load(path=None):\n"}}
 
 
-def push(step_id="s8", name="smtithy/fix-x"):
+def push(step_id="s8", name="aceiro/fix-x"):
     return {"id": step_id, "kind": "push_branch", "args": {"name": name}}
 
 
-def open_pr(step_id="s9", branch="smtithy/fix-x"):
+def open_pr(step_id="s9", branch="aceiro/fix-x"):
     return {"id": step_id, "kind": "open_pr",
             "args": {"branch": branch, "title": "Fix load()", "body": "Fixes the finding."}}
 
@@ -325,7 +325,7 @@ def stub_delivery(monkeypatch):
     """
     monkeypatch.setattr(execute_plan, "reconcile_suggestions",
                         lambda *args, **kwargs: None)
-    monkeypatch.setattr(execute_plan, "resolve_bot_login", lambda: "smtithy[bot]")
+    monkeypatch.setattr(execute_plan, "resolve_bot_login", lambda: "aceiro[bot]")
     monkeypatch.setattr(execute_plan, "read_model_stamp", lambda artifact_dir: "test-model")
     monkeypatch.setenv("RUN_URL", "https://github.com/o/r/actions/runs/1")
 
@@ -393,10 +393,10 @@ class TestMain:
         # no production caller: head_branch defaulted to None here and in
         # plan_loop, so a contributor branch legally named inside the namespace
         # (which the addendum names as the case) was a legal push target.
-        monkeypatch.setenv("HEAD_REF", "smtithy/theirs")
+        monkeypatch.setenv("HEAD_REF", "aceiro/theirs")
         (main_env / "plan.json").write_text(json.dumps(
-            {"steps": [patch(), push(name="smtithy/theirs"),
-                       open_pr(branch="smtithy/theirs")]}))
+            {"steps": [patch(), push(name="aceiro/theirs"),
+                       open_pr(branch="aceiro/theirs")]}))
         stub_pr(monkeypatch, pr_payload())
         with pytest.raises(SystemExit):
             execute_plan.main()
@@ -661,7 +661,7 @@ def delivery_env(main_env, monkeypatch):
     of comment ownership.
     """
     (main_env / "run_metadata.json").write_text(json.dumps({"model": "global.anthropic.claude-opus-4-8"}))
-    monkeypatch.setattr(execute_plan, "resolve_bot_login", lambda: "smtithy[bot]")
+    monkeypatch.setattr(execute_plan, "resolve_bot_login", lambda: "aceiro[bot]")
     monkeypatch.setenv("RUN_URL", "https://github.com/o/r/actions/runs/1")
     return main_env
 
@@ -709,7 +709,7 @@ class TestSuggestionDelivery:
     def test_ownership_uses_the_resolved_bot_login(self, delivery_env, posted, monkeypatch):
         stub_pr(monkeypatch, pr_payload())
         execute_plan.main()
-        assert posted[0]["bot_login"] == "smtithy[bot]"
+        assert posted[0]["bot_login"] == "aceiro[bot]"
 
     def test_a_push_landing_while_delivering_fails_the_run(self, delivery_env, posted, monkeypatch, capsys):
         # The pre-check and the write are not atomic, and several live API calls
@@ -1081,7 +1081,7 @@ class TestStackedPrDelivery:
         def stranded(*args, **kwargs):
             raise execute_plan.StrandedDelivery(
                 "The repository does not permit GitHub Actions to open pull requests, so the "
-                "fix was pushed to 'smtithy/fix-x' at abc123 and no follow-up pull request "
+                "fix was pushed to 'aceiro/fix-x' at abc123 and no follow-up pull request "
                 "could be opened for it"
             )
 
@@ -1099,7 +1099,7 @@ class TestStackedPrDelivery:
         )
         assert written.split("reply_kind<<")[1].splitlines()[1] == "declined"
         # The state to clean up must reach the comment, not only the log.
-        assert "smtithy/fix-x" in written
+        assert "aceiro/fix-x" in written
         assert "abc123" in written
         assert "refused at delivery" in capsys.readouterr().err
 
@@ -1511,7 +1511,7 @@ class TestAnEmptyGateInputIsRefused:
         # branch must not be delivered because HEAD_REF happened to be empty.
         monkeypatch.setenv("HEAD_REF", "")
         (main_env / "plan.json").write_text(json.dumps(
-            {"steps": [patch(), push(name="smtithy/theirs"), open_pr(branch="smtithy/theirs")]}))
+            {"steps": [patch(), push(name="aceiro/theirs"), open_pr(branch="aceiro/theirs")]}))
         with pytest.raises(SystemExit):
             execute_plan.main()
         assert "HEAD_REF" in capsys.readouterr().err

@@ -584,15 +584,15 @@ class TestTheTreeWriteSequence:
 
     def test_a_ref_is_created_fully_qualified(self, replies):
         # The API wants refs/heads/NAME; sending the bare branch name creates a
-        # ref literally called "smtithy/fix-x" outside refs/heads, which no pull
+        # ref literally called "aceiro/fix-x" outside refs/heads, which no pull
         # request can open from.
         calls, queue = replies
-        queue.append({"ref": "refs/heads/smtithy/fix-x"})
-        github_api.create_ref("o/r", "smtithy/fix-x", "commit-sha")
+        queue.append({"ref": "refs/heads/aceiro/fix-x"})
+        github_api.create_ref("o/r", "aceiro/fix-x", "commit-sha")
 
         assert calls[0]["path"] == "/repos/o/r/git/refs"
         assert calls[0]["method"] == "POST"
-        assert calls[0]["payload"] == {"ref": "refs/heads/smtithy/fix-x", "sha": "commit-sha"}
+        assert calls[0]["payload"] == {"ref": "refs/heads/aceiro/fix-x", "sha": "commit-sha"}
 
     def test_none_of_the_writes_are_retried(self, monkeypatch, no_sleep):
         # Every call in this sequence is a POST, and a retried one has an
@@ -604,7 +604,7 @@ class TestTheTreeWriteSequence:
             lambda: github_api.create_blob("o/r", b"x"),
             lambda: github_api.create_tree("o/r", "t", {"a": "b"}),
             lambda: github_api.create_commit("o/r", "m", tree="t", parent="p"),
-            lambda: github_api.create_ref("o/r", "smtithy/x", "c"),
+            lambda: github_api.create_ref("o/r", "aceiro/x", "c"),
         ):
             attempts = []
 
@@ -624,21 +624,21 @@ class TestTheTreeWriteSequence:
         # the default branch knowingly broken in between.
         calls, queue = replies
         queue.append({"number": 99, "html_url": "https://github.com/o/r/pull/99"})
-        pr = github_api.open_pull_request("o/r", head="smtithy/fix-x", base="feature/x",
+        pr = github_api.open_pull_request("o/r", head="aceiro/fix-x", base="feature/x",
                                           title="Fix the thing", body="the body")
 
         assert pr["number"] == 99
         assert calls[0]["path"] == "/repos/o/r/pulls"
         assert calls[0]["method"] == "POST"
         assert calls[0]["payload"] == {
-            "head": "smtithy/fix-x", "base": "feature/x",
+            "head": "aceiro/fix-x", "base": "feature/x",
             "title": "Fix the thing", "body": "the body",
         }
 
     def test_open_pull_request_has_no_default_base(self):
         # Keyword-only and required, so no caller can omit it and get a guess.
         with pytest.raises(TypeError):
-            github_api.open_pull_request("o/r", head="smtithy/fix-x",
+            github_api.open_pull_request("o/r", head="aceiro/fix-x",
                                          title="t", body="b")
 
     def test_pull_requests_for_base_lists_all_states(self, monkeypatch):

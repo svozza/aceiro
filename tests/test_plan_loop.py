@@ -262,7 +262,7 @@ class TestPlanPromptMechanics:
         verify_plan(plan, diff, [path], POLICY, tree_source(tree))
 
     def test_the_plan_prompt_routes_through_the_description_seam(self):
-        # artel sets SMTITHY_PROJECT_DESCRIPTION as documented and the REVIEW
+        # artel sets ACEIRO_PROJECT_DESCRIPTION as documented and the REVIEW
         # session adapts; the plan session read the variable nowhere, so a
         # consumer's planner was shown a patch example rooted at
         # aws_lambda_powertools/ while being told every patch path must be a file
@@ -768,7 +768,7 @@ class TestRunWiring:
         # The seam has to be WIRED, not merely available: asserted on the system
         # prompt the session actually receives.
         context, pr_root = self.scenario(tmp_path)
-        monkeypatch.setenv("SMTITHY_PROJECT_DESCRIPTION", "`svozza/artel`, a Rust file syncer")
+        monkeypatch.setenv("ACEIRO_PROJECT_DESCRIPTION", "`svozza/artel`, a Rust file syncer")
         query = fake_query([[result_message()]])
         monkeypatch.setattr(cc_loop, "query", query)
         plan_loop.run(REPO_ROOT, pr_root, context, tmp_path / "out")
@@ -784,7 +784,7 @@ class TestRunWiring:
         # The shipped default carries the prompt's eval history, so the seam must
         # be a no-op when no consumer supplies a description.
         context, pr_root = self.scenario(tmp_path)
-        monkeypatch.delenv("SMTITHY_PROJECT_DESCRIPTION", raising=False)
+        monkeypatch.delenv("ACEIRO_PROJECT_DESCRIPTION", raising=False)
         query = fake_query([[result_message()]])
         monkeypatch.setattr(cc_loop, "query", query)
         plan_loop.run(REPO_ROOT, pr_root, context, tmp_path / "out")

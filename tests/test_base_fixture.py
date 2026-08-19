@@ -7,7 +7,7 @@ fetch is what a scenario's whole premise rests on.
 
 No network here. The fetch tests inject a fake opener, so the deterministic suite
 keeps making no external calls; the live fetch is exercised by
-TestCallerImpactScenarioPremise under SMTITHY_FETCH_FIXTURES=1 and by any real
+TestCallerImpactScenarioPremise under ACEIRO_FETCH_FIXTURES=1 and by any real
 eval run.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy" / "evals"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "aceiro" / "evals"))
 
 import base_fixture  # noqa: E402
 from base_fixture import FixtureError, fetch, load_declaration, materialise  # noqa: E402
@@ -175,7 +175,7 @@ class TestTheRealScenarioDeclaration:
     """The shipped base.json, not a synthetic one."""
 
     def test_caller_impact_declaration_is_valid(self):
-        scenarios = Path(__file__).parent.parent / "src" / "smtithy" / "evals" / "scenarios"
+        scenarios = Path(__file__).parent.parent / "src" / "aceiro" / "evals" / "scenarios"
         declaration = load_declaration(scenarios / "caller_impact_needs_investigation")
         assert declaration is not None
         assert declaration["repo"] == "aws-powertools/powertools-lambda-python"
@@ -186,6 +186,6 @@ class TestTheRealScenarioDeclaration:
         """The coupling this replaced gave every scenario the same checkout. If a
         second scenario grows a BASE, that is a decision to make deliberately --
         not something to discover from a slow suite."""
-        scenarios = Path(__file__).parent.parent / "src" / "smtithy" / "evals" / "scenarios"
+        scenarios = Path(__file__).parent.parent / "src" / "aceiro" / "evals" / "scenarios"
         with_base = sorted(d.name for d in scenarios.iterdir() if d.is_dir() and (d / "base.json").exists())
         assert with_base == ["caller_impact_needs_investigation"]

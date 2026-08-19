@@ -1696,7 +1696,7 @@ class TestCallerImpactScenarioPremise:
 
     The premise now rests on base.json's pinned commit rather than on an
     enclosing checkout. Upstream these assertions read the library source from
-    four levels above .github/scripts/ai_review; smtithy vendors no such library.
+    four levels above .github/scripts/ai_review; aceiro vendors no such library.
 
     Split in two, because the two halves have different costs:
 
@@ -1707,7 +1707,7 @@ class TestCallerImpactScenarioPremise:
     - Whether the symbol is really DEFINED and really CALLED at that commit is a
       property of remote content, so it needs a fetch. That runs only when the
       fixture has already been materialised (a full eval run does it) or under
-      SMTITHY_FETCH_FIXTURES=1. The deterministic suite makes no external calls
+      ACEIRO_FETCH_FIXTURES=1. The deterministic suite makes no external calls
       and that stays true.
 
     What is deliberately NOT done: pointing these at the scenario's own pr_root/
@@ -1732,8 +1732,8 @@ class TestCallerImpactScenarioPremise:
         target = cache / declaration["repo"].replace("/", "_") / declaration["sha"]
         if all((target / p).exists() for p in declaration["paths"]):
             return target
-        if os.environ.get("SMTITHY_FETCH_FIXTURES") != "1":
-            pytest.skip("needs the pinned BASE fixture; run an eval or set SMTITHY_FETCH_FIXTURES=1")
+        if os.environ.get("ACEIRO_FETCH_FIXTURES") != "1":
+            pytest.skip("needs the pinned BASE fixture; run an eval or set ACEIRO_FETCH_FIXTURES=1")
         return base_fixture.fetch(declaration, cache)
 
     def test_the_scenario_declares_a_base_to_investigate(self):

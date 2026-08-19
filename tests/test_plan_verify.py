@@ -12,7 +12,7 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "aceiro"))
 
 import plan_verify  # noqa: E402
 from plan_verify import (  # noqa: E402
@@ -30,7 +30,7 @@ from plan_verify import (  # noqa: E402
 from verify import Rejection  # noqa: E402
 
 POLICY = json.loads(
-    (Path(__file__).parent.parent / "src" / "smtithy" / "policy.json").read_text()
+    (Path(__file__).parent.parent / "src" / "aceiro" / "policy.json").read_text()
 )
 PLAN_POLICY = POLICY["plan"]
 
@@ -47,11 +47,11 @@ def suggest_step(step_id="s0", path="src/a.py"):
     }
 
 
-def push_step(step_id="s1", name="smtithy/fix-x"):
+def push_step(step_id="s1", name="aceiro/fix-x"):
     return {"id": step_id, "kind": "push_branch", "args": {"name": name}}
 
 
-def open_pr_step(step_id="s2", branch="smtithy/fix-x", title="t", body="the fix"):
+def open_pr_step(step_id="s2", branch="aceiro/fix-x", title="t", body="the fix"):
     return {"id": step_id, "kind": "open_pr", "args": {"branch": branch, "title": title, "body": body}}
 
 
@@ -341,7 +341,7 @@ class TestShippedPolicyAgreement:
         # The one argument that decides where `contents: write` is pointed. A
         # prefix is what makes "not the default branch, not the contributor's
         # head branch" a property of the NAME rather than a list of exclusions.
-        assert PLAN_POLICY["branch_prefix"] == "smtithy/"
+        assert PLAN_POLICY["branch_prefix"] == "aceiro/"
 
     def test_bounding_is_declared_in_both_dimensions(self):
         # ADR-0005's bounding half. A line count bounds nothing about line
@@ -1222,8 +1222,8 @@ class TestWriteClassTargets:
         return {"id": "s1", "kind": "push_branch", "args": {"name": name}}
 
     def test_a_prefixed_branch_passes(self):
-        contained({"steps": [anchored_patch("s0"), self.push("smtithy/fix-1"), open_pr_step("s2",
-                   branch="smtithy/fix-1")]})
+        contained({"steps": [anchored_patch("s0"), self.push("aceiro/fix-1"), open_pr_step("s2",
+                   branch="aceiro/fix-1")]})
 
     def test_the_default_branch_rejects(self):
         with pytest.raises(Rejection, match="branch_prefix"):
@@ -1237,17 +1237,17 @@ class TestWriteClassTargets:
         # Prefix confusion, the near-miss: a namespace that merely STARTS with
         # the same characters is a different namespace.
         with pytest.raises(Rejection, match="branch_prefix"):
-            contained({"steps": [anchored_patch("s0"), self.push("smtithy-evil/fix")]})
+            contained({"steps": [anchored_patch("s0"), self.push("aceiro-evil/fix")]})
 
     def test_a_traversal_out_of_the_namespace_rejects(self):
         with pytest.raises(Rejection, match="branch_prefix"):
-            contained({"steps": [anchored_patch("s0"), self.push("smtithy/../main")]})
+            contained({"steps": [anchored_patch("s0"), self.push("aceiro/../main")]})
 
     def test_open_pr_branch_is_constrained_too(self):
         # open_pr.branch is the head of the follow-up PR: the same target under
         # a different arg name.
         with pytest.raises(Rejection, match="branch_prefix"):
-            contained({"steps": [anchored_patch("s0"), self.push("smtithy/ok"),
+            contained({"steps": [anchored_patch("s0"), self.push("aceiro/ok"),
                                  open_pr_step("s2", branch="main")]})
 
     def test_the_reviewed_head_branch_rejects_even_when_prefixed(self):
@@ -1256,37 +1256,37 @@ class TestWriteClassTargets:
         # push-to-contributor's-branch mode ADR-0009's addendum decided against.
         # It is a plan INPUT, so it is threaded in rather than inferred.
         with pytest.raises(Rejection, match="reviewed pull request's own head branch"):
-            contained({"steps": [anchored_patch("s0"), self.push("smtithy/theirs")]},
-                      head_branch="smtithy/theirs")
+            contained({"steps": [anchored_patch("s0"), self.push("aceiro/theirs")]},
+                      head_branch="aceiro/theirs")
 
     def test_the_pull_request_must_open_from_the_branch_that_was_pushed(self):
         # Each branch was confined independently, so both could sit inside the
         # namespace and name DIFFERENT branches. The executor would then push the
         # verified patch to one and open the follow-up PR from another, whose
         # content the plan never described and whose bytes no frame bounded --
-        # `smtithy/b` surviving from an earlier command is enough.
+        # `aceiro/b` surviving from an earlier command is enough.
         with pytest.raises(Rejection, match="opens from"):
-            contained({"steps": [anchored_patch("s0"), self.push("smtithy/a"),
-                                 open_pr_step("s2", branch="smtithy/b")]})
+            contained({"steps": [anchored_patch("s0"), self.push("aceiro/a"),
+                                 open_pr_step("s2", branch="aceiro/b")]})
 
     def test_the_prefix_message_still_wins_when_the_branch_is_also_unprefixed(self):
         # Ordering: confinement first. An off-namespace branch is a worse fault
         # than a mismatched one, and this is what the reader needs named.
         with pytest.raises(Rejection, match="branch_prefix"):
-            contained({"steps": [anchored_patch("s0"), self.push("smtithy/ok"),
+            contained({"steps": [anchored_patch("s0"), self.push("aceiro/ok"),
                                  open_pr_step("s2", branch="main")]})
 
     def test_a_push_with_no_open_pr_is_unaffected(self):
         # The relation is only expressible when both steps exist; cardinality
         # deliberately admits this shape.
-        contained({"steps": [anchored_patch("s0"), self.push("smtithy/fix-1")]})
+        contained({"steps": [anchored_patch("s0"), self.push("aceiro/fix-1")]})
 
     def test_a_non_string_branch_is_named_as_a_shape_fault(self):
         # Shape is the schema phase's business, and it runs first, so a malformed
         # branch must be reported as one rather than as a mismatch. Through
         # verify_plan, because that is where the phase order lives.
-        plan = {"steps": [anchored_patch("s0"), self.push("smtithy/a"),
-                          open_pr_step("s2", branch="smtithy/a")]}
+        plan = {"steps": [anchored_patch("s0"), self.push("aceiro/a"),
+                          open_pr_step("s2", branch="aceiro/a")]}
         plan["steps"][1]["args"]["name"] = 7
         with pytest.raises(Rejection) as caught:
             verify_plan(plan, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
@@ -1476,8 +1476,8 @@ class TestWriteChainCardinality:
         # The report's scenario: fits max_steps, ordered correctly (all pushes
         # before all opens), and would produce eighteen external effects.
         steps = [patch_step("s0")]
-        steps += [push_step(f"p{i}", name=f"smtithy/b{i}") for i in range(9)]
-        steps += [open_pr_step(f"o{i}", branch=f"smtithy/b{i}") for i in range(9)]
+        steps += [push_step(f"p{i}", name=f"aceiro/b{i}") for i in range(9)]
+        steps += [open_pr_step(f"o{i}", branch=f"aceiro/b{i}") for i in range(9)]
         # Kinds are checked in sorted order, so open_pr is the first violation.
         with pytest.raises(Rejection, match="9 open_pr steps"):
             check_plan_cardinality(as_steps({"steps": steps}), PLAN_POLICY)
@@ -1485,7 +1485,7 @@ class TestWriteChainCardinality:
     def test_two_push_branches_reject(self):
         with pytest.raises(Rejection, match="push_branch"):
             check_plan_cardinality(
-                as_steps({"steps": [patch_step("s0"), push_step("s1"), push_step("s2", name="smtithy/other"),
+                as_steps({"steps": [patch_step("s0"), push_step("s1"), push_step("s2", name="aceiro/other"),
                            open_pr_step("s3")]}),
                 PLAN_POLICY,
             )
@@ -1494,7 +1494,7 @@ class TestWriteChainCardinality:
         with pytest.raises(Rejection, match="open_pr"):
             check_plan_cardinality(
                 as_steps({"steps": [patch_step("s0"), push_step("s1"), open_pr_step("s2"),
-                           open_pr_step("s3", branch="smtithy/other")]}),
+                           open_pr_step("s3", branch="aceiro/other")]}),
                 PLAN_POLICY,
             )
 
@@ -1584,8 +1584,8 @@ class TestWriteChainCardinality:
 
     def test_verify_plan_enforces_cardinality(self):
         steps = [anchored_patch("s0")]
-        steps += [push_step(f"p{i}", name=f"smtithy/b{i}") for i in range(9)]
-        steps += [open_pr_step(f"o{i}", branch=f"smtithy/b{i}") for i in range(9)]
+        steps += [push_step(f"p{i}", name=f"aceiro/b{i}") for i in range(9)]
+        steps += [open_pr_step(f"o{i}", branch=f"aceiro/b{i}") for i in range(9)]
         with pytest.raises(Rejection, match="at most once"):
             verify_plan({"steps": steps}, PLAN_DIFF, PLAN_CHANGED_FILES, _full_policy(), tree_source())
 
@@ -1755,7 +1755,7 @@ class TestPlanMarkdownAndSecrets:
                  "args": {"path": "src/app.py", "old": old, "new": new}},
                 push_step("s2"),
                 {"id": "s3", "kind": "open_pr",
-                 "args": {"branch": "smtithy/fix-x", "title": "Fix load()", "body": body}},
+                 "args": {"branch": "aceiro/fix-x", "title": "Fix load()", "body": body}},
             ]
         }
 

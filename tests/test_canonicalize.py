@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "aceiro"))
 
 from canonicalize import (  # noqa: E402
     is_default_ignorable,
@@ -97,7 +97,7 @@ class TestNoReadDependsOnTheLocale:
         return tmp_path
 
     def run_under_c_locale(self, code: str, tmp_path) -> subprocess.CompletedProcess:
-        harness = Path(__file__).parent.parent / "src" / "smtithy"
+        harness = Path(__file__).parent.parent / "src" / "aceiro"
         return subprocess.run(
             [sys.executable, "-c", code, str(tmp_path)],
             capture_output=True, text=True,

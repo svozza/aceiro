@@ -7,7 +7,7 @@ from jsonschema import Draft202012Validator
 
 import eval_schemas
 
-EVALS = Path(__file__).parent.parent / "src" / "smtithy" / "evals"
+EVALS = Path(__file__).parent.parent / "src" / "aceiro" / "evals"
 
 
 def test_all_eval_schemas_are_valid_draft_2020_12():

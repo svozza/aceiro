@@ -1,4 +1,6 @@
-# smtithy
+# Aceiro
+
+Aceiro was formerly named Smtithy. Historical records keep the original name.
 
 A harness for agents that are never trusted, only verified: a model proposes,
 a deterministic checker finds no counterexample, and a trusted executor acts.
@@ -7,13 +9,13 @@ verified object is a plan rather than a flat record, is the second.
 
 ## Experiment result ownership
 
-Evaluation arms own their native redacted result records. Smtithy owns the
+Evaluation arms own their native redacted result records. Aceiro owns the
 canonical fixtures, shared schema, and cross-arm aggregation. See
 `docs/adr/0020-arm-repositories-own-native-experiment-results.md` and
-`src/smtithy/evals/arm_result.schema.json` before adding or moving experiment
+`src/aceiro/evals/arm_result.schema.json` before adding or moving experiment
 results.
 
-Smtithy's own committed native records live under `results/`; records from
+Aceiro's own committed native records live under `results/`; records from
 other arms remain in their respective repositories.
 
 ## Language

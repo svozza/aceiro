@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "aceiro"))
 
 from policy_overlay import (  # noqa: E402
     ConfigurationError,
@@ -91,7 +91,7 @@ def test_cli_rewrites_the_job_private_policy(tmp_path, monkeypatch):
         "other": {"unchanged": True},
     }))
     monkeypatch.setenv(
-        "SMTITHY_LINK_HOST_ALLOWLIST",
+        "ACEIRO_LINK_HOST_ALLOWLIST",
         "docs.example.com\ngithub.com/your-org/",
     )
     monkeypatch.setattr(sys, "argv", ["policy_overlay.py", "--policy", str(path)])

@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "smtithy" / "evals"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src" / "aceiro" / "evals"))
 
 import leak_probe  # noqa: E402
 from cc_loop import SUBMIT_TOOL  # noqa: E402

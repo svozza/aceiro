@@ -4,7 +4,7 @@
 #
 #   jobs:
 #     review:
-#       uses: svozza/smtithy/.github/workflows/ai-pr-review.yml@<full SHA>
+#       uses: svozza/aceiro/.github/workflows/ai-pr-review.yml@<full SHA>
 #       with: { ... }
 #       secrets: { ... }
 #
@@ -186,7 +186,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: python src/smtithy/author_trust.py
+        run: python src/aceiro/author_trust.py
 
   approve:
     # Human gate: resolves against the CALLER's `ai-pr-review` environment.
@@ -255,7 +255,7 @@ jobs:
               echo "::error::agent-timeout-minutes must be a whole number of minutes, got '${AGENT_TIMEOUT_MINUTES}'" >&2
               exit 1 ;;
           esac
-          echo "SMTITHY_AGENT_DEADLINE=$(( $(date +%s) + AGENT_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
+          echo "ACEIRO_AGENT_DEADLINE=$(( $(date +%s) + AGENT_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
 
       - name: Checkout consumer trusted base SHA
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -304,10 +304,10 @@ jobs:
 
       - name: Prepare effective policy
         env:
-          SMTITHY_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
+          ACEIRO_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
         run: >-
-          python harness/src/smtithy/policy_overlay.py
-          --policy harness/src/smtithy/policy.json
+          python harness/src/aceiro/policy_overlay.py
+          --policy harness/src/aceiro/policy.json
 
       # ADR-0006: the gate is asserted INSIDE the gated job, before any
       # credential exists in the job. If this run needed human approval, the
@@ -319,13 +319,13 @@ jobs:
           GATE_ENVIRONMENT: ai-pr-review
           AUTHOR_TRUSTED: ${{ needs.author_trust.outputs.trusted }}
           PR_DRAFT: ${{ github.event.pull_request.draft }}
-        run: python harness/src/smtithy/environment_gate.py
+        run: python harness/src/aceiro/environment_gate.py
 
       - name: Prepare SHA-anchored context
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: python harness/src/smtithy/prepare_context.py --output-dir "$RUNNER_TEMP/context"
+        run: python harness/src/aceiro/prepare_context.py --output-dir "$RUNNER_TEMP/context"
 
       # Runs after Prepare SHA-anchored context on purpose: that step caps the
       # head tree's per-blob and aggregate size from the tree API, so a tree too
@@ -390,7 +390,7 @@ jobs:
           AWS_BEARER_TOKEN_BEDROCK: ${{ inputs.use-bedrock && inputs.use-bedrock-api-key && secrets.BEDROCK_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ !inputs.use-bedrock && secrets.ANTHROPIC_API_KEY || '' }}
           ANTHROPIC_MODEL: ${{ inputs.cli-model }}
-          SMTITHY_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
+          ACEIRO_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
           # No telemetry, no auto-update inside a credential-bearing job.
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
@@ -399,7 +399,7 @@ jobs:
           # and the workspace is the code under review.
           CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         run: |
-          python harness/src/smtithy/cc_loop.py \
+          python harness/src/aceiro/cc_loop.py \
             --base-root "$GITHUB_WORKSPACE/base" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
             --context-dir "$RUNNER_TEMP/context" \
@@ -492,10 +492,10 @@ jobs:
 
       - name: Prepare effective policy
         env:
-          SMTITHY_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
+          ACEIRO_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
         run: >-
-          python src/smtithy/policy_overlay.py
-          --policy src/smtithy/policy.json
+          python src/aceiro/policy_overlay.py
+          --policy src/aceiro/policy.json
 
       - name: Download review artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -515,9 +515,9 @@ jobs:
           COMMENT_MARKER: ${{ inputs.comment-marker }}
           COMMENT_TITLE: ${{ inputs.comment-title }}
         run: |
-          python src/smtithy/post.py \
+          python src/aceiro/post.py \
             --artifact-dir "$RUNNER_TEMP/bundle" \
-            --policy src/smtithy/policy.json \
+            --policy src/aceiro/policy.json \
             --prompt prompts/ai-pr-review.md \
             --marker "$COMMENT_MARKER" \
             --title "$COMMENT_TITLE"

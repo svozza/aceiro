@@ -6,12 +6,12 @@
 python-version = "3.13"
 
 [src]
-include = ["src/smtithy"]
+include = ["src/aceiro"]
 # Eval scenario trees are fixtures playing the CONTRIBUTOR'S code — partial,
 # deliberately defective, and never imported by the harness.
 exclude = [
-    "src/smtithy/evals/scenarios/*/pr_root",
-    "src/smtithy/evals/scenarios/*/base_root",
-    "src/smtithy/evals/plan_scenarios/*/pr_root",
-    "src/smtithy/evals/plan_scenarios/*/base_root",
+    "src/aceiro/evals/scenarios/*/pr_root",
+    "src/aceiro/evals/scenarios/*/base_root",
+    "src/aceiro/evals/plan_scenarios/*/pr_root",
+    "src/aceiro/evals/plan_scenarios/*/base_root",
 ]

@@ -267,8 +267,8 @@ class TestEvalDispatchControls:
 
     def test_semantic_judge_is_pinned_and_allowed_independently(self):
         text = (WORKFLOWS / "evals.yml").read_text()
-        assert "SMTITHY_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8" in text
-        assert "inference-profile/${{ env.SMTITHY_EVAL_JUDGE_MODEL }}" in text
+        assert "ACEIRO_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8" in text
+        assert "inference-profile/${{ env.ACEIRO_EVAL_JUDGE_MODEL }}" in text
 
     def test_fifteen_run_comparison_is_supported(self):
         text = (WORKFLOWS / "evals.yml").read_text()
@@ -593,7 +593,7 @@ class TestNoOidcMintingWhereUntrustedCodeRuns:
     policy — obtaining whatever the role's identity policy permits and bypassing
     the Bedrock-only bound the credential step applies.
 
-    smtithy's own role grants nothing but two Bedrock actions, so nothing leaks
+    aceiro's own role grants nothing but two Bedrock actions, so nothing leaks
     here today. A consumer supplying a wider role (relying on the workflow's
     inline policy, as its comment invites) is the exposure. The capability is
     only needed by configure-aws-credentials, which runs before the PR's code, so
@@ -709,7 +709,7 @@ class TestReusableWorkflowLinkHostAllowlist:
             if step.get("name") == "Prepare effective policy"
         ]
         assert len(overlays) == 1
-        assert overlays[0]["env.SMTITHY_LINK_HOST_ALLOWLIST"] == (
+        assert overlays[0]["env.ACEIRO_LINK_HOST_ALLOWLIST"] == (
             "${{ inputs.link-host-allowlist }}"
         )
         assert "policy_overlay.py" in job_block(text, job)

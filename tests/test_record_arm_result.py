@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).parents[1] / "src/smtithy/evals/record_arm_result.py"
+MODULE_PATH = Path(__file__).parents[1] / "src/aceiro/evals/record_arm_result.py"
 SPEC = importlib.util.spec_from_file_location("record_arm_result", MODULE_PATH)
 record_arm_result = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader

@@ -21,7 +21,7 @@ import pytest
 from conftest import CHANGED_FILES, SAMPLE_DIFF
 from verify import Rejection, verify
 
-SHIPPED_POLICY = json.loads((Path(__file__).parent.parent / "src" / "smtithy" / "policy.json").read_text())
+SHIPPED_POLICY = json.loads((Path(__file__).parent.parent / "src" / "aceiro" / "policy.json").read_text())
 
 
 def test_shipped_link_allowlist_is_empty():

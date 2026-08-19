@@ -7,7 +7,7 @@
 #       types: [created]
 #   jobs:
 #     fix:
-#       uses: svozza/smtithy/.github/workflows/ai-pr-fix.yml@<full SHA>
+#       uses: svozza/aceiro/.github/workflows/ai-pr-fix.yml@<full SHA>
 #       with: { ... }
 #       secrets: { ... }
 #
@@ -210,10 +210,10 @@ jobs:
 
       - name: Prepare effective policy
         env:
-          SMTITHY_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
+          ACEIRO_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
         run: >-
-          python src/smtithy/policy_overlay.py
-          --policy src/smtithy/policy.json
+          python src/aceiro/policy_overlay.py
+          --policy src/aceiro/policy.json
 
       - name: Resolve the command and compose the plan context
         id: compose
@@ -224,7 +224,7 @@ jobs:
           # free text, and inside a `run:` block it would be shell-expanded.
           COMMENT_BODY: ${{ github.event.comment.body }}
           COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-        run: python src/smtithy/prepare_fix_context.py --output-dir "$RUNNER_TEMP/context"
+        run: python src/aceiro/prepare_fix_context.py --output-dir "$RUNNER_TEMP/context"
 
       - name: Resolve the PR author's permission (ADR-0006's question, not ADR-0007's)
         id: author
@@ -232,7 +232,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_AUTHOR: ${{ github.event.issue.user.login }}
-        run: python src/smtithy/author_trust.py
+        run: python src/aceiro/author_trust.py
 
       - name: Upload plan context
         if: steps.compose.outputs.commanded == 'true'
@@ -305,7 +305,7 @@ jobs:
               echo "::error::agent-timeout-minutes must be a whole number of minutes, got '${AGENT_TIMEOUT_MINUTES}'" >&2
               exit 1 ;;
           esac
-          echo "SMTITHY_AGENT_DEADLINE=$(( $(date +%s) + AGENT_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
+          echo "ACEIRO_AGENT_DEADLINE=$(( $(date +%s) + AGENT_TIMEOUT_MINUTES * 60 ))" >> "$GITHUB_ENV"
 
       - name: Checkout consumer trusted base SHA
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -350,10 +350,10 @@ jobs:
 
       - name: Prepare effective policy
         env:
-          SMTITHY_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
+          ACEIRO_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
         run: >-
-          python harness/src/smtithy/policy_overlay.py
-          --policy harness/src/smtithy/policy.json
+          python harness/src/aceiro/policy_overlay.py
+          --policy harness/src/aceiro/policy.json
 
       # ADR-0006: asserted INSIDE the gated job, before any credential exists in
       # it. PR_DRAFT is not available on an issue_comment payload, so it is not
@@ -364,7 +364,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GATE_ENVIRONMENT: ai-pr-review
           AUTHOR_TRUSTED: ${{ needs.command.outputs.author_trusted }}
-        run: python harness/src/smtithy/environment_gate.py
+        run: python harness/src/aceiro/environment_gate.py
 
       - name: Download plan context
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -429,13 +429,13 @@ jobs:
           AWS_BEARER_TOKEN_BEDROCK: ${{ inputs.use-bedrock && inputs.use-bedrock-api-key && secrets.BEDROCK_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ !inputs.use-bedrock && secrets.ANTHROPIC_API_KEY || '' }}
           ANTHROPIC_MODEL: ${{ inputs.cli-model }}
-          SMTITHY_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
+          ACEIRO_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
           DISABLE_AUTOUPDATER: "1"
           CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         run: |
-          python harness/src/smtithy/plan_loop.py \
+          python harness/src/aceiro/plan_loop.py \
             --base-root "$GITHUB_WORKSPACE/base" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
             --context-dir "$RUNNER_TEMP/context" \
@@ -542,7 +542,7 @@ jobs:
       - name: Route the delivery
         id: route
         run: |
-          python src/smtithy/route_delivery.py \
+          python src/aceiro/route_delivery.py \
             --artifact-dir "$RUNNER_TEMP/bundle"
 
   execute:
@@ -596,10 +596,10 @@ jobs:
 
       - name: Prepare effective policy
         env:
-          SMTITHY_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
+          ACEIRO_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
         run: >-
-          python src/smtithy/policy_overlay.py
-          --policy src/smtithy/policy.json
+          python src/aceiro/policy_overlay.py
+          --policy src/aceiro/policy.json
 
       - name: Download plan artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -633,10 +633,10 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          python src/smtithy/execute_plan.py \
+          python src/aceiro/execute_plan.py \
             --artifact-dir "$RUNNER_TEMP/bundle" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
-            --policy src/smtithy/policy.json \
+            --policy src/aceiro/policy.json \
             --allow suggestions
 
   # The ONLY job holding contents: write, and it runs only when the router said
@@ -723,10 +723,10 @@ jobs:
 
       - name: Prepare effective policy
         env:
-          SMTITHY_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
+          ACEIRO_LINK_HOST_ALLOWLIST: ${{ inputs.link-host-allowlist }}
         run: >-
-          python src/smtithy/policy_overlay.py
-          --policy src/smtithy/policy.json
+          python src/aceiro/policy_overlay.py
+          --policy src/aceiro/policy.json
 
       - name: Download plan artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -761,10 +761,10 @@ jobs:
           PR_NUMBER: ${{ github.event.issue.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          python src/smtithy/execute_plan.py \
+          python src/aceiro/execute_plan.py \
             --artifact-dir "$RUNNER_TEMP/bundle" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
-            --policy src/smtithy/policy.json \
+            --policy src/aceiro/policy.json \
             --allow stacked_pr
 
   # ADR-0018: the command channel replies with the command's terminal state. The
@@ -862,4 +862,4 @@ jobs:
           HEAD_SHA: ${{ needs.command.outputs.reply_head_sha || needs.stack.outputs.reply_head_sha }}
           ORDINALS: ${{ needs.command.outputs.reply_ordinals || needs.stack.outputs.reply_ordinals }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: python src/smtithy/reply.py
+        run: python src/aceiro/reply.py

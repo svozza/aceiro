@@ -1,0 +1,819 @@
+"""Suggestion delivery: render a verified suggest step, reconcile it onto the PR.
+
+The remediator's universal delivery (ADR-0009 and its addendum): a suggestion is
+the only remediation that works across both repository topologies, because a
+stacked follow-up pull request needs the head branch to exist in the base
+repository and a fork's does not. The contributor applies it with one click, so
+the commit lands on their branch through their own deliberate action — which is
+also the last point a human sees the actual bytes, ADR-0005's human gate.
+
+A suggestion IS an inline comment, so this ports the extraction source's
+reconciler (staging/inline-comments-test @ 70bebcd4) rather than re-deriving it.
+Its lessons, each measured on a real pull request there and each load-bearing:
+
+- Identity is the anchored CODE. Not the model's prose (measured: it reworded
+  every finding on every run over a byte-identical diff, so a title-derived key
+  never matched twice and every run deleted and reposted everything), and not
+  (path, line) — GitHub re-anchors live comments when the diff shifts. For a
+  suggestion `old` IS the anchored code, so the fingerprint is its anchor
+  signature.
+- Retraction is reply-aware and never GitHub-"resolves": resolved asserts the
+  defect was addressed, which the harness cannot know.
+- New comments go up BEFORE stale ones come down, because the review POST is
+  atomic — a 422 creates nothing, and failing there must leave the existing
+  comments standing rather than already deleted.
+- Review wrappers accumulate: creation has no upsert and a submitted review
+  cannot be deleted, so spent ones are rewritten and minimized, best effort and
+  never run-failing.
+- Content is compared with the executor-authored first and last lines dropped BY
+  POSITION, or the footer's per-run URL rewrites every comment every run — and
+  with line endings normalised, because only one side of that comparison came
+  back from GitHub.
+- Retraction is scoped to the COMMANDED finding: one run delivers one finding
+  (ADR-0007) while the listing is the whole pull request, so an unscoped pass
+  withdraws every other finding's live suggestion.
+
+Ownership is marker AND authenticated author throughout, the author half resolved
+from the write token itself (post.resolve_bot_login): the marker is copyable, so
+it alone would let a crafted comment steer this into editing someone else's words.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from collections.abc import Mapping, Sequence
+from typing import cast
+
+from diff_map import normalize_signature_line
+from plan_verify import Step
+from github_api import (
+    delete_review_comment,
+    minimize_review,
+    patch_review_comment,
+    pull_reviews,
+    review_comments,
+    submit_review,
+    update_review_body,
+)
+from verify import NEWLINES_RE, code_lines, unterminated_fence
+
+# Identity marker for a suggestion comment of ours, carrying the fingerprint the
+# reconciler matches on. It RECOVERS a comment's identity on a later run rather
+# than computing it: the hash is over already-verified content, so a model cannot
+# choose what its suggestion collides with. Read from the first line only — see
+# marker_line.
+SUGGESTION_MARKER_RE = re.compile(r"<!-- aceiro:suggest:([0-9a-f]{16}) -->")
+
+# Appended to the marker line by a strike-through retraction, so a re-run
+# recognises an already-retracted comment instead of striking it again every run.
+STRUCK_MARKER = "<!-- aceiro:struck -->"
+
+# Which COMMANDED FINDING a comment was delivered for. The retraction scope: a
+# command may withdraw its own finding's suggestions and nothing else. Read from
+# the marker line, like every other marker here, so contributor content cannot
+# present itself as another command's delivery.
+SUGGESTION_FINDING_RE = re.compile(r"<!-- aceiro:for:([0-9a-f]{16}) -->")
+
+
+def suggestion_marker(fingerprint: str) -> str:
+    return f"<!-- aceiro:suggest:{fingerprint} -->"
+
+
+def finding_marker(finding_key: str) -> str:
+    return f"<!-- aceiro:for:{finding_key} -->"
+
+
+def finding_identity(finding: dict, signatures: dict[tuple[str, int], str] | None = None) -> str:
+    """Stable identity for the COMMANDED FINDING a delivery speaks for.
+
+    Keyed on the anchored code exactly as suggestion_fingerprint and stack.fix_key
+    are — path, line, and the line's anchor signature — never on the model's prose,
+    which is reworded on essentially every run. The line is included for the reason
+    stack.fix_key includes it: a window=1 signature is not unique for periodic
+    code, and two copy-pasted blocks are two findings.
+
+    Deliberately excludes head_sha, unlike stack.fix_key: suggestions outlive a
+    push (GitHub marks them outdated rather than removing them), so a comment
+    delivered for this finding at an earlier head is still this finding's.
+    """
+    path, line = finding["path"], finding["line"]
+    signature = (signatures or {}).get((path, line))
+    anchored = (
+        f"unanchored\0{line}" if signature is None
+        else f"anchored\0{line}\0{normalize_signature_line(signature)}"
+    )
+    return hashlib.sha256("\0".join([path, anchored]).encode()).hexdigest()[:16]
+
+
+def owned_finding_key(comment: dict, bot_login: str) -> str | None:
+    """The finding a comment of OURS was delivered for, else None.
+
+    None means the subject cannot be established — an older comment written before
+    the marker existed, or a comment that is not ours — and the caller must then
+    leave it standing. Ownership is checked here too, so a pasted marker cannot
+    make a contributor's comment look like another command's delivery.
+    """
+    if not bot_login or (comment.get("user") or {}).get("login") != bot_login:
+        return None
+    match = SUGGESTION_FINDING_RE.search(marker_line(comment))
+    return match.group(1) if match else None
+
+
+def suggestion_fingerprint(step_args: Mapping[str, str | int],
+                           signatures: dict[tuple[str, int], str] | None = None) -> str:
+    """Stable identity for one suggestion, computed by the executor.
+
+    Keyed on the code the suggestion is anchored to — `path` plus the anchor
+    signature of its line — never on the model's `note`. The note is the least
+    stable thing in the system (the reference implementation measured a rewording
+    on essentially every run), and a key that moves with it means every run
+    deletes a live thread and reposts the same comment.
+
+    The line NUMBER is not in the key either: GitHub re-anchors a live comment
+    when the diff shifts, so the number moves while the code does not.
+
+    `old` joins the window, because the window alone does not say WHAT the
+    suggestion replaces. Two consequences of leaving it out, both measured here:
+    a window=1 signature is not unique for periodic code (three repeating lines
+    give two anchors the same window), and the same anchored line with a different
+    replaced EXTENT read as the same suggestion — so a broadened fix took the PATCH
+    branch, which rewrites a body but cannot move the addressed range, leaving a
+    one-line anchor carrying a multi-line replacement.
+
+    `old` is model-supplied but not model-CHOSEN: check_plan_containment requires
+    it to byte-match the reviewed tree exactly once, so for a verified plan it is a
+    fact about the file. Canonicalized the same way the window is, so the churn
+    this design exists to prevent stays prevented — a reindentation is still the
+    same suggestion.
+
+    A signature the map does not carry falls back to the anchored bytes alone.
+    Provenance makes that unreachable for a verified plan — `line` must be in a
+    hunk — but identity must degrade rather than crash, and `old` is the one thing
+    always in hand.
+    """
+    path, line = cast(str, step_args["path"]), cast(int, step_args["line"])
+    anchored = "\x00".join(
+        normalize_signature_line(part) for part in cast(str, step_args["old"]).split("\n")
+    )
+    signature = (signatures or {}).get((path, line))
+    parts = [path, anchored] if signature is None else [path, signature, anchored]
+    return hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
+
+
+# GitHub reads a ```suggestion block's content literally, so the delimiter must be
+# longer than the longest backtick run the content holds or the content closes the
+# block itself.
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def fence_marker(content: str) -> str:
+    """A backtick run no run inside `content` can close.
+
+    `new` is file bytes: patch/suggest old and new are deliberately exempt from
+    the markdown allowlist (they must byte-match the tree, and their gate is
+    anchoring plus the human click), so this is the one model-controlled value in
+    a suggestion body that may legally contain fence syntax.
+
+    CommonMark closes a fence on a run of AT LEAST the opener's length, so the
+    opener must be strictly longer than the longest run in the content, and never
+    shorter than three.
+    """
+    longest = max((len(run) for run in _BACKTICK_RUN_RE.findall(content)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def marker_line(comment: dict) -> str:
+    """The comment's first line, the only part this module authored itself.
+
+    Both markers are read from here rather than from the whole body. Model text
+    can legally contain either marker's literal text inside a code fence (raw HTML
+    rejects only OUTSIDE one), and a suggestion's `new` is not markdown-checked at
+    all — so a body-wide scan would let crafted content present itself as a comment
+    of ours on any fingerprint, and would let a live comment look already-retracted
+    so a stale suggestion carrying a human reply was never struck.
+    """
+    return (comment.get("body") or "").split("\n", 1)[0]
+
+
+def owned_fingerprint(comment: dict, bot_login: str) -> str | None:
+    """The fingerprint of a suggestion comment this harness authored, else None.
+
+    The only gate in front of every DELETE and PATCH the reconciler issues, and
+    both halves are load-bearing: anyone can paste the marker into their own review
+    comment, so the marker alone would let a crafted comment — or a fingerprint
+    collision with a human's — steer this into editing or deleting someone else's
+    words. The authenticated author is the backstop, and it comes from the write
+    token itself (post.resolve_bot_login) rather than from configuration.
+
+    An empty `bot_login` matches nothing, including a comment whose author GitHub
+    reported as null: resolution fails closed upstream, and this gate must not
+    turn an unresolved identity into ownership of a deleted author's comment.
+    """
+    if not bot_login or (comment.get("user") or {}).get("login") != bot_login:
+        return None
+    match = SUGGESTION_MARKER_RE.match(marker_line(comment).strip())
+    return match.group(1) if match else None
+
+
+def is_struck(comment: dict) -> bool:
+    return STRUCK_MARKER in marker_line(comment)
+
+
+NOT_A_HUMAN_REVIEW = (
+    "**AI-suggested fix.** Generated by an AI model, not a human review, and it "
+    "counts toward **no approval**. Read the diff before applying it — applying "
+    "is what commits it to this branch."
+)
+
+
+WITHDRAWN_NOTE = (
+    "**This suggestion is no longer in the latest AI remediation.** It may have "
+    "been applied, or the model may simply not have produced it this time — this "
+    "note does not claim it was fixed. Please resolve this conversation if it has "
+    "been dealt with."
+)
+
+
+def human_replied_ids(all_comments: list[dict], bot_login: str) -> set[int]:
+    """Comment ids a non-bot account has replied to, from one scan.
+
+    Reactions deliberately do NOT count: a single 👍 would pin a stale suggestion
+    forever, and a reaction is not discussion worth preserving.
+
+    Built once per run rather than rescanned per retraction: the scan is over
+    every review comment on the pull request, which is unbounded on a long-lived
+    one, while the retractions are capped by the plan's steps.
+    """
+    return {
+        other["in_reply_to_id"]
+        for other in all_comments
+        if other.get("in_reply_to_id") is not None
+        and (other.get("user") or {}).get("login") != bot_login
+    }
+
+
+def strike_through(text: str) -> str:
+    """Strike every visible line of a comment body.
+
+    Per line rather than one span around the whole text, because `~~…~~` does not
+    cross block boundaries. Code is left alone: `~~` inside a fence renders
+    literally, so striking there would corrupt the suggestion's quoted code
+    instead of crossing it out — and which lines are code comes from
+    verify.code_lines, i.e. from markdown-it itself, which also covers indented
+    blocks no fence-scanning version would notice.
+
+    `<s>` rather than `~~…~~`, because the wrapper must not be able to become
+    SYNTAX. A line already beginning with `~` — `~~Deprecated~~ …`, which the
+    allowlist admits, or a bare `~/.config` — turned into `~~~…` under the tilde
+    form, and CommonMark reads that as a tilde-fence opener: the suggestion block
+    and the `<sub>` attribution line below it were swallowed into one code block,
+    and close_open_fence then appended its marker after the footer rather than
+    before it. An HTML tag has no such reading, and raw HTML is refused in MODEL
+    text while remaining ours to emit.
+
+    BEST EFFORT, and never the only signal: the text being struck is
+    model-authored, and the grammar permits markdown that defeats a span. `retract`
+    therefore leads with a plain-text notice that nothing below it can capture.
+    """
+    out = []
+    for line, is_code in code_lines(text):
+        skip = is_code or not line.strip() or line.startswith(("<!--", "<sub>"))
+        out.append(line if skip else f"<s>{line}</s>")
+    return "\n".join(out)
+
+
+def close_open_fence(text: str) -> str:
+    """Append a closing fence if `text` leaves one open.
+
+    DEFENCE IN DEPTH. check_plan_markdown rejects a `note` that ends inside a
+    fence, so a verified plan cannot reach this with an open one. It stays because
+    the text it wraps is a comment body read back from GitHub, which a previous
+    run — on a previous version of the grammar — may have written.
+
+    Whether a fence is open, and the marker that closes it, both come from
+    verify.unterminated_fence: closing a ``~~~``-opened block with ``` ``` ```
+    does not close it.
+    """
+    marker = unterminated_fence(text)
+    return text if marker is None else f"{text}\n{marker}"
+
+
+def retract(repo: str, comment: dict, replied_ids: set[int], note: str) -> None:
+    """Withdraw one suggestion comment of ours.
+
+    Never GitHub-"resolves" it: resolved asserts the defect was addressed, which
+    the harness cannot know — a suggestion can vanish because the model had an off
+    run. The bot states only what it knows.
+
+    No human reply -> DELETE: the comment claims nothing and there is no
+    discussion to keep. A human replied -> PATCH, and the close decision is left
+    to the human already in the thread; DELETE would orphan their reply, which
+    survives but is promoted to a standalone comment severed from its context.
+
+    The note goes ABOVE the struck body. Below it, it is at the mercy of the
+    model's own markdown — an unclosed fence renders it as literal code, and the
+    struck marker then stops any later run from repairing it — while above the
+    body nothing the model wrote can capture it, and it is the first thing a
+    human reads.
+    """
+    if comment["id"] not in replied_ids:
+        delete_review_comment(repo, comment["id"])
+        print(f"deleted suggestion comment {comment['id']}")
+        return
+
+    if is_struck(comment):
+        print(f"suggestion comment {comment['id']} already retracted, left as is")
+        return
+
+    # The struck marker joins the fingerprint on the FIRST line, keeping both
+    # identity signals in the one place model text cannot reach.
+    head, _, rest = (comment.get("body") or "").partition("\n")
+    body = f"{head.strip()} {STRUCK_MARKER}\n{note}\n\n{close_open_fence(strike_through(rest))}"
+    patch_review_comment(repo, comment["id"], body)
+    print(f"struck through suggestion comment {comment['id']} (has a human reply)")
+
+
+def replaced_line_count(old: str) -> int:
+    """Lines `old` occupies in the file — the same count plan_verify derives.
+
+    A trailing newline ENDS the last line rather than starting an empty one, and a
+    last line with no terminator is still a line (plan_verify's at_line_end rule
+    admits end-of-file, so such an anchor verifies and must be addressable).
+    Twin of plan_verify._line_count for a reason: the range this addresses has to
+    be the range that was anchored, or the two disagree about what is replaced.
+    """
+    return old.count("\n") + (0 if old.endswith("\n") else 1) if old else 0
+
+
+def comment_anchor(step: Step) -> dict:
+    """Where one suggestion's comment attaches: the lines `old` replaces.
+
+    GitHub replaces the ADDRESSED RANGE with the suggestion block's lines, while
+    the verifier proves a property about substituting `old` with `new`. Those are
+    the same effect only when the addressed range is exactly the range `old`
+    covers — address one line of a three-line anchor and the applier commits the
+    replacement plus the two lines it was meant to absorb, which is bytes no check
+    ever saw. plan_verify admits a multi-line `old` and provenance-checks every
+    line it spans, so the extent is verified; this is where it reaches the write.
+
+    `start_line` is OMITTED for a single-line anchor rather than set equal to
+    `line`: GitHub requires start_line < line and 422s on the degenerate range.
+
+    RIGHT on both ends: the plan carries no side, so the model cannot ask for LEFT
+    (which 422s on an added line), and a suggestion replaces new-side content by
+    definition.
+    """
+    line = cast(int, step.args["line"])
+    end = line + replaced_line_count(cast(str, step.args["old"])) - 1
+    anchor: dict[str, str | int] = {"path": cast(str, step.args["path"]), "line": end, "side": "RIGHT"}
+    if end > line:
+        anchor |= {"start_line": line, "start_side": "RIGHT"}
+    return anchor
+
+
+def render_suggestion(step: Step, fingerprint: str, metadata: dict,
+                      finding_key: str | None = None) -> str:
+    """One verified suggest step as a review-comment body.
+
+    Structure is ours; the model's `note` is inserted verbatim only after
+    check_plan_markdown proved it inside the safe grammar, and `new` goes inside
+    the suggestion fence, which is what GitHub applies.
+
+    The marker is the first line and the attribution footer the last, both by
+    position: `comment_content` drops them that way rather than searching for
+    them, so nothing has to recognise a pattern model text could imitate.
+
+    The notice and the policy hash sit OUTSIDE the fence (ADR-0005's visibility
+    requirement, which ADR-0009 extends to this comment) — inside it they would
+    render as code the reader skips rather than as the disclosure they are.
+    """
+    new = cast(str, step.args["new"])
+    marker = fence_marker(new)
+    # The terminator belongs to the closing fence, not to the content: `new` is
+    # line-oriented, so emitting "a\n" verbatim before the closer would suggest a
+    # trailing empty line the plan never described. An EMPTY new is the deletion
+    # suggestion and contributes no line at all, which is what distinguishes it
+    # from "\n" — one empty line, a line of the contributor's file either way.
+    block = [f"{marker}suggestion"]
+    if new:
+        block.append(new[:-1] if new.endswith("\n") else new)
+    block.append(marker)
+    # Both markers on line 1: the fingerprint identifies the SUGGESTION, the
+    # finding key identifies the COMMAND that may retract it.
+    first_line = suggestion_marker(fingerprint)
+    if finding_key is not None:
+        first_line = f"{first_line} {finding_marker(finding_key)}"
+    return "\n".join([
+        first_line,
+        NOT_A_HUMAN_REVIEW,
+        "",
+        cast(str, step.args["note"]),
+        "",
+        *block,
+        "<sub>🤖 model: `{model}` · policy: `{policy}` · reviewed SHA: `{sha}` · "
+        "[run]({run_url})</sub>".format(**metadata),
+    ])
+
+
+# ------------------------------------------------------- review wrappers ---
+
+# Identity marker for a review wrapper of ours, so a later run can recognise and
+# supersede it. Same status as the comment marker: executor-authored, and paired
+# with an author check because anyone can paste it into their own review.
+REVIEW_MARKER = "<!-- aceiro:review -->"
+
+# Appended to the marker line of a wrapper this pass has already spent, so a later
+# run recognises it instead of rewriting it every time. Needed because both bodies
+# now carry a per-run SHA and are therefore no longer constants: the skip used to
+# compare the body against SUPERSEDED_REVIEW_BODY, which stops working the moment
+# either body varies (ADR-0009's addendum B names this consequence). Same shape as
+# STRUCK_MARKER on a suggestion comment, and read from the marker line for the same
+# reason — REVIEW_MARKER stays the ownership half; this is only how "already spent"
+# is recognised.
+SUPERSEDED_MARKER = "<!-- aceiro:superseded -->"
+
+# What a wrapper delivered for, stamped on its own marker line so a LATER run can
+# recover it. This is the whole point of self-dating being coupled to the supersede
+# change: the pass takes no scope and cannot know what an earlier run spoke for, so
+# without the stamp a spent body could only either say nothing or restate the
+# rewriting run's own facts as if they were the wrapper's — which is the over-claim
+# this change exists to remove, in a new place.
+#
+# Read back from a position this module AUTHORS, exactly as post.posting_run_id
+# recovers a run id from its own footer. The whole line is harness-authored (a
+# wrapper body carries no model text at all) and ownership is still marker plus
+# resolved bot login, so nothing contributor-influenced enters the parse.
+#
+# `|` separates the SHA from the paths and `,` separates the paths: neither is in
+# policy.json's path pattern (`\.?[A-Za-z0-9][A-Za-z0-9._/-]*`), so no path can
+# shift a boundary. A wrapper with no stamp is one posted before this change and
+# reads as unknown, which the spent body then says rather than guesses.
+#
+# The SHA half is bounded by the SEPARATORS rather than by a hex class, and that is
+# deliberate. Hex is what a real head SHA is, so a hex class reads as tighter — but
+# the value is harness-supplied (HEAD_SHA, from the pull request), never
+# contributor-authored, so hex buys no containment the separator exclusion does not
+# already give. What it DOES buy is a way for the reader to silently disagree with
+# the writer: a non-hex value round-trips as UNRECORDED, so every test using a
+# placeholder SHA would exercise the wrapper-predates-the-stamp branch while naming
+# the recorded one. Found exactly that way.
+DELIVERED_RE = re.compile(r"<!-- aceiro:delivered:([^\s|>]+)\|([^\s>]*) -->")
+
+
+def delivered_marker(head_sha: str, paths: list[str]) -> str:
+    return f"<!-- aceiro:delivered:{head_sha}|{','.join(sorted(set(paths)))} -->"
+
+
+def delivered_stamp(review: dict) -> tuple[str, list[str]] | None:
+    """What a wrapper of ours recorded delivering, or None if it recorded nothing.
+
+    From the marker line only, like every other marker here. None means the wrapper
+    predates the stamp, and the caller must then say so rather than substitute its
+    own facts.
+    """
+    match = DELIVERED_RE.search((review.get("body") or "").split("\n", 1)[0])
+    if match is None:
+        return None
+    return match.group(1), [path for path in match.group(2).split(",") if path]
+
+
+def review_body(*, head_sha: str, paths: list[str]) -> str:
+    """The live wrapper's body, carrying what it delivered for.
+
+    The reviews API requires a body on a COMMENT event, so this is the one line the
+    review itself carries; the substance is in the suggestion comments.
+
+    SELF-DATING (ADR-0009's addendum B). This was the only artefact the harness
+    posts with no `reviewed SHA` — the suggestion comment's footer, the reviewer's
+    sticky comment and the follow-up pull-request body all carry one — so after a
+    push it was a live, undated claim pointing at comments GitHub had marked
+    outdated.
+
+    That matters more here than symmetry: an artefact that never claims a currency
+    NEVER NEEDS A LATER RUN TO CORRECT IT, and this lane may never run again. `/fix`
+    is commanded, so no subsequent run is guaranteed, and supersede_previous_reviews
+    executes only inside `if fresh:` — a wrapper is tidied only when a later command
+    posts new suggestions. Self-dating is what makes that acceptable rather than a
+    gap, and it is why moving the supersede pass out of that guard was not adopted:
+    doing so still depends on a later run arriving.
+
+    The stamp on the marker line is the machine-readable half, for the supersede pass
+    to recover; the prose is the human's.
+    """
+    delivered = ", ".join(f"`{path}`" for path in sorted(set(paths)))
+    return (
+        f"{REVIEW_MARKER} {delivered_marker(head_sha, paths)}\n"
+        f"🤖 **AI-suggested fixes** for {delivered} at `{head_sha}` — see the "
+        "suggestion comments below. Each one's currency is shown on the suggestion "
+        "itself, where GitHub marks it outdated once the head moves past that SHA. "
+        "Not a human review; counts toward no approval."
+    )
+
+
+def superseded_review_body(review: dict) -> str:
+    """Replaces a spent wrapper's body, stating only what THAT wrapper established.
+
+    The old text said "any from this one that still apply are in the current
+    suggestion comments", and on `svozza/artel` #61 that was FALSE: the `version.rs`
+    wrapper was superseded by a run scoped to `server.rs`, which never looked at
+    `version.rs`, never re-derived that finding and could not have re-posted its
+    suggestion. The supersede pass takes no scope, so the claim is one the rewriting
+    run did not evaluate — the same defect reconcile_suggestions guards against, one
+    artefact over (ADR-0009's addendum B).
+
+    Scoping the pass the way retraction is scoped was REJECTED: with per-finding
+    commands, wrappers would then accumulate roughly one per distinct file ever
+    remediated and none would ever be tidied, reviving the nine-wrapper problem the
+    first addendum measured. So every prior wrapper is still superseded — the
+    timeline stays collapsed — and what changes is that the body stops over-claiming.
+
+    Takes the REVIEW, not this run's facts, because the facts belong to the wrapper:
+    restating the rewriting run's SHA and paths here would be the same over-claim in
+    a new place. They are recovered from the wrapper's own stamp, which is why
+    self-dating and this change are one change.
+
+    A wrapper is a delivery VEHICLE, not a record of findings: it exists only because
+    the reviews API has no upsert for creation, and the substance was never in it.
+    """
+    stamp = delivered_stamp(review)
+    if stamp is None:
+        # Posted before the stamp existed. Says so rather than guessing: an unknown
+        # scope stated as a known one is the over-claim this function removes.
+        spoke_for = "This review delivered suggestions that it did not record the scope of"
+    else:
+        head_sha, paths = stamp
+        delivered = ", ".join(f"`{path}`" for path in paths) or "no recorded files"
+        spoke_for = f"This review delivered suggestions for {delivered} at `{head_sha}`"
+    return (
+        f"{REVIEW_MARKER} {SUPERSEDED_MARKER}\n"
+        f"🤖 **Spent AI remediation.** {spoke_for}, and it is spent. It does not say "
+        "whether any of them still apply: the run that superseded it did not evaluate "
+        "them, and each suggestion's own currency is shown on that suggestion, where "
+        "GitHub marks it outdated. Not a human review; counts toward no approval."
+    )
+
+
+def is_our_review(review: dict, bot_login: str) -> bool:
+    """Whether a review is a wrapper this harness posted.
+
+    Both conditions are load-bearing, exactly as in owned_fingerprint: the marker
+    alone would let anyone hand us someone else's review to rewrite. This gates a
+    body OVERWRITE, so a mis-scope would destroy a human's review summary.
+    """
+    if not bot_login or (review.get("user") or {}).get("login") != bot_login:
+        return False
+    return (review.get("body") or "").strip().startswith(REVIEW_MARKER)
+
+
+def is_superseded(review: dict) -> bool:
+    """Whether a wrapper of ours has already been spent by this pass.
+
+    Read from the MARKER LINE, not by comparing the body against a constant. The
+    comparison was how the pass avoided rewriting the wrapper it had just posted, and
+    both bodies now carry a per-run SHA — so neither is a constant and the equality
+    would never hold again, making every run rewrite (and re-minimize) every wrapper
+    it had already spent.
+
+    Same rule every other marker here follows: line 1, which is the only part of the
+    body this module authors.
+    """
+    return SUPERSEDED_MARKER in (review.get("body") or "").split("\n", 1)[0]
+
+
+def supersede_previous_reviews(repo: str, pr_number: int, bot_login: str) -> None:
+    """Neutralise the review wrappers left by earlier runs of this harness.
+
+    Every run that posts a suggestion comment must CREATE a review to carry it —
+    there is no "post into the existing review", and a submitted one cannot be
+    deleted (only PENDING ones can) — so on a long-lived pull request the wrappers
+    stack up, each claiming to point at comments the reconciler may since have
+    deleted. Only CREATION lacks an upsert; a submitted review's BODY is editable,
+    which is what this relies on.
+
+    Two mutations, in increasing order of the permission they need: rewrite the
+    body (REST, the same `pull-requests: write` this job already uses to POST
+    reviews), then minimize it so the UI collapses it (GraphQL-only).
+
+    Both are BEST EFFORT and neither may fail the run. This is cosmetic tidying in
+    front of an atomic POST: a permission the bot turns out not to have must cost a
+    collapsed timeline entry, never a delivery. Failures print and carry on.
+
+    Takes no scope, deliberately (ADR-0009's addendum B), so every prior wrapper is
+    spent and the timeline stays collapsed. What each spent body may CLAIM is bounded
+    instead: superseded_review_body reads the wrapper's own stamp rather than this
+    run's facts.
+    """
+    try:
+        reviews = [review for review in pull_reviews(repo, pr_number) if is_our_review(review, bot_login)]
+    except Exception as exc:  # noqa: BLE001 — cosmetic tidying must never fail the run
+        print(f"could not list reviews to supersede ({exc}); continuing")
+        return
+
+    for review in reviews:
+        # Already spent, so leave it: rewriting it again would re-minimize it every
+        # run and lose nothing but calls. Recognised by MARKER rather than by
+        # comparing the body against a constant — both bodies now carry a per-run SHA
+        # and neither is a constant, so the old equality would never hold again.
+        # Still identified from the body rather than by id, so this needs no coupling
+        # to what the POST returned.
+        if is_superseded(review):
+            continue
+        # `.get`, not `review["id"]`, and the same value in the handler: the
+        # subscript raised KeyError INSIDE the try, and the handler's own f-string
+        # then re-raised it out of a function whose contract is never to fail —
+        # losing the delivery to cosmetic tidying, since this runs before the POST.
+        review_id = review.get("id")
+        try:
+            update_review_body(repo, pr_number, review_id, superseded_review_body(review))
+            print(f"marked review {review_id} superseded")
+        except Exception as exc:  # noqa: BLE001
+            print(f"could not rewrite review {review_id} ({exc}); continuing")
+        if node_id := review.get("node_id"):
+            try:
+                minimize_review(node_id)
+                print(f"minimized review {review_id}")
+            except Exception as exc:  # noqa: BLE001
+                print(f"could not minimize review {review_id} ({exc}); continuing")
+
+
+# ---------------------------------------------------------- the reconciler ---
+
+
+def comment_content(body: str) -> str:
+    """One of our suggestion comments minus the two lines this module authored.
+
+    Used only to decide whether a live comment still says what the current plan
+    says. The first line is the marker and the last is the attribution footer;
+    both are ours, so they are dropped BY POSITION rather than searched for —
+    model text cannot reach either position, and nothing here has to recognise a
+    pattern model text could imitate.
+
+    Dropping the footer is the point: its `[run]` URL differs on every run, so
+    comparing whole bodies would report every comment as changed and rewrite all
+    of them, every time.
+
+    Line endings are normalised before comparing, because only one side of the
+    comparison came back from GitHub: this harness sends LF and the API returns
+    bodies with CRLF (measured — post.check_marker's docstring records the same
+    fact), so an unchanged comment differed from its own re-render at every
+    interior newline and was rewritten every run without bound. Normalising here is
+    not the canonicality question ADR-0011 refuses to answer by rewriting: nothing
+    normalised is ever POSTED, this decides only whether two bodies say the same
+    thing.
+    """
+    lines = NEWLINES_RE.sub("\n", body or "").split("\n")
+    return "\n".join(lines[1:-1]).strip()
+
+
+def reconcile_suggestions(repo: str, pr_number: int, steps: Sequence[Step],
+                          signatures: dict[tuple[str, int], str], metadata: dict,
+                          *, bot_login: str, head_sha: str,
+                          commanded_finding_keys: tuple[str, ...] | None) -> None:
+    """Make the pull request's suggestion comments match the verified plan's.
+
+    Re-posting is not idempotent — an identical comment on an unchanged line
+    creates a true duplicate — so the reconciler dedups itself on
+    suggestion_fingerprint: matched comments stay in place, new ones are posted,
+    and the ones whose suggestion is gone are retracted.
+
+    New comments go up BEFORE anything is retracted, because the batch is atomic:
+    if a line cannot be resolved the POST 422s and creates nothing, and failing at
+    that point must leave the existing comments standing rather than having
+    already deleted them.
+
+    All three keyword arguments have no defaults. `bot_login` is the security half
+    of ownership. `head_sha` binds the review to the SHA the plan was verified
+    against, so a push landing mid-run leaves the suggestion marked outdated rather
+    than misplaced on content it never described.
+
+    `commanded_finding_keys` is the SCOPE — a SET, because one run delivers the
+    findings ONE command named (ADR-0007, ADR-0013), while the comment listing is
+    the whole pull request. Retraction has to be told what this command could have
+    produced or it withdraws every OTHER finding's live suggestion — with a note
+    claiming it left the latest remediation, which is untrue, and deleting the human
+    thread under it if there is no reply to force a strike. Two commands on one pull
+    request is the designed flow.
+
+    The scope is the FINDINGS, not their files. A path was the scope first, on the
+    reasoning that the scope gate already requires the plan to touch it — but two
+    findings of one accepted artifact routinely share a file, and the reviewer was
+    measured doing exactly that (ADR-0009 addendum C), so a path is the set TWO
+    commands speak for. `/fix 2` then withdrew `/fix 1`'s live suggestion. Each
+    comment records the ONE finding it was delivered for (finding_marker, on the
+    marker line — a comment's marker stays per finding, since a comment speaks for
+    exactly one; what carries a set is the COMMAND), and a command retracts only
+    comments whose key is in its own set.
+
+    The widening pays for itself on the shared-file case: `/fix 1,3` with both
+    anchors in one file reconciles with scope {K1, K3}, so an earlier `/fix 1`
+    comment is in scope, absent from `wanted`, and retracted by this reconciler with
+    no new mechanism (ADR-0013).
+
+    The reverse — `/fix 1,3` then `/fix 3` — does NOT retract, because the earlier
+    comment records the first commanded finding and {K1} is not in {K3}. That is
+    cross-command partiality, which ADR-0009's addendum D accepts deliberately and
+    for the reason it gives: the leftover comment is still on the pull request, still
+    visible, and GitHub marks it outdated when the head moves, so a half-fix cannot
+    land silently. Nothing is built for it.
+
+    None (or an empty set) retracts NOTHING, and so does a comment whose own key
+    cannot be established: a run whose scope is unknown may still post — its own
+    suggestions are verified — but must not take anything down. That also makes the
+    change backward-safe, since comments delivered before the marker existed carry
+    no key and are left standing rather than withdrawn by the first command to
+    follow.
+    """
+    all_comments = list(review_comments(repo, pr_number))
+    ours = [(fingerprint, c) for c in all_comments if (fingerprint := owned_fingerprint(c, bot_login))]
+    replied_ids = human_replied_ids(all_comments, bot_login)
+    wanted = {suggestion_fingerprint(step.args, signatures): step for step in steps}
+    live = {fingerprint for fingerprint, _ in ours}
+
+    # What each comment RECORDS is one finding's key (ADR-0013: the marker stays per
+    # finding; what carries a set is the command). Under a multi-finding command
+    # every commanded finding is on the plan's single suggestion path — cardinality
+    # permits one suggest step per path, and the scope gate requires the fix to
+    # touch every commanded path — so one contiguous replacement covers the whole
+    # set and no single finding is uniquely "the" one it speaks for. The FIRST
+    # commanded finding is recorded as the representative: deterministic, because
+    # the keys arrive in the canonical ordinal order read_commanded_indices
+    # established, and immaterial to scope, which is set membership below.
+    scope = frozenset(commanded_finding_keys or ())
+    recorded_key = commanded_finding_keys[0] if commanded_finding_keys else None
+
+    fresh = [(fingerprint, step) for fingerprint, step in wanted.items() if fingerprint not in live]
+    if fresh:
+        # BEFORE the POST, so "every wrapper except the newest" needs no id
+        # bookkeeping — at this moment the newest does not exist yet. Safe to do
+        # first because it only ever rewrites and collapses OUR OWN spent
+        # wrappers, never a comment; if the POST then 422s, the run fails having
+        # tidied history it was going to tidy anyway, and the suggestions on the
+        # pull request are untouched.
+        supersede_previous_reviews(repo, pr_number, bot_login)
+        submit_review(
+            repo,
+            pr_number,
+            # Self-dating (ADR-0009's addendum B): the wrapper records the head it
+            # delivered for and the paths it touched, so it never claims a currency a
+            # later run would have to correct — which matters because `/fix` is
+            # commanded and there may BE no later run.
+            review_body(head_sha=head_sha,
+                        paths=[cast(str, step.args["path"]) for _, step in fresh]),
+            [comment_anchor(step) | {
+                "body": render_suggestion(step, fingerprint, metadata, recorded_key)}
+             for fingerprint, step in fresh],
+            head_sha=head_sha,
+        )
+        print(f"posted review with {len(fresh)} suggestion comment(s)")
+    else:
+        print("no new suggestions to post")
+
+    # A suggestion can be retracted on one run and produced again on the next. Its
+    # struck comment already holds the human thread, and a key match proves it is
+    # about the same code, so the comment is restored rather than left
+    # contradicting the review that carries it. AFTER the POST: restoring first
+    # would leave a stale comment live if the atomic POST then 422'd.
+    #
+    # A matched comment is also re-rendered when its CONTENT changed — the note or
+    # the replacement can be revised between runs while the anchor, and so the
+    # key, stays the same. Compared on comment_content rather than the whole body,
+    # so the per-run `[run]` URL does not make every comment look changed and
+    # rewrite them all.
+    for fingerprint, comment in ours:
+        if fingerprint not in wanted:
+            continue
+        body = render_suggestion(
+            wanted[fingerprint], fingerprint, metadata, recorded_key)
+        if is_struck(comment):
+            patch_review_comment(repo, comment["id"], body)
+            print(f"restored previously retracted suggestion comment {comment['id']}")
+        elif comment_content(comment.get("body") or "") != comment_content(body):
+            patch_review_comment(repo, comment["id"], body)
+            print(f"updated suggestion comment {comment['id']} (its suggestion changed)")
+
+    # Scoped to what THIS command speaks for: a comment delivered for a finding
+    # this command did not name is not withdrawn by it. A comment whose own key
+    # cannot be established is out of scope and left standing — the fail-closed
+    # reading, since the alternative is deleting a comment whose subject is unknown.
+    stale = [(fingerprint, comment) for fingerprint, comment in ours if fingerprint not in wanted]
+    if stale:
+        # Re-read immediately before the DELETEs. The listing above happened before
+        # the POST, the supersede pass and the re-render PATCHes — several live
+        # calls — and a human replying in that window was absent from the snapshot,
+        # so `retract` read "no discussion" and DELETED their reply's parent. The
+        # window cannot be closed (the read and the delete are not atomic) but it
+        # can be made as small as the last read, and the cost of a stale answer is
+        # asymmetric: a reply seen late means an unnecessary strike, a reply missed
+        # means a severed thread. Failing to re-read keeps the pre-write answer
+        # rather than losing the retraction.
+        try:
+            replied_ids = human_replied_ids(list(review_comments(repo, pr_number)), bot_login)
+        except Exception as exc:  # noqa: BLE001 — the snapshot we already hold is a safe answer
+            print(f"could not re-read replies before retracting ({exc}); using the earlier scan")
+
+    for fingerprint, comment in stale:
+        if owned_finding_key(comment, bot_login) not in scope:
+            print(f"suggestion comment {comment['id']} is outside this command's scope, left as is")
+            continue
+        retract(repo, comment, replied_ids, WITHDRAWN_NOTE)

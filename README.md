@@ -1,6 +1,9 @@
-# Smtithy
+# Aceiro
 
-Smtithy is an AI code reviewer for GitHub pull requests that treats every model
+Aceiro was formerly named Smtithy. Historical ADRs, findings, experiment
+records, and run references retain the name that was current when recorded.
+
+Aceiro is an AI code reviewer for GitHub pull requests that treats every model
 response as untrusted.
 
 It reviews a change, reports concrete findings with file-and-line references,
@@ -11,24 +14,24 @@ repository.
 
 ## What it does
 
-Add Smtithy to a repository and it becomes part of the pull request workflow:
+Add Aceiro to a repository and it becomes part of the pull request workflow:
 
 1. A pull request opens or changes.
-2. Smtithy reads the pinned diff and relevant repository context.
+2. Aceiro reads the pinned diff and relevant repository context.
 3. It posts a single, updateable review containing:
    - findings that identify the affected file and changed line;
    - a summary of the change;
    - residual risks it could not confirm.
 4. A maintainer can comment `/fix 1` to request a fix for finding 1.
-5. Smtithy proposes the fix as GitHub suggestions when possible, or as a
+5. Aceiro proposes the fix as GitHub suggestions when possible, or as a
    follow-up pull request when the change must be applied atomically.
 
-Reviewing and fixing are separate. Smtithy never changes code merely because it
+Reviewing and fixing are separate. Aceiro never changes code merely because it
 found a problem, and only users with write access can request a fix.
 
 ## How safety works
 
-Smtithy assumes that prompts and model behavior are not security boundaries.
+Aceiro assumes that prompts and model behavior are not security boundaries.
 It separates the system into three parts:
 
 **Generate -> verify -> execute**
@@ -49,7 +52,7 @@ flowchart LR
 - The **generator** uses a model to propose a structured review or fix plan. It
   has no repository write permission.
 - The **verifier** deterministically checks the complete proposal against
-  [`policy.json`](src/smtithy/policy.json). If any part is invalid, the whole
+  [`policy.json`](src/aceiro/policy.json). If any part is invalid, the whole
   proposal is rejected.
 - The **executor** independently verifies the proposal again before posting a
   review, creating suggestions, or opening a follow-up pull request.
@@ -71,13 +74,13 @@ You need:
     rule that only permits your default branch.
 
 GitHub must enforce environment protection rules for your repository and plan.
-On GitHub Free, that means the repository must be public. Smtithy checks the
+On GitHub Free, that means the repository must be public. Aceiro checks the
 approval environment at runtime and refuses protected runs if the gate is
 missing or ineffective.
 
 ## Install
 
-Always pin Smtithy to a full 40-character commit SHA. Do not use a branch or
+Always pin Aceiro to a full 40-character commit SHA. Do not use a branch or
 tag: the workflow and the verifier code must resolve to the same immutable
 version.
 
@@ -93,16 +96,16 @@ Choose one authentication method:
   Bedrock with OIDC is the default.
 - **AWS Bedrock with a long-term API key:** add `BEDROCK_API_KEY` as a
   repository Actions secret and set `use-bedrock-api-key: true` in both
-  workflows. Smtithy passes it to the Bedrock client as
+  workflows. Aceiro passes it to the Bedrock client as
   `AWS_BEARER_TOKEN_BEDROCK`.
 
 ### 2. Add the review workflow
 
-Create `.github/workflows/ai-pr-review.yml` in the repository you want Smtithy
+Create `.github/workflows/ai-pr-review.yml` in the repository you want Aceiro
 to review:
 
 ```yaml
-name: Smtithy review
+name: Aceiro review
 
 on:
   pull_request_target:
@@ -116,7 +119,7 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
-    uses: svozza/smtithy/.github/workflows/ai-pr-review.yml@<FULL_COMMIT_SHA>
+    uses: svozza/aceiro/.github/workflows/ai-pr-review.yml@<FULL_COMMIT_SHA>
     with:
       project-description: "owner/repository, a short description of the project"
       use-bedrock: false
@@ -147,7 +150,7 @@ To let maintainers request fixes, create
 `.github/workflows/ai-pr-fix.yml`:
 
 ```yaml
-name: Smtithy fix
+name: Aceiro fix
 
 on:
   issue_comment:
@@ -165,7 +168,7 @@ jobs:
       pull-requests: write
       id-token: write
       actions: read
-    uses: svozza/smtithy/.github/workflows/ai-pr-fix.yml@<FULL_COMMIT_SHA>
+    uses: svozza/aceiro/.github/workflows/ai-pr-fix.yml@<FULL_COMMIT_SHA>
     with:
       project-description: "owner/repository, a short description of the project"
       use-bedrock: false
@@ -184,7 +187,7 @@ pull request will then start a review.
 
 ## Use
 
-Smtithy maintains one review comment per pull request and updates it when a new
+Aceiro maintains one review comment per pull request and updates it when a new
 commit is reviewed. Findings are numbered so maintainers can request a specific
 remediation:
 
@@ -193,19 +196,19 @@ sequenceDiagram
     actor Contributor
     actor Maintainer
     participant GitHub
-    participant Smtithy
+    participant Aceiro
 
     Contributor->>GitHub: Open or update a pull request
-    GitHub->>Smtithy: Start review
-    Smtithy->>Smtithy: Generate and verify findings
-    Smtithy->>GitHub: Post the verified review
+    GitHub->>Aceiro: Start review
+    Aceiro->>Aceiro: Generate and verify findings
+    Aceiro->>GitHub: Post the verified review
     Maintainer->>GitHub: Comment /fix 1
-    GitHub->>Smtithy: Start commanded fix
-    Smtithy->>Smtithy: Generate and verify a fix plan
+    GitHub->>Aceiro: Start commanded fix
+    Aceiro->>Aceiro: Generate and verify a fix plan
     alt Fix can be applied independently
-        Smtithy->>GitHub: Post one-click suggestions
+        Aceiro->>GitHub: Post one-click suggestions
     else Fix must remain atomic
-        Smtithy->>GitHub: Open a follow-up pull request
+        Aceiro->>GitHub: Open a follow-up pull request
     end
     Contributor->>GitHub: Review and apply the fix
 ```
@@ -221,7 +224,7 @@ several findings as one atomic fix:
 /fix 1,3
 ```
 
-Smtithy only accepts commands from users with write access. It also refuses a
+Aceiro only accepts commands from users with write access. It also refuses a
 command if the pull request has changed since the referenced review, preventing
 a fix from being applied to stale code.
 
@@ -229,12 +232,12 @@ Simple, independent edits arrive as GitHub suggestions that a contributor can
 apply with one click. Fixes that span files or must remain atomic arrive in a
 stacked follow-up pull request. Stacked delivery is available only for
 same-repository pull requests; an atomic multi-file fix on a fork has no
-automated delivery. Smtithy does not run the proposed code or its tests; the
+automated delivery. Aceiro does not run the proposed code or its tests; the
 repository's normal CI remains responsible for validating the result.
 
 ## Run artifacts
 
-Smtithy uploads diagnostic Actions artifacts so repository operators can audit
+Aceiro uploads diagnostic Actions artifacts so repository operators can audit
 and troubleshoot a run:
 
 | Artifact | Contents | Retention |
@@ -305,7 +308,7 @@ for commands and environment setup, and
 
 ## Project status
 
-Smtithy is under active development. The review, verification, GitHub posting,
+Aceiro is under active development. The review, verification, GitHub posting,
 commanded fix, suggestion, reply, and follow-up pull request paths are present.
 Interfaces may still change.
 

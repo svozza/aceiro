@@ -17,7 +17,7 @@ def test_arm_result_source_lock_is_closed_and_pinned() -> None:
     assert SHA.fullmatch(lock["schema"]["commit"])
     assert SHA256.fullmatch(lock["schema"]["sha256"])
     assert [arm["arm_id"] for arm in lock["arms"]] == [
-        "smtithy", "naive", "aws-durable",
+        "aceiro", "naive", "aws-durable",
     ]
     for arm in lock["arms"]:
         assert set(arm) == {

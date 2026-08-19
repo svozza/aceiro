@@ -16,6 +16,6 @@ def test_live_workflow_exercises_all_four_modes() -> None:
 
 
 def test_partial_mode_forces_post_write_movement_check() -> None:
-    driver = (ROOT / "src/smtithy/evals/run_live_post.py").read_text()
+    driver = (ROOT / "src/aceiro/evals/run_live_post.py").read_text()
     assert 'choices=("normal", "partial")' in driver
     assert "return None if checks == 1 else \"head changed\"" in driver
