@@ -448,7 +448,14 @@ class TestTheGateJobWaitsAtTheEnvironmentTheWorkerVerifies:
         credentials = [
             index for index, step in enumerate(steps)
             if "configure-aws-credentials" in step.get("uses", "")
-            or any(key.endswith(("ANTHROPIC_API_KEY", "AWS_SECRET_ACCESS_KEY")) for key in step)
+            or any(
+                key.endswith((
+                    "ANTHROPIC_API_KEY",
+                    "AWS_BEARER_TOKEN_BEDROCK",
+                    "AWS_SECRET_ACCESS_KEY",
+                ))
+                for key in step
+            )
         ]
         assert credentials, f"{workflow} job {worker_job!r}: no credential step found"
         assert gate < min(credentials), (
@@ -592,6 +599,47 @@ class TestNoOidcMintingWhereUntrustedCodeRuns:
         # because a reader's obvious simplification breaks the job.
         shadowed = [s.get("name") for s in evals_steps if any(f"env.{n}" in s for n in self.MINTING)]
         assert len(shadowed) >= 3, f"expected every PR-code step shadowed, got {shadowed}"
+
+
+class TestReusableWorkflowBedrockApiKeys:
+    WORKERS = [
+        ("ai-pr-review.yml", "review", "Run review agent"),
+        ("ai-pr-fix.yml", "plan", "Run plan agent"),
+    ]
+    WORKFLOWS = [workflow for workflow, _, _ in WORKERS]
+
+    @pytest.mark.parametrize("workflow", WORKFLOWS)
+    def test_the_api_key_mode_is_explicit_and_off_by_default(self, workflow):
+        declared = workflow_input((WORKFLOWS / workflow).read_text(), "use-bedrock-api-key")
+        assert declared["type"] == "boolean"
+        assert declared["default"] == "false"
+
+    @pytest.mark.parametrize(("workflow", "job", "model_step"), WORKERS)
+    def test_oidc_role_assumption_is_skipped_for_api_key_mode(self, workflow, job, model_step):
+        steps = parse_steps((WORKFLOWS / workflow).read_text(), job)
+        credentials = next(
+            step for step in steps
+            if "configure-aws-credentials" in step.get("uses", "")
+        )
+        assert "inputs.use-bedrock && !inputs.use-bedrock-api-key" in credentials["if"]
+
+    @pytest.mark.parametrize(("workflow", "job", "model_step"), WORKERS)
+    def test_only_the_model_step_receives_the_bedrock_api_key(self, workflow, job, model_step):
+        steps = parse_steps((WORKFLOWS / workflow).read_text(), job)
+        recipients = [
+            step for step in steps
+            if "env.AWS_BEARER_TOKEN_BEDROCK" in step
+        ]
+        assert [step.get("name") for step in recipients] == [model_step]
+        assert "secrets.BEDROCK_API_KEY" in recipients[0]["env.AWS_BEARER_TOKEN_BEDROCK"]
+        assert recipients[0]["env.AWS_REGION"] == "${{ inputs.aws-region }}"
+
+    @pytest.mark.parametrize(("workflow", "job", "model_step"), WORKERS)
+    def test_the_model_cannot_mint_an_oidc_token(self, workflow, job, model_step):
+        steps = parse_steps((WORKFLOWS / workflow).read_text(), job)
+        model = next(step for step in steps if step.get("name") == model_step)
+        for name in ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"):
+            assert model[f"env.{name}"] in ("", "''", '""')
 
 
 class TestDraftSemanticsAgree:
