@@ -222,6 +222,7 @@
   .tag.partial { background: var(--amber-soft); color: #7b4e00; border-color: #dfbd73; }
   .result { font-size: 12px; line-height: 1.45; white-space: normal; }
   .result.good { color: var(--green); }
+  .result.na { color: var(--muted); }
   .result.warn { color: var(--amber); }
   .result.bad { color: var(--red); }
   .arm-result { display: grid; gap: 6px; }
@@ -1463,7 +1464,8 @@ function plainResultText(value) {
 
 function resultClass(value) {
   if (/not scored|cannot be scored|invalid|excluded/i.test(value)) return "bad";
-  if (/^0\s|N\/A|reject|withdraw|0\/|3\/3|10\/10|100|scored/.test(value)) return "good";
+  if (/N\/A|not applicable/i.test(value)) return "na";
+  if (/^0\s|reject|withdraw|0\/|3\/3|10\/10|100|scored/.test(value)) return "good";
   return "warn";
 }
 
