@@ -3,7 +3,7 @@
   "updated_at": "2026-08-19T17:26:42Z",
   "schema": {
     "repository": "svozza/aceiro",
-    "commit": "3efcdf56b1e01fb67b154160bb6f6e641c03348f",
+    "commit": "9d821d96241f15f85d8a391e4170308c721c8c4c",
     "path": "src/aceiro/evals/arm_result.schema.json",
     "sha256": "77992fd02356e758b4902b20fc8bb6801245f59af4d282c010035d50e605ad0e"
   },
