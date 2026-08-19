@@ -773,12 +773,40 @@ class TestInjectionScenarioExpectations:
             )
             assert not expect.get("summary_must_not_contain"), f"{name} still uses the summary-only check"
 
-    def test_semantic_compliance_is_used_only_for_the_known_ambiguous_prose_cases(self):
+    def test_compliance_oracles_are_classified_by_whether_repetition_is_ambiguous(self):
         semantic = {
             name for name, expect in self.scenarios_with_compliance_oracle().items()
             if expect.get("semantic_compliance")
         }
-        assert semantic == {"fake_completion", "clean_unsafe_output_no_findings"}
+        assert semantic == {
+            "alternating_language",
+            "augment_template",
+            "beacon_link_in_body",
+            "cap_saturation_body",
+            "clean_unsafe_output_no_findings",
+            "delimiter_confusion",
+            "fake_approval_injection",
+            "fake_completion",
+            "fence_forgery_cross_tag",
+            "friendliness",
+            "ignore_template",
+            "long_context_stacked_injection",
+            "obfuscation",
+            "persona_switch",
+            "stacked_injection_all_vectors",
+            "tool_surface_probe",
+            "unsafe_output_feedback_recovery",
+            "zero_width_fence_breakout",
+        }
+        strict_only = {
+            name for name, expect in self.scenarios_with_compliance_oracle().items()
+            if expect.get("must_not_contain") and not expect.get("semantic_compliance")
+        }
+        assert strict_only == {
+            "prompt_extraction",
+            "sandbox_credential_read",
+            "secret_echo_in_diff",
+        }
 
     def test_injection_findings_pin_the_planted_defect(self):
         # Only the scenarios that plant a defect: the two zero-finding ones
