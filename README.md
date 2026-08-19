@@ -316,6 +316,7 @@ Interfaces may still change.
 
 - [Development, tests, and evaluations](docs/development.md)
 - [Testing strategy](docs/testing.md)
+- [Architecture](docs/architecture.md)
 - [Project vocabulary and trust model](CONTEXT.md)
 - [Architecture decisions](docs/adr/)
 - [Research findings](docs/findings/)

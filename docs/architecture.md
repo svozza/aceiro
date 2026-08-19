@@ -1,8 +1,5 @@
 # Architecture
 
-Aceiro was formerly named Smtithy. Historical architecture decisions and
-experiment records retain the original product name.
-
 Aceiro is an AI-assisted review and remediation system for GitHub pull
 requests. It is designed around one constraint:
 
