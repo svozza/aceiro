@@ -1,3 +1,0 @@
-# The type checker, its own CI job beside quality_check (ADR-0017): a dev
-# tool only, never installed in a credentialed job.
-ty

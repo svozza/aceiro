@@ -6,7 +6,7 @@ untrusted code, so it must assert the gate from trusted code BEFORE that
 checkout, hold no credential before the assertion, and never write a cache entry
 the untrusted tree influenced.
 
-Hand-parsed rather than adding PyYAML to the hash-pinned lockfiles for three
+Hand-parsed rather than adding PyYAML to the locked dependency set for three
 properties. Not a general YAML implementation: it reads step lists, step keys and
 scalar values, which is all the assertions below use.
 """
@@ -465,11 +465,12 @@ class TestNoUntrustedInfluencedCache:
     def test_the_evals_job_caches_nothing(self, evals_steps):
         for step in evals_steps:
             if "setup-python" in step.get("uses", ""):
-                assert not any(key.endswith("cache") for key in step), (
+                assert not any(key.endswith("cache") for key in step)
+            if "setup-uv" in step.get("uses", ""):
+                assert step.get("with.enable-cache") == "false", (
                     "the evals job checks out and executes PR-head code, so any cache entry it "
                     "saves is written into the base branch's cache scope"
                 )
-                assert not any("cache-dependency-path" in key for key in step)
 
     def test_any_job_checking_out_pr_head_caches_nothing(self):
         # The general rule, over every workflow: the two findings were one job's
@@ -481,14 +482,17 @@ class TestNoUntrustedInfluencedCache:
                 if untrusted_checkout_index(steps) < 0:
                     continue
                 for step in steps:
-                    if "setup-python" not in step.get("uses", ""):
-                        continue
-                    caching = [key for key in step if key.endswith("cache")]
-                    assert not caching, (
-                        f"{path.name} job {job!r} checks out pull_request.head.sha and caches "
-                        f"({caching}); the entry is saved by an implicit post step into the "
-                        "base ref's scope, after the untrusted code has run"
-                    )
+                    if "setup-python" in step.get("uses", ""):
+                        caching = [key for key in step if key.endswith("cache")]
+                        assert not caching, (
+                            f"{path.name} job {job!r} checks out pull_request.head.sha and "
+                            f"setup-python caches ({caching})"
+                        )
+                    if "setup-uv" in step.get("uses", ""):
+                        assert step.get("with.enable-cache") == "false", (
+                            f"{path.name} job {job!r} checks out pull_request.head.sha and "
+                            "setup-uv does not explicitly disable its cache"
+                        )
 
 
 def job_names(text: str) -> list[str]:
@@ -1109,13 +1113,13 @@ class TestOtherWorkflowsStayCorrect:
 
     def test_ai_pr_review_keys_its_cache_on_the_trusted_harness(self):
         steps = parse_steps((WORKFLOWS / "ai-pr-review.yml").read_text(), "review")
-        for step in steps:
-            for key, value in step.items():
-                if "cache-dependency-path" in key:
-                    assert value.startswith("harness/"), (
-                        "ai-pr-review.yml's cache key must come from the pinned harness "
-                        f"checkout, not the consumer's tree; got {value!r}"
-                    )
+        setup_uv = next(step for step in steps if "setup-uv" in step.get("uses", ""))
+        assert setup_uv.get("with.enable-cache") == "true"
+        dependency = setup_uv.get("with.cache-dependency-glob")
+        assert dependency == "harness/uv.lock", (
+            "ai-pr-review.yml's cache key must come from the pinned harness checkout, "
+            f"not the consumer's tree; got {dependency!r}"
+        )
 
 
 
@@ -1149,7 +1153,7 @@ class TestSupplyChainPinning:
     def test_the_scan_finds_something(self):
         # A filter that matched nothing would make every assertion below vacuous.
         assert len(self.lines_containing("uses:")) >= 5
-        assert len(self.lines_containing("pip install")) >= 5
+        assert len(self.lines_containing("uv sync")) >= 5
 
     def test_every_action_is_pinned_to_a_full_commit_sha(self):
         # A moving tag is a supply-chain hole wherever it appears, but especially
@@ -1168,14 +1172,17 @@ class TestSupplyChainPinning:
                 "a tag or branch re-resolves on every run"
             )
 
-    def test_every_pip_install_requires_hashes(self):
-        installs = self.lines_containing("pip install")
-        assert installs, "no pip install found; this assertion has gone stale"
-        for workflow, number, text in installs:
-            assert "--require-hashes" in text, (
-                f"{workflow}:{number} installs without --require-hashes, so a compromised "
-                f"index can substitute a dependency: {text!r}"
+    def test_every_uv_sync_uses_the_committed_lock_without_updating_it(self):
+        syncs = self.lines_containing("uv sync")
+        assert syncs, "no uv sync found; this assertion has gone stale"
+        for workflow, number, text in syncs:
+            assert "--frozen" in text, (
+                f"{workflow}:{number} syncs without --frozen, so CI may rewrite or "
+                f"resolve beyond the reviewed uv.lock: {text!r}"
             )
+
+    def test_no_workflow_uses_legacy_pip_requirement_installs(self):
+        assert self.lines_containing("pip install") == []
 
     def test_no_workflow_runs_node(self):
         # The harness is all Python (the ADR superseding ADR-0003): a Node step

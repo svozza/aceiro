@@ -1,0 +1,28 @@
+[project]
+name = "smtithy"
+version = "0.0.0"
+description = "Verified AI review and remediation workflows for GitHub pull requests"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # Security-sensitive verifier dependencies. Version changes require the
+    # adversarial corpus, not only the ordinary unit tests.
+    "detect-secrets==1.5.0",
+    "jsonschema==4.26.0",
+    "markdown-it-py==4.2.0",
+    # The SDK wheel bundles the Claude Code CLI. A bump changes generator
+    # behavior and therefore requires model evaluations as well as unit tests.
+    "claude-agent-sdk==0.2.128",
+]
+
+[dependency-groups]
+test = [
+    "hypothesis==6.161.0",
+    "pytest==9.1.1",
+]
+typecheck = [
+    "ty==0.0.72",
+]
+
+[tool.uv]
+package = false
+required-version = "==0.12.3"
