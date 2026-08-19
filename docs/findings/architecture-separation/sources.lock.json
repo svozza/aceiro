@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-18T21:40:51Z",
+  "updated_at": "2026-08-19T07:10:00Z",
   "schema": {
     "repository": "svozza/smtithy",
     "commit": "3efcdf56b1e01fb67b154160bb6f6e641c03348f",
@@ -11,16 +11,16 @@
     {
       "arm_id": "smtithy",
       "repository": "svozza/smtithy",
-      "commit": "62a8fb5d3ddab7f30857175f135fbd8836932b9b",
+      "commit": "dafc05540acd95d983a26e7f122a937b6d4f811f",
       "index_path": "results/index.json",
-      "index_sha256": "0eb8fd035ea75d9bb885083d249c4257918fd74f0de0c4230468055f26217ceb"
+      "index_sha256": "89f3944e8c8557c801fc7155f13f9ee397c895241be85606a9bdced7af0818e0"
     },
     {
       "arm_id": "naive",
       "repository": "svozza/smtithy-naive-baseline",
-      "commit": "a86cd3897ab35fc8881dee03502e7a079c7fbeff",
+      "commit": "424139b77d5ed0634a319fa7650c5de18f959966",
       "index_path": "results/index.json",
-      "index_sha256": "f2f26f2b3dc965da8905475157080df66b3442452b1f8c3dbed8d1e556198244"
+      "index_sha256": "143e27cf72c394fa0f70588f42beeb5decbeeb4fc8d4ad4435d4eac7ae657598"
     },
     {
       "arm_id": "aws-durable",
