@@ -70,19 +70,19 @@ class TestLoadDeclaration:
     def test_unknown_key_rejects(self, tmp_path):
         """Fail closed on a key nobody reads: a misspelled 'paths' must not
         silently fetch nothing."""
-        with pytest.raises(FixtureError, match="unexpected keys"):
+        with pytest.raises(FixtureError, match="unexpected"):
             load_declaration(write(tmp_path, {**VALID, "pathz": ["x.py"]}))
 
     @pytest.mark.parametrize("ref", ["develop", "main", "v1.2.3", "a" * 39, "A" * 40, "z" * 40, ""])
     def test_a_moving_or_malformed_ref_rejects(self, tmp_path, ref):
         """The reason pinning exists: expect.json grades an exact line number, so
         a branch or tag would let the premise drift out from under it."""
-        with pytest.raises(FixtureError, match="40-character"):
+        with pytest.raises(FixtureError, match=r"\['sha'\].*invalid"):
             load_declaration(write(tmp_path, {**VALID, "sha": ref}))
 
     @pytest.mark.parametrize("repo", ["name", "owner/", "/name", "owner/name/extra", "-bad/name", ""])
     def test_malformed_repo_rejects(self, tmp_path, repo):
-        with pytest.raises(FixtureError, match="owner/name"):
+        with pytest.raises(FixtureError, match=r"\['repo'\].*invalid"):
             load_declaration(write(tmp_path, {**VALID, "repo": repo}))
 
     def test_empty_paths_rejects(self, tmp_path):
@@ -105,7 +105,7 @@ class TestLoadDeclaration:
     )
     def test_unsafe_path_rejects(self, tmp_path, path):
         """A declaration is data. It must not be able to write outside its cache."""
-        with pytest.raises(FixtureError, match="safe relative path"):
+        with pytest.raises(FixtureError, match=r"\['paths'\]\[0\].*invalid"):
             load_declaration(write(tmp_path, {**VALID, "paths": [path]}))
 
 
@@ -179,7 +179,7 @@ class TestTheRealScenarioDeclaration:
         declaration = load_declaration(scenarios / "caller_impact_needs_investigation")
         assert declaration is not None
         assert declaration["repo"] == "aws-powertools/powertools-lambda-python"
-        assert base_fixture.SHA_RE.fullmatch(declaration["sha"])
+        base_fixture.BASE_DECLARATION_VALIDATOR.validate(declaration)
         assert declaration.get("why"), "a fixture that reaches the network should say why"
 
     def test_no_other_scenario_declares_a_base(self):

@@ -1124,10 +1124,10 @@ class TestExpectKeysAreValidated:
             expect = json.loads((scenario / "expect.json").read_text())
             run_evals.check_expect_keys(expect, scenario.name)
 
-    def test_every_key_finding_matches_reads_is_in_the_nested_allowlist(self):
-        # test_every_graded_key_is_in_the_allowlist's discipline one level down:
-        # the nested allowlist is only as good as its agreement with the reader,
-        # and a key finding_matches consults but the allowlist rejects would turn
+    def test_every_key_finding_matches_reads_is_in_the_nested_schema(self):
+        # test_every_graded_key_is_in_the_schema's discipline one level down:
+        # the nested schema is only as good as its agreement with the reader,
+        # and a key finding_matches consults but the schema rejects would turn
         # a valid scenario into a hard error.
         source = Path(run_evals.__file__).read_text()
         body = source.split("def finding_matches")[1].split("\ndef ")[0]
@@ -1138,9 +1138,9 @@ class TestExpectKeysAreValidated:
             f"{sorted(read_keys - run_evals.FINDING_MATCH_KEYS)}"
         )
 
-    def test_every_graded_key_is_in_the_allowlist(self):
-        # The allowlist is only as good as its agreement with grade(): a key
-        # grade() reads but the allowlist omits would make a valid scenario a
+    def test_every_graded_key_is_in_the_schema(self):
+        # The schema is only as good as its agreement with grade(): a key
+        # grade() reads but the schema omits would make a valid scenario a
         # hard error, which is the failure mode of the fix itself.
         source = Path(run_evals.__file__).read_text()
         # Quoted subscripts only: an `expect.get(key)` whose subscript is a

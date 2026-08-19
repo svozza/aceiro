@@ -47,7 +47,13 @@ from artifact import POLICY_PATH  # noqa: E402
 from canonicalize import read_contributor_text, read_harness_text  # noqa: E402
 from base_fixture import materialise as materialise_base  # noqa: E402
 from cc_loop import run as run_loop  # noqa: E402
-from jsonschema import Draft202012Validator, ValidationError  # noqa: E402
+from eval_schemas import (  # noqa: E402
+    FINDING_MATCH_SCHEMA,
+    REVIEW_EXPECT_SCHEMA,
+    REVIEW_EXPECT_VALIDATOR,
+    TOOL_USE_MATCH_SCHEMA,
+)
+from jsonschema import ValidationError  # noqa: E402
 from semantic_judge import JudgeError, judge as judge_semantic_compliance  # noqa: E402
 from verify import Rejection, verify  # noqa: E402
 
@@ -75,67 +81,18 @@ DEFAULT_MAX_SUBMIT_REJECTIONS = 3
 # recognise is silently inert: a renamed or misspelled one degrades the scenario
 # to "verify_must_pass only", an assertion any valid review satisfies. Validated
 # rather than tolerated, the way base.json declarations already are.
-EXPECT_KEYS = frozenset({
-    # graded
-    "verify_must_pass", "max_findings", "min_findings", "findings_any",
-    "must_not_contain", "summary_must_not_contain", "residual_risk_not_empty",
-    "must_contain_any", "semantic_compliance",
-    "transcript_tool_use_matching", "max_rounds_after_rejection",
-    "transcript_tools_within", "transcript_input_must_not_reference",
-    "inject_rejections", "inject_rejection_reason", "max_submit_rejections",
-    "grouped_paths",
-    # fixture wiring
-    "context_from", "stripped_paths",
-    # prose, for the reader of the scenario
-    "description", "line_accuracy_note", "max_findings_note", "residual_risk_note",
-    "diagnosis_note", "grouping_note", "wiring_note",
-    "arrival_note", "inventory_note", "severity_note",
-})
+EXPECT_KEYS = frozenset(REVIEW_EXPECT_SCHEMA["properties"])
 
 # transcript_tool_use_matching's own vocabulary. Nested one level down, and the
 # same hazard: an unread sub-key silently drops half the gate.
-TOOL_USE_KEYS = frozenset({
-    "tools", "input_contains_any", "input_contains_all", "input_must_reference_base", "why",
-})
+TOOL_USE_KEYS = frozenset(TOOL_USE_MATCH_SCHEMA["properties"])
 
 # findings_any element vocabulary — exactly what finding_matches consults.
 # `path` and `severity_at_least` are indexed rather than `.get`, so an element
 # lacking either is a KeyError from inside the grader; the rest are optional
 # substance checks whose absence silently reduces the match to path+severity.
-FINDING_MATCH_KEYS = frozenset({"path", "severity_at_least", "line_in", "body_contains_any", "why"})
-FINDING_MATCH_REQUIRED = frozenset({"path", "severity_at_least"})
-
-# Every list-of-objects expectation, and the vocabulary its reader enumerates.
-# A schema rather than a per-level argument: the review and plan graders both
-# validate their nested elements through one function, so a third list cannot be
-# added on one side and forgotten on the other.
-LIST_ELEMENT_SCHEMA = {
-    "findings_any": (FINDING_MATCH_KEYS, FINDING_MATCH_REQUIRED),
-}
-
-SEMANTIC_COMPLIANCE_SCHEMA = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["markers", "source"],
-    "properties": {
-        "markers": {
-            "type": "array",
-            "minItems": 1,
-            "uniqueItems": True,
-            "items": {"type": "string", "minLength": 1},
-        },
-        "source": {"type": "string", "enum": ["pr_body", "diff"]},
-    },
-}
-SEMANTIC_COMPLIANCE_VALIDATOR = Draft202012Validator(SEMANTIC_COMPLIANCE_SCHEMA)
-
-
-def check_semantic_expectation(expectation: object, name: str) -> None:
-    where = f"{name}/expect.json's semantic_compliance"
-    try:
-        SEMANTIC_COMPLIANCE_VALIDATOR.validate(expectation)
-    except ValidationError as exc:
-        raise EvalFailure(f"{where} is invalid: {exc.message}") from exc
+FINDING_MATCH_KEYS = frozenset(FINDING_MATCH_SCHEMA["properties"])
+FINDING_MATCH_REQUIRED = frozenset(FINDING_MATCH_SCHEMA["required"])
 
 
 
@@ -179,51 +136,22 @@ class EvalFailure(Exception):
 
 
 def check_expect_keys(
-    expect: dict, name: str, known: frozenset[str] = EXPECT_KEYS,
-    elements: dict[str, tuple[frozenset[str], frozenset[str]]] = LIST_ELEMENT_SCHEMA,
+    expect: dict, name: str, validator=REVIEW_EXPECT_VALIDATOR,
 ) -> None:
-    """Fail closed on an expectation nobody reads, at every level that holds one.
+    """Fail closed on malformed or structurally inert expectations.
 
     The failure this prevents is silent: renaming clean_pr_no_findings'
     `max_findings` to `max_finding` removes the false-positive check the scenario
-    exists for, and every test still passes. `known` is a parameter because the
-    plan grader reads a different vocabulary and needs the same discipline.
-
-    The nested levels matter as much as the top one, and for the same reason. A
-    `findings_any` element's matchers are read with `.get`, so a typo there does
-    not fail — it drops the substance half of the match and leaves path+severity
-    accepting a finding about anything on the right file. `elements` maps each
-    list-valued key to (known, required) so both graders validate their own
-    element vocabulary through this one function.
+    exists for. The plan grader passes its own validator, so both fixture classes
+    share the same fail-closed loader without sharing vocabularies.
     """
-    if unknown := sorted(set(expect) - known):
+    try:
+        validator.validate(expect)
+    except ValidationError as exc:
+        location = "".join(f"[{part!r}]" for part in exc.absolute_path)
         raise EvalFailure(
-            f"{name}/expect.json declares unknown keys {unknown}; nothing reads them, so they "
-            f"assert nothing. Known keys: {sorted(known)}"
-        )
-    tool_use = expect.get("transcript_tool_use_matching") or {}
-    if unknown := sorted(set(tool_use) - TOOL_USE_KEYS):
-        raise EvalFailure(
-            f"{name}/expect.json's transcript_tool_use_matching declares unknown keys {unknown}; "
-            f"nothing reads them. Known keys: {sorted(TOOL_USE_KEYS)}"
-        )
-    for key, (element_keys, required) in elements.items():
-        for index, element in enumerate(expect.get(key) or []):
-            where = f"{name}/expect.json's {key}[{index}]"
-            if not isinstance(element, dict):
-                raise EvalFailure(f"{where} is not an object, so no matcher reads it")
-            if unknown := sorted(set(element) - element_keys):
-                raise EvalFailure(
-                    f"{where} declares unknown keys {unknown}; nothing reads them, so the "
-                    f"substance they assert is not graded. Known keys: {sorted(element_keys)}"
-                )
-            if missing := sorted(required - set(element)):
-                raise EvalFailure(
-                    f"{where} is missing {missing}, which the matcher indexes rather than "
-                    "defaults, so the scenario would fail from inside the grader"
-                )
-    if semantic := expect.get("semantic_compliance"):
-        check_semantic_expectation(semantic, name)
+            f"{name}/expect.json{location} is invalid: {exc.message}"
+        ) from exc
 
 
 def check_run_count(runs: int) -> None:

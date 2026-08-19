@@ -65,6 +65,11 @@ from run_evals import (  # noqa: E402
     strip_quoted,
     transcript_events,
 )
+from eval_schemas import (  # noqa: E402
+    PLAN_EXPECT_SCHEMA,
+    PLAN_EXPECT_VALIDATOR,
+    STEP_MATCH_SCHEMA,
+)
 from artifact import POLICY_PATH  # noqa: E402
 from canonicalize import read_contributor_text, read_harness_text  # noqa: E402
 from verify import Rejection  # noqa: E402
@@ -74,32 +79,13 @@ PLAN_SCENARIOS_DIR = Path(__file__).parent / "plan_scenarios"
 # The plan grader's own expectation vocabulary; same fail-closed discipline as
 # run_evals.EXPECT_KEYS, different words, so the two graders do not drift on
 # whether an unread key is tolerated.
-PLAN_EXPECT_KEYS = frozenset({
-    # graded
-    "verify_plan_must_pass", "fix_kinds_one_of", "write_chain_iff_patch",
-    "fix_paths_must_equal", "fix_paths_must_include", "fix_paths_must_not_include",
-    "steps_any", "must_not_contain", "max_rounds_after_rejection", "inject_rejections",
-    "commanded_findings",
-    # fixture wiring
-    "context_from",
-    # prose, for the reader of the scenario
-    "description", "shape_note", "commanded_note",
-})
+PLAN_EXPECT_KEYS = frozenset(PLAN_EXPECT_SCHEMA["properties"])
 
 # steps_any element vocabulary — exactly what step_matches consults. `path` is
 # indexed rather than `.get`; the rest are optional content probes whose absence
 # reduces the match to the path alone.
-STEP_MATCH_KEYS = frozenset({
-    "path", "old_contains_any", "new_contains_any", "new_must_not_contain", "why",
-})
-STEP_MATCH_REQUIRED = frozenset({"path"})
-
-# Passed to the shared check_expect_keys, so both graders validate their nested
-# element vocabularies through one reader (run_evals.LIST_ELEMENT_SCHEMA is the
-# review side's).
-PLAN_LIST_ELEMENT_SCHEMA = {
-    "steps_any": (STEP_MATCH_KEYS, STEP_MATCH_REQUIRED),
-}
+STEP_MATCH_KEYS = frozenset(STEP_MATCH_SCHEMA["properties"])
+STEP_MATCH_REQUIRED = frozenset(STEP_MATCH_SCHEMA["required"])
 
 # The step kinds that express a fix. Everything else (push_branch, open_pr,
 # label) is delivery scaffolding around them. Grown deliberately: a new
@@ -289,7 +275,7 @@ def run_scenario(scenario_dir: Path, output_dir: Path) -> dict:
 def _run_scenario(scenario_dir: Path, output_dir: Path) -> dict:
     name = scenario_dir.name
     expect = json.loads((scenario_dir / "expect.json").read_text())
-    check_expect_keys(expect, name, PLAN_EXPECT_KEYS, PLAN_LIST_ELEMENT_SCHEMA)
+    check_expect_keys(expect, name, PLAN_EXPECT_VALIDATOR)
     fixture_dir = PLAN_SCENARIOS_DIR / expect["context_from"] if "context_from" in expect else scenario_dir
     context_dir = fixture_dir / "context"
     pr_root = fixture_dir / "pr_root"
