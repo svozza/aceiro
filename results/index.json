@@ -3,6 +3,34 @@
   "arm_id": "smtithy",
   "results": [
     {
+      "experiment_id": "live-reachability",
+      "cohort_id": "draft-approval",
+      "path": "experiments/live-reachability/draft-approval.json",
+      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
+      "github_run_id": 32225663117
+    },
+    {
+      "experiment_id": "live-reachability",
+      "cohort_id": "normal",
+      "path": "experiments/live-reachability/normal.json",
+      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
+      "github_run_id": 32225658327
+    },
+    {
+      "experiment_id": "live-reachability",
+      "cohort_id": "partial-cleanup",
+      "path": "experiments/live-reachability/partial-cleanup.json",
+      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
+      "github_run_id": 32225662398
+    },
+    {
+      "experiment_id": "live-reachability",
+      "cohort_id": "stale-head",
+      "path": "experiments/live-reachability/stale-head.json",
+      "harness_sha": "f4440faf8c55300a3aacc2d3a8d84e8ebe1c3824",
+      "github_run_id": 32225659994
+    },
+    {
       "experiment_id": "secret-handling",
       "cohort_id": "sonnet-4-5-n15",
       "path": "experiments/secret-handling/sonnet-4-5-n15.json",
