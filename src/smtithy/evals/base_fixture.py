@@ -30,18 +30,11 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import urllib.request
 from pathlib import Path
 
-# A branch or tag would let the fixture change under the scenario, which is the
-# whole point of pinning: the graders assert exact line numbers.
-SHA_RE = re.compile(r"[0-9a-f]{40}")
-REPO_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+")
-
-# Refuse absolute paths and traversal: a fixture declaration is data, and it
-# must not be able to write outside the cache directory it is given.
-SAFE_PATH_RE = re.compile(r"(?!/)(?!.*\.\.)[A-Za-z0-9._/-]+")
+from eval_schemas import BASE_DECLARATION_VALIDATOR
+from jsonschema import ValidationError
 
 API = "https://api.github.com/repos/{repo}/contents/{path}?ref={sha}"
 
@@ -57,25 +50,11 @@ def load_declaration(scenario_dir: Path) -> dict | None:
         return None
 
     declaration = json.loads(path.read_text())
-    extra = set(declaration) - {"repo", "sha", "paths", "why"}
-    if extra:
-        raise FixtureError(f"{path}: unexpected keys {sorted(extra)}")
-    for key in ("repo", "sha", "paths"):
-        if key not in declaration:
-            raise FixtureError(f"{path}: missing {key!r}")
-
-    if not REPO_RE.fullmatch(declaration["repo"]):
-        raise FixtureError(f"{path}: {declaration['repo']!r} is not owner/name")
-    if not SHA_RE.fullmatch(declaration["sha"]):
-        raise FixtureError(
-            f"{path}: sha must be a full 40-character commit id, not {declaration['sha']!r} — "
-            "a branch or tag would let the fixture move under a grader that asserts exact lines",
-        )
-    if not declaration["paths"]:
-        raise FixtureError(f"{path}: paths is empty, so BASE would be indistinguishable from absent")
-    for entry in declaration["paths"]:
-        if not SAFE_PATH_RE.fullmatch(entry):
-            raise FixtureError(f"{path}: {entry!r} is not a safe relative path")
+    try:
+        BASE_DECLARATION_VALIDATOR.validate(declaration)
+    except ValidationError as exc:
+        location = "".join(f"[{part!r}]" for part in exc.absolute_path)
+        raise FixtureError(f"{path}{location} is invalid: {exc.message}") from exc
     return declaration
 
 

@@ -459,16 +459,17 @@ class TestScenarioExpectations:
 
     @pytest.mark.parametrize("name", NAMES)
     def test_every_scenario_uses_only_known_keys(self, name):
-        # The review side's discipline, kept in step: an unread expectation
-        # asserts nothing, and grade() reads them all optimistically.
-        run_plan_evals.check_expect_keys(self.load(name), name, run_plan_evals.PLAN_EXPECT_KEYS,
-                                         run_plan_evals.PLAN_LIST_ELEMENT_SCHEMA)
+        # The review side's discipline, kept in step: the schema rejects an
+        # unread expectation rather than letting it assert nothing.
+        run_plan_evals.check_expect_keys(
+            self.load(name), name, run_plan_evals.PLAN_EXPECT_VALIDATOR
+        )
 
     def test_a_misspelled_key_is_a_hard_error(self):
         with pytest.raises(run_plan_evals.EvalFailure, match="steps_anyy"):
             run_plan_evals.check_expect_keys(
                 {"verify_plan_must_pass": True, "steps_anyy": []}, "x",
-                run_plan_evals.PLAN_EXPECT_KEYS, run_plan_evals.PLAN_LIST_ELEMENT_SCHEMA,
+                run_plan_evals.PLAN_EXPECT_VALIDATOR,
             )
 
     def test_a_misspelled_steps_any_sub_key_is_a_hard_error(self):
@@ -478,8 +479,9 @@ class TestScenarioExpectations:
         expect = {"verify_plan_must_pass": True,
                   "steps_any": [{"path": "a.py", "old_contains_anyy": ["x"]}]}
         with pytest.raises(run_plan_evals.EvalFailure, match="old_contains_anyy"):
-            run_plan_evals.check_expect_keys(expect, "x", run_plan_evals.PLAN_EXPECT_KEYS,
-                                         run_plan_evals.PLAN_LIST_ELEMENT_SCHEMA)
+            run_plan_evals.check_expect_keys(
+                expect, "x", run_plan_evals.PLAN_EXPECT_VALIDATOR
+            )
 
     def test_a_steps_any_element_missing_path_is_a_hard_error(self):
         # step_matches indexes wanted["path"], so its absence is a KeyError from
@@ -487,18 +489,18 @@ class TestScenarioExpectations:
         with pytest.raises(run_plan_evals.EvalFailure, match="steps_any"):
             run_plan_evals.check_expect_keys(
                 {"steps_any": [{"old_contains_any": ["x"]}]}, "x",
-                run_plan_evals.PLAN_EXPECT_KEYS, run_plan_evals.PLAN_LIST_ELEMENT_SCHEMA)
+                run_plan_evals.PLAN_EXPECT_VALIDATOR)
 
-    def test_every_graded_key_is_in_the_allowlist(self):
+    def test_every_graded_key_is_in_the_schema(self):
         source = Path(run_plan_evals.__file__).read_text()
         read_keys = set(re.findall(r'expect(?:\.get\(|\[|\s+in\s+)"?\'?([a-z_]+)', source))
         read_keys |= set(re.findall(r'"([a-z_]+)" in expect', source))
         assert read_keys <= run_plan_evals.PLAN_EXPECT_KEYS, (
-            "grade reads keys the allowlist rejects: "
+            "grade reads keys the schema rejects: "
             f"{sorted(read_keys - run_plan_evals.PLAN_EXPECT_KEYS)}"
         )
 
-    def test_every_key_step_matches_reads_is_in_the_nested_allowlist(self):
+    def test_every_key_step_matches_reads_is_in_the_nested_schema(self):
         # The same agreement one level down: a key step_matches consults but the
         # allowlist rejects would make a valid scenario a hard error.
         source = Path(run_plan_evals.__file__).read_text()
@@ -506,7 +508,7 @@ class TestScenarioExpectations:
         read_keys = set(re.findall(r'wanted(?:\.get\(|\[|\s+in\s+)"?\'?([a-z_]+)', body))
         read_keys |= set(re.findall(r'"([a-z_]+)" in wanted', body))
         assert read_keys <= run_plan_evals.STEP_MATCH_KEYS, (
-            "step_matches reads keys the allowlist rejects: "
+            "step_matches reads keys the schema rejects: "
             f"{sorted(read_keys - run_plan_evals.STEP_MATCH_KEYS)}"
         )
 
