@@ -181,11 +181,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install harness dependencies (hash-pinned)
-        run: pip install --require-hashes -r requirements.txt
+      - name: Sync harness dependencies (locked)
+        run: |
+          uv sync --frozen --no-install-project
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Resolve the command and compose the plan context
         id: compose
@@ -308,11 +314,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: harness/requirements*.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: harness/uv.lock
 
-      - name: Install harness dependencies (hash-pinned)
-        run: pip install --require-hashes -r harness/requirements.txt
+      - name: Sync harness dependencies (locked)
+        run: |
+          uv sync --project harness --frozen --no-install-project
+          echo "$GITHUB_WORKSPACE/harness/.venv/bin" >> "$GITHUB_PATH"
 
       # ADR-0006: asserted INSIDE the gated job, before any credential exists in
       # it. PR_DRAFT is not available on an issue_comment payload, so it is not
@@ -474,11 +486,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install harness dependencies (hash-pinned)
-        run: pip install --require-hashes -r requirements.txt
+      - name: Sync harness dependencies (locked)
+        run: |
+          uv sync --frozen --no-install-project
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       # Same-run artifact, so this needs no `actions: read` — the runtime token
       # covers it, which is what keeps this job's permissions empty.
@@ -531,11 +549,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install verifier dependencies (hash-pinned)
-        run: pip install --require-hashes -r requirements.txt
+      - name: Sync verifier dependencies (locked)
+        run: |
+          uv sync --frozen --no-install-project
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Download plan artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -645,11 +669,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install verifier dependencies (hash-pinned)
-        run: pip install --require-hashes -r requirements.txt
+      - name: Sync verifier dependencies (locked)
+        run: |
+          uv sync --frozen --no-install-project
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Download plan artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -759,11 +789,17 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
-      - name: Install harness dependencies (hash-pinned)
-        run: pip install --require-hashes -r requirements.txt
+      - name: Sync harness dependencies (locked)
+        run: |
+          uv sync --frozen --no-install-project
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Post the reply
         env:

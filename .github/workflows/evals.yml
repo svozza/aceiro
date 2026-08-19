@@ -244,11 +244,14 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          # NO pip cache here. This job executes PR-head code, and
-          # setup-python's cache save is an implicit POST step that runs after
-          # it; under pull_request_target the entry lands in the BASE BRANCH's
-          # cache scope, reachable from main and every other PR. The install is
-          # hash-pinned, so the cache bought little.
+          # No dependency cache here. This job executes PR-head code, and a
+          # cache save after that code runs would land in the base branch's
+          # cache scope under pull_request_target.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: false
 
       # ADR-0006: asserted INSIDE the gated job, before any credential exists AND
       # before the PR's code is on disk. A missing or protection-free environment
@@ -282,17 +285,17 @@ jobs:
           # tree still lands in the root, where every step below expects it.
           clean: false
       # The generator (claude-agent-sdk) installs here too: the SDK wheel
-      # bundles the Claude Code CLI binary, so the hash pin below covers both.
+      # bundles the Claude Code CLI binary, so the lock below covers both.
       # tests/test_cc_loop.py asserts the bundled CLI version, so a wheel that
       # silently ships a different generator fails the suite. This step runs
       # BEFORE the Bedrock role is assumed, so nothing during install can reach
       # the credential.
-      - name: Install harness dependencies (hash-pinned)
+      - name: Sync harness dependencies (locked)
         env:
           # See "NO OIDC MINTING BELOW" on the credential step.
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
-        run: pip install --require-hashes -r requirements.txt
+        run: uv sync --frozen --no-install-project
       - name: Configure AWS credentials (Bedrock-invoke only)
         uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
         with:
@@ -353,7 +356,7 @@ jobs:
           WORKERS: ${{ inputs.workers || '4' }}
         run: |
           set -euo pipefail
-          python src/smtithy/evals/run_evals.py \
+          uv run --frozen python src/smtithy/evals/run_evals.py \
             --output-dir "$RUNNER_TEMP/eval-output" \
             --cache-dir "$RUNNER_TEMP/eval-base-cache" \
             --runs "$RUNS" \
@@ -381,7 +384,7 @@ jobs:
           WORKERS: ${{ inputs.workers || '4' }}
         run: |
           set -euo pipefail
-          python src/smtithy/evals/run_plan_evals.py \
+          uv run --frozen python src/smtithy/evals/run_plan_evals.py \
             --output-dir "$RUNNER_TEMP/plan-eval-output" \
             --runs "$RUNS" \
             --workers "$WORKERS"

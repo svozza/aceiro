@@ -49,13 +49,16 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
-      - name: Install dependencies (hash-pinned)
-        run: |
-          pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync test dependencies
+        run: uv sync --frozen --group test --no-install-project
       - name: Run verifier tests
-        run: python -m pytest tests/ -p no:cacheprovider -q
+        run: uv run --frozen --group test python -m pytest tests/ -p no:cacheprovider -q
 
   # ADR-0017: the type checker is what makes the parsed-step signatures teeth
   # rather than documentation. Its own job, deliberately NOT a step inside
@@ -74,13 +77,15 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: requirements*.txt
-      - name: Install dependencies and the checker (hash-pinned)
-        # requirements.txt too: ty resolves third-party imports from the
-        # environment it is pointed at, so the harness's real dependencies
-        # must be present or every import reads as unresolved.
-        run: |
-          pip install --require-hashes -r requirements.txt -r requirements-typecheck.txt
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync type-check dependencies
+        # Runtime dependencies are included because ty resolves third-party
+        # imports from the environment it is pointed at.
+        run: uv sync --frozen --group typecheck --no-install-project
       - name: Type-check the harness
-        run: ty check --python "$(which python)"
+        run: uv run --frozen --group typecheck ty check --python .venv/bin/python
