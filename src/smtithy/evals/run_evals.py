@@ -37,7 +37,8 @@ import re
 import shutil
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from pathlib import Path
 from typing import cast
 
@@ -794,7 +795,7 @@ def api_error_stats(events: list[dict]) -> dict:
 def guarded(name: str, run) -> dict:
     """`run()`'s result, or a failed result for `name` if it raised.
 
-    Every scenario runs under ThreadPoolExecutor.map, which re-raises the first
+    Every scenario runs under ProcessPoolExecutor.map, which re-raises the first
     exception out of the iterator: one scenario's unexpected fault (a truncated
     fixture, an unreachable BASE commit, a bug here) otherwise loses results.json
     and every other scenario's verdict with it. Both runners' run_scenario is a
@@ -1024,9 +1025,13 @@ def main() -> int:
         if args.runs > 1:
             print(f"\n===== RUN {run_index}/{args.runs} =====")
 
-        with ThreadPoolExecutor(max_workers=min(args.workers, len(scenario_dirs) or 1)) as pool:
+        # Each scenario runs a Claude SDK/MCP session. Those dependencies carry
+        # process-global registries, so threads would make otherwise independent
+        # scenarios share mutable state. Processes retain concurrency while
+        # giving every scenario its own interpreter and SDK state.
+        with ProcessPoolExecutor(max_workers=min(args.workers, len(scenario_dirs) or 1)) as pool:
             results = list(
-                pool.map(lambda d, out=run_dir: run_scenario(args.cache_dir, d, out), scenario_dirs),
+                pool.map(run_scenario, repeat(args.cache_dir), scenario_dirs, repeat(run_dir)),
             )
 
         (run_dir / "results.json").write_text(json.dumps(results, indent=2))
