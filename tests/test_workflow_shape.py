@@ -642,6 +642,67 @@ class TestReusableWorkflowBedrockApiKeys:
             assert model[f"env.{name}"] in ("", "''", '""')
 
 
+class TestReusableWorkflowLinkHostAllowlist:
+    POLICY_CONSUMERS = {
+        ("ai-pr-review.yml", "review"): "Run review agent",
+        ("ai-pr-review.yml", "post"): "Verify and post (fail-closed)",
+        ("ai-pr-fix.yml", "command"): "Resolve the command and compose the plan context",
+        ("ai-pr-fix.yml", "plan"): "Run plan agent",
+        ("ai-pr-fix.yml", "execute"): "Verify and deliver (fail-closed)",
+        ("ai-pr-fix.yml", "stack"): "Verify and deliver the stacked PR (fail-closed)",
+    }
+    WORKFLOWS = sorted({workflow for workflow, _ in POLICY_CONSUMERS})
+
+    @pytest.mark.parametrize("workflow", WORKFLOWS)
+    def test_the_allowlist_input_is_optional_and_empty_by_default(self, workflow):
+        declared = workflow_input((WORKFLOWS / workflow).read_text(), "link-host-allowlist")
+        assert declared["type"] == "string"
+        assert declared["default"] in ("", '""', "''")
+
+    @pytest.mark.parametrize(
+        ("workflow", "job"),
+        POLICY_CONSUMERS,
+    )
+    def test_every_policy_consumer_derives_the_policy_from_the_input(self, workflow, job):
+        text = (WORKFLOWS / workflow).read_text()
+        steps = parse_steps(text, job)
+        overlays = [
+            step for step in steps
+            if step.get("name") == "Prepare effective policy"
+        ]
+        assert len(overlays) == 1
+        assert overlays[0]["env.SMTITHY_LINK_HOST_ALLOWLIST"] == (
+            "${{ inputs.link-host-allowlist }}"
+        )
+        assert "policy_overlay.py" in job_block(text, job)
+
+    @pytest.mark.parametrize(
+        ("workflow", "job", "consumer"),
+        [
+            (workflow, job, consumer)
+            for (workflow, job), consumer in POLICY_CONSUMERS.items()
+        ],
+    )
+    def test_policy_is_derived_before_the_job_consumes_it(self, workflow, job, consumer):
+        steps = parse_steps((WORKFLOWS / workflow).read_text(), job)
+        names = [step.get("name") for step in steps]
+        assert names.index("Prepare effective policy") < names.index(consumer)
+
+    @pytest.mark.parametrize(
+        ("workflow", "job"),
+        [
+            ("ai-pr-fix.yml", "route"),
+            ("ai-pr-fix.yml", "reply"),
+        ],
+    )
+    def test_jobs_that_do_not_read_policy_do_not_derive_it(self, workflow, job):
+        steps = parse_steps((WORKFLOWS / workflow).read_text(), job)
+        assert not [
+            step for step in steps
+            if step.get("name") == "Prepare effective policy"
+        ]
+
+
 class TestDraftSemanticsAgree:
     """ADR-0008: "untrusted and draft authors wait at the environment's required
     reviewer before their code runs with the credential, whatever the trigger."
