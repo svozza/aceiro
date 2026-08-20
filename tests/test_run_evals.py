@@ -970,11 +970,22 @@ class TestCheckToolUse:
         with pytest.raises(run_evals.EvalFailure, match="BASE"):
             run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
 
-    def test_a_call_with_no_path_at_all_fails_when_base_is_required(self):
-        # Grep defaults to cwd, which cc_loop sets to base_root — but the
-        # transcript records what was REQUESTED, and an unstated path is not
-        # evidence about where it looked.
+    def test_a_grep_with_no_path_uses_the_base_cwd(self):
+        # The CLI cwd is fixed to BASE and no allowed tool can change it.
         events = [self.call("Grep", pattern="slice_dictionary")]
+        run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_glob_with_no_path_uses_the_base_cwd(self):
+        wanted = {
+            "tools": ["Glob"],
+            "input_contains_any": ["slice_dictionary"],
+            "input_must_reference_base": True,
+        }
+        events = [self.call("Glob", pattern="**/slice_dictionary*")]
+        run_evals.check_tool_use(events, wanted, base_root=Path(self.BASE))
+
+    def test_a_read_with_no_file_does_not_count(self):
+        events = [self.call("Read", pattern="slice_dictionary")]
         with pytest.raises(run_evals.EvalFailure, match="BASE"):
             run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
 
@@ -999,6 +1010,25 @@ class TestCheckToolUse:
 
         with pytest.raises(run_evals.EvalFailure, match="parameters/ssm.py"):
             run_evals.check_tool_use(both[:1], wanted, base_root=Path(self.BASE))
+
+    def test_pathless_grep_then_base_read_counts_as_caller_investigation(self):
+        # PR #76 attempt 1: Grep searched the fixed BASE cwd, then the model read
+        # the caller by absolute path. Both requests are evidence even though only
+        # the Read serialised the BASE path.
+        wanted = {
+            "tools": ["Grep", "Read", "Glob"],
+            "input_contains_any": ["slice_dictionary"],
+            "input_contains_all": ["slice_dictionary", "parameters/ssm.py"],
+            "input_must_reference_base": True,
+        }
+        events = [
+            self.call("Grep", pattern="slice_dictionary", output_mode="content"),
+            self.call(
+                "Read",
+                file_path=f"{self.BASE}/aws_lambda_powertools/utilities/parameters/ssm.py",
+            ),
+        ]
+        run_evals.check_tool_use(events, wanted, base_root=Path(self.BASE))
 
     def test_a_scenario_needing_no_base_still_works(self):
         # base_root is threaded to every scenario; only this expectation cares.
@@ -1031,10 +1061,12 @@ class TestCheckToolUse:
         with pytest.raises(run_evals.EvalFailure, match="BASE"):
             run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
 
-    def test_a_relative_path_is_not_evidence_about_where_it_looked(self):
-        # Resolved against the harness's cwd rather than BASE, so it cannot be
-        # shown to be under it — the same reasoning as the no-path case.
+    def test_a_relative_path_resolves_from_the_base_cwd(self):
         events = [self.call("Grep", pattern="slice_dictionary", path="aws_lambda_powertools")]
+        run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
+
+    def test_a_relative_path_cannot_escape_the_base_cwd(self):
+        events = [self.call("Grep", pattern="slice_dictionary", path="../../elsewhere")]
         with pytest.raises(run_evals.EvalFailure, match="BASE"):
             run_evals.check_tool_use(events, self.WANTED, base_root=Path(self.BASE))
 

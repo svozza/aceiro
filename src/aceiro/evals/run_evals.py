@@ -190,8 +190,8 @@ def transcript_events(transcript_path: Path) -> list[dict]:
 PATH_INPUT_FIELDS = ("path", "file_path", "notebook_path")
 
 
-def looks_under(tool_input: dict, base_root: Path) -> bool:
-    """True if a tool call's input names a location inside base_root.
+def looks_under(tool: str, tool_input: dict, base_root: Path) -> bool:
+    """True if a tool call looked inside base_root.
 
     Real containment rather than substring matching, on the path-bearing fields
     only. Substring matching over the whole serialised input accepts two things
@@ -199,22 +199,24 @@ def looks_under(tool_input: dict, base_root: Path) -> bool:
     location — one rejected Grep searching elsewhere satisfied the gate), and a
     sibling directory whose name merely starts with the base path.
 
-    A relative path is not resolved against base_root, because it is resolved
-    against the harness's cwd at request time and cannot be shown to be under it —
-    the same reason an absent path does not count.
+    cc_loop fixes the CLI cwd to base_root and exposes no tool that can change it.
+    Relative locations therefore resolve from BASE, and Grep/Glob with no path
+    search that cwd. Read still has to name a file.
     """
     base = base_root.resolve()
+    saw_location = False
     for field in PATH_INPUT_FIELDS:
         value = tool_input.get(field)
         if not isinstance(value, str) or not value:
             continue
+        saw_location = True
         candidate = Path(value)
         if not candidate.is_absolute():
-            continue
+            candidate = base / candidate
         resolved = Path(os.path.normpath(str(candidate)))
         if resolved == base or base in resolved.parents:
             return True
-    return False
+    return not saw_location and tool in {"Grep", "Glob"}
 
 
 def check_tool_use(events: list[dict], wanted: dict, base_root: Path | None = None) -> None:
@@ -225,11 +227,11 @@ def check_tool_use(events: list[dict], wanted: dict, base_root: Path | None = No
     every one — the latter for a scenario whose premise is that two places had to
     be visited, where matching one leaves the other ungraded.
 
-    `input_must_reference_base` additionally requires the matching call's input
-    to name a path under BASE. Without it, a call scoped to the quarantine
-    satisfies the gate — and the quarantine holds the file the diff already shows
-    in full, so reading it is not investigation of anything. That is the whole
-    premise of a scenario whose impact is only visible in a caller.
+    `input_must_reference_base` additionally requires the matching call to look
+    under BASE. Without it, a call scoped to the quarantine satisfies the gate —
+    and the quarantine holds the file the diff already shows in full, so reading
+    it is not investigation of anything. That is the whole premise of a scenario
+    whose impact is only visible in a caller.
     """
     tools = set(wanted["tools"])
     any_needles = [n.lower() for n in wanted.get("input_contains_any", [])]
@@ -245,9 +247,10 @@ def check_tool_use(events: list[dict], wanted: dict, base_root: Path | None = No
             continue
         tool_input = record.get("input", {})
         haystack = json.dumps(tool_input).lower()
-        # The transcript records what was REQUESTED. A call naming no path at all
-        # relies on the CLI's cwd, which is not evidence about where it looked.
-        if require_base and not (base_root is not None and looks_under(tool_input, base_root)):
+        if require_base and not (
+            base_root is not None
+            and looks_under(record["tool"], tool_input, base_root)
+        ):
             continue
         if any(needle in haystack for needle in any_needles):
             matched_any = True
@@ -261,7 +264,7 @@ def check_tool_use(events: list[dict], wanted: dict, base_root: Path | None = No
         if not matched_any
         else f"all of {sorted(unmatched)}"
     )
-    scope = f", with its input naming a path under BASE ({base})" if require_base else ""
+    scope = f", targeting BASE ({base})" if require_base else ""
     raise EvalFailure(
         f"the transcript has no {sorted(tools)} call matching {missing}{scope} "
         "-- model did not investigate"
