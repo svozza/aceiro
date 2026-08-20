@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "updated_at": "2026-08-19T18:17:04Z",
+  "updated_at": "2026-08-20T05:35:00Z",
   "schema": {
     "repository": "svozza/aceiro",
-    "commit": "cdb1dfbdf7bccb5e14265b3a6ab51df4c3becc3c",
+    "commit": "5458c5b31a0d042705cb036027a7adbff3130746",
     "path": "src/aceiro/evals/arm_result.schema.json",
     "sha256": "77992fd02356e758b4902b20fc8bb6801245f59af4d282c010035d50e605ad0e"
   },
@@ -11,23 +11,23 @@
     {
       "arm_id": "aceiro",
       "repository": "svozza/aceiro",
-      "commit": "3dab81eb8fbef8742b5aef06f35c5e5f9f37f5c5",
+      "commit": "5458c5b31a0d042705cb036027a7adbff3130746",
       "index_path": "results/index.json",
-      "index_sha256": "3ec125da64504f3f54539823e6a7ba7baf7f1563cbb970734da792c768dfc509"
+      "index_sha256": "eba5d6990fa16977812d3be29415e194f0ecff6d36869cf06428c92c97d58268"
     },
     {
       "arm_id": "naive",
-      "repository": "svozza/smtithy-naive-baseline",
-      "commit": "90ffbe2527173b3b87c494ab0ed5aeb217881c13",
+      "repository": "svozza/aceiro-naive-baseline",
+      "commit": "791415d2418fddbe9cb0745571821e5d810f8af9",
       "index_path": "results/index.json",
-      "index_sha256": "b9d67eb65c9b2cdf054be24703b8cabcfe6e663f20fb8768a55c8a5a9fa3ead5"
+      "index_sha256": "4fde156a49e289b46396660fd69a30fb9bdf56cf3914fa6702091d51a67375eb"
     },
     {
       "arm_id": "aws-durable",
-      "repository": "svozza/smtithy-aws-durable-baseline",
-      "commit": "fdb7390eeda51658017a89c8bc26e93e05c58ad3",
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "commit": "514d356dc66cad1abdb8e8ee87f44395b7e4da90",
       "index_path": "results/index.json",
-      "index_sha256": "e6ba1e115c34db8e337a137bbbbf8b79f8291bcdaa6d25470228d32f4224f69d"
+      "index_sha256": "8cc2f53746f79654cf9964183b7ebac8c8345d8d17cb675aabf3d2f156cbcbbd"
     }
   ]
 }

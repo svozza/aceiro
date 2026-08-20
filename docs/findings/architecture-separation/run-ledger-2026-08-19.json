@@ -1,0 +1,1856 @@
+{
+  "version": 1,
+  "updated_at": "2026-08-20T05:30:52.133832Z",
+  "artifact_roots": [
+    "/tmp/aceiro-fresh-runs",
+    "/tmp/aceiro-naive-fresh-runs",
+    "/tmp/aceiro-aws-fresh-runs",
+    "/tmp/aceiro-live-fresh",
+    "/tmp/aceiro-naive-live-fresh",
+    "/tmp/aceiro-aws-live-fresh"
+  ],
+  "github_artifact_retention": "30 days",
+  "runs": [
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32295384347,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/plan-remediation/2026-08-20-opus-4-8-n3.json",
+        "results/experiments/review-and-recovery/2026-08-20-opus-4-8-n3.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "e68334c2077f8536516ae9a1696bdfa297fe99c7f4923ccc9c9570340965a64f"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "480ca34c1cc6c2344d7ddafa3b8ad81fd5dfbf6fe3fc1ba85e3885b930a3e4de"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "e68334c2077f8536516ae9a1696bdfa297fe99c7f4923ccc9c9570340965a64f"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "plan-eval-output-run1",
+          "sha256": "388cad8ac016045a548dd3f8b8fda965cb67534036cdc38dd014060971a63d35"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "plan-eval-output-run2",
+          "sha256": "388cad8ac016045a548dd3f8b8fda965cb67534036cdc38dd014060971a63d35"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "plan-eval-output-run3",
+          "sha256": "388cad8ac016045a548dd3f8b8fda965cb67534036cdc38dd014060971a63d35"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32297182253,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/common-prompt-attacks/2026-08-20-opus-4-8-n15.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "aa676abb25169cbf09d0083383eafaf8c0746c664638a037213f3c16ff605971"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32299068333,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/tool-persuasion/2026-08-20-opus-4-8-n20.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run16",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run17",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run18",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run19",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run20",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32300463071,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/tool-persuasion/2026-08-20-sonnet-4-5-n20.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run16",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run17",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run18",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run19",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run20",
+          "sha256": "a2266edf340a118572679d1c4e72a612d7a750f6138a9996c96619c475cfabca"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32303107781,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-sonnet-4-5-n15.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32304247181,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-opus-4-8-n100.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run16",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run17",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run18",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run19",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run20",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32306050566,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-opus-4-8-n100.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run16",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run17",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run18",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run19",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run20",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32306650612,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-opus-4-8-n100.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run16",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run17",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run18",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run19",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run20",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32307274695,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-opus-4-8-n100.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run16",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run17",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run18",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run19",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run20",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32307919010,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-opus-4-8-n100.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run11",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run12",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run13",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run14",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run15",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run16",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run17",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run18",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run19",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run20",
+          "sha256": "5a7b007c01731d5c24336580c6a37fc8ab84f3417ed1c1393327a14b3314e168"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32308553541,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/tool-surface/2026-08-20-opus-4-8-n10.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run1",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run2",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run3",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run4",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run5",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run6",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run7",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run8",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run9",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "eval-output-run10",
+          "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32335421480,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-normal.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aceiro-live-32335421480",
+          "sha256": "7cb81e1f1f8f5766794df2930eb325ffd9f58aadb71f852f9dd5812a98efd3db"
+        },
+        {
+          "kind": "live-result",
+          "name": "aceiro-live-result-32335421480",
+          "sha256": "4aaa539f185918308a1d8fe34a2afc59786b17e309fbaeee88767ab33a096bf2"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32335422457,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-stale-head.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aceiro-live-32335422457",
+          "sha256": "339412310e85687fe92000b1df1ac643c38a99dfb0f7c51c58ea49ba4c5b86d5"
+        },
+        {
+          "kind": "live-result",
+          "name": "aceiro-live-result-32335422457",
+          "sha256": "57d972275725e77e8f8db700ea4ce667d128565e1202c578083461062efc15ad"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32335424297,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-partial-cleanup.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aceiro-live-32335424297",
+          "sha256": "c6701fd6e00e31333aa91ebed3cae140eb8cb3e834859fa17b09e3340907d634"
+        },
+        {
+          "kind": "live-result",
+          "name": "aceiro-live-result-32335424297",
+          "sha256": "ddd716371078a3a2217e65886f499657bf8a7a375790ae9ecb73c63b626101e8"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro",
+      "run_id": 32335424733,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-draft-approval.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aceiro-live-32335424733",
+          "sha256": "54bb7422d1ddc0818339a0d2a9c5ff3dbec621e3eafb1841ddd0da3d4a97ed14"
+        },
+        {
+          "kind": "live-result",
+          "name": "aceiro-live-result-32335424733",
+          "sha256": "0b042580a8ef0e9eaf37e69a08fac65f438ac76ca84e1836682d89420e138710"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32326022511,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/prompt-injection/2026-08-20-sonnet-5-n15.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "aggregate",
+          "name": "aws-durable-results-32326022511",
+          "sha256": "947398c16c8ea8ebb5f28e9757c7a324b0d7d67eff38d5d9e590b8638c108006"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32330452078,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/architecture-sensitive/2026-08-20-sonnet-5-n3.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "aggregate",
+          "name": "aws-durable-results-32330452078",
+          "sha256": "a430004761498776caafd947d21b3c3d5c11d9edba7e016b5df6f27ad12adf72"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32331535215,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/tool-persuasion/2026-08-20-sonnet-5-n20.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "aggregate",
+          "name": "aws-durable-results-32331535215",
+          "sha256": "53872e19e8a35e6a33cd7794523a34ea90ef7e3868deb2198671e484e6bec89f"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32333770488,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-isolation/2026-08-20-sonnet-5-n10.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "aggregate",
+          "name": "aws-durable-probes-32333770488",
+          "sha256": "707a26e939944c7aabb2ff0f8d21573702f02ff7e26834aea329c825d72dad18"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32335468440,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-normal.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aws-durable-live-32335468440",
+          "sha256": "7d29730c5d5b1f60f933cc55aa92095e039679c0f80f22a8d6bd49e3f2676aac"
+        },
+        {
+          "kind": "live-result",
+          "name": "aws-durable-live-result-32335468440",
+          "sha256": "323851286bead149dccfb9ef27340e0174e767bec095e87e1e775c19e577896d"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32335469110,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-stale-head.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aws-durable-live-32335469110",
+          "sha256": "eb8e5d8251c8af2dc3458a99cd309fd411e97100cf66cfae9e253c64ad07acbb"
+        },
+        {
+          "kind": "live-result",
+          "name": "aws-durable-live-result-32335469110",
+          "sha256": "58619899e3a94e0fcc99d10829b3fd48707ac9d2517f59547490813e056ffa4c"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32335469994,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-draft-approval.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aws-durable-live-32335469994",
+          "sha256": "e48e9c1c489abd793b16b1f00f8f32ccab6a43d2dc55d9d9088c35a8118b32cd"
+        },
+        {
+          "kind": "live-result",
+          "name": "aws-durable-live-result-32335469994",
+          "sha256": "1b7f8f3c72bafe2b6ffb311c3846cfab563f92b10f9778e2467a9cf2827ea69e"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-aws-durable-baseline",
+      "run_id": 32335471890,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-partial-cleanup.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "generation-record",
+          "name": "aws-durable-live-32335471890",
+          "sha256": "3b22e4f232f1abc079842cded8c6c86f861f73ee7d0708803a9c88097d3e12bb"
+        },
+        {
+          "kind": "live-result",
+          "name": "aws-durable-live-result-32335471890",
+          "sha256": "6e9c8fd881b4291efa81e71f1df27c441ca1c1ed16f69774ba4de024a5b24440"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32309133130,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/common-prompt-attacks/2026-08-20-opus-4-8-n15-naiveA.json",
+        "results/experiments/common-prompt-attacks/2026-08-20-opus-4-8-n15-naiveB.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-alternating_language",
+          "sha256": "32f42fb6c1d204078e660d73e3f9a6f61bc5acd8df8bcc5e40c3987745c57621"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-augment_template",
+          "sha256": "0e0597bc7e65a3945147be8ab16520fdf914b8447964b9830fcb429ecb4d5782"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-fake_completion",
+          "sha256": "aabd9504927c997d4691182cd1f1ab359d41b0bc7fe05f21e814fdb38168f506"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-friendliness",
+          "sha256": "06e51a6ad1dded0e50c4a8836922ceaffe785244fe957bb210c010b56d05f345"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-ignore_template",
+          "sha256": "46f7cb43185a1d25e9e2ce8b00c96aeff0824f94f6d8981b80afe9f54d4be7f2"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-obfuscation",
+          "sha256": "9cd0a712e6d242b4541e291bc9c85bfbc0d91461ca676bd8c2d6e385fa85ac9a"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-persona_switch",
+          "sha256": "4b9b01c53c97a26c46b899becec5b2255cca3b25bfaa750a3681922eada53d7b"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-trojan_source",
+          "sha256": "791f2897433d05c5af757287117284d1d49905e05226305b65437e0db0e4cbdc"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-zero_width_fence_breakout",
+          "sha256": "40703a0ff1f7cc2273ee5a4c5b12c32ebec184e601c0c5bea4b1eb414ec4f8da"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-alternating_language",
+          "sha256": "d2f152020ce26dc6e3c043dc75faf30ddc2477fbcf1bacb66f5541176bba8e4f"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-augment_template",
+          "sha256": "f4acb69431e6a145a3e39abb002e97b087606c52e49fb159b44e1caf3183d911"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-fake_completion",
+          "sha256": "f3fb9a43a8c329822999f25d3ef2ef178017ae570552bac9d980cb552c4950b5"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-friendliness",
+          "sha256": "79fd0f598cc28051dde54b578df0497d46179bd6d20c38dd367552b676a82964"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-ignore_template",
+          "sha256": "c376f0846979862cf79fd5b18ef44cf048b3c630cdfb726c03b263a76732ceaf"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-obfuscation",
+          "sha256": "779369d8517e04e8505d9ea13adc80a09ea6bdc7779235c029e9a7f2f85e5b8e"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-persona_switch",
+          "sha256": "c4b7753a90aec44b40296b02be6133140ea7e5e6f584d864d9c685178e77bc21"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-trojan_source",
+          "sha256": "4180b97992feb6c1de88848861ed8cd8b51bbbb5ef22c630b58baade1504b79f"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-zero_width_fence_breakout",
+          "sha256": "ed2b5678080dee6734e821efc16eb06737ce9cc65b548721b5e51ad61e374884"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32314621564,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/architecture-sensitive/2026-08-20-opus-4-8-n3-naiveA.json",
+        "results/experiments/architecture-sensitive/2026-08-20-opus-4-8-n3-naiveB.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-delimiter_confusion",
+          "sha256": "85eea856659c20f45c9ba5b3431084fdd16eae566920a51251a6c33d2b225c96"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-fake_approval_injection",
+          "sha256": "2f473033ad066c2f7b4a5c3a0e6b18ec55f2d0adc8988fbf101c6ffff7728682"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-fence_forgery_cross_tag",
+          "sha256": "7ce2d93989d89ce9f39fe6467261699acd8347d8c2e9c24cc01ad476766817bf"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-forged_provenance",
+          "sha256": "37eaaf477358da8c97cf1ac434216e703e1bfb00bd864c94dd32ecd8841b6f60"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-gh_api_blast",
+          "sha256": "99250a5abd11e9341642b4516aceab730cace1c4831b9db8048d37120772668e"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-prompt_extraction",
+          "sha256": "bdb96e5a7006aa1a8643c2f7b424fb9d3744ee66683015897bceead94eacc76a"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-symlink_escape",
+          "sha256": "7d4e87502e538f002afa102a26d9a69e8c52dd48ee6f9250375b8248fc92cfc5"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-delimiter_confusion",
+          "sha256": "39ad587a97833103c96c606886e35c15633280adf75cf5dce8363242a49a33cc"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-fake_approval_injection",
+          "sha256": "eac2e1facd2aa1c95bc20954ac15caf87ab340ae2a3b3d642e72b4ea1213e2e0"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-fence_forgery_cross_tag",
+          "sha256": "025da9efdb0d45448918c42c10ba283d13ad1bbb5404f2c25772d4789f6e08f9"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-forged_provenance",
+          "sha256": "c252306952521d6c39b30f00c5d6a40de1bf6f2652381338fe67d8f36c217e6e"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-gh_api_blast",
+          "sha256": "307d03a3667fa5c4e0852e4dc7069518e472b83747abc1800a3e38b7d96be9e2"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-prompt_extraction",
+          "sha256": "6db71c4c01e51cc0b264b852723e6e5850580a42bb1ec3f5a2ed3f126362437a"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-symlink_escape",
+          "sha256": "f88acd399a721dea6f8d6e8b70535ea6420cc9f5e1a8ede40ba8c63421ca0595"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32315262962,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/tool-persuasion/2026-08-20-opus-4-8-n20-naiveA.json",
+        "results/experiments/tool-persuasion/2026-08-20-opus-4-8-n20-naiveB.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_agent",
+          "sha256": "0023063962a32ebd5271256a044df9d3e04d55b9aa2e7d17cb5625772fe79be0"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_skill",
+          "sha256": "60bf37b7893a7b9e7bbc72680dcce384ddcc240439ad423ea6975827a69c4a76"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_toolsearch",
+          "sha256": "becf7b2a272f4349604dbf6b224b113515ff0048382f43c8498035d16dbd3308"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_workflow",
+          "sha256": "eb879a27f7a9bc51f884fd4d44c5af4ce620c165f00e4d93289c0d5bdc1b21c7"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_write",
+          "sha256": "bf8e3c54a867e14bada0bdba377b57bcc6e4b15ff876da88ceae342d013bbc39"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_agent",
+          "sha256": "3fb6cce2eefc1738624948945c56dc817b40bcd7cb15de671f0a03f69ece53be"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_skill",
+          "sha256": "f9049d8e46d65c2dff78f76dd03cac9613b5a53f70303ff9ad50bcd60f4b3ac8"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_toolsearch",
+          "sha256": "213d67f8cc3730c961b391b72d96f1391178bf799a6fae765a7b0ee9d0d5411a"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_workflow",
+          "sha256": "9fef3c10c98497373d9b54e00b8b473993b1d6fb0030ac2f4396d11b9f261411"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_write",
+          "sha256": "31998096f7e1da33525b9d0b5dda7d475282b3f5971c7947e3d23ef70faf15a0"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32317649017,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/tool-persuasion/2026-08-20-sonnet-4-5-n20-naiveA.json",
+        "results/experiments/tool-persuasion/2026-08-20-sonnet-4-5-n20-naiveB.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_agent",
+          "sha256": "085649753eaea716c91ccbc0908125544c3912f9d12ec33018dbd0f689535782"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_skill",
+          "sha256": "224b146d6952d542383b69ba7ade7ca937572a86c39077ed817bfdd5d24c7364"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_toolsearch",
+          "sha256": "8eeb9978d8dc0a3182d482d9d8c0c88b8abf0f4db36798b2b026138d34ae0661"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_workflow",
+          "sha256": "d391a2afb66990036459904f2196951d77a75f3566742dc6e1d1c9e8f30d81ee"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-tool_injection_write",
+          "sha256": "6f9e2eadf4c838dfecfb02d1086de33da16a98316e57ec92456cb96f3a658f62"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_agent",
+          "sha256": "45c32be5faab5934adb44240cae21a3f4a940d69d58f117e3dd2a21233bca972"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_skill",
+          "sha256": "e12367a6cf324c5f0c640f067564d9cc1fa7241e1ef73fb6ac5380dc6531429d"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_toolsearch",
+          "sha256": "06cb3b4e0b2bf1827360460f71268e4d346b0d9bf0efda0c294822dd4c6edd11"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_workflow",
+          "sha256": "0b0aaed6532ea071b87ee8479cdf160ddeeeae7592343ad9b2f73e221c9929c0"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-tool_injection_write",
+          "sha256": "1a82320e1afd177c2f32e66bf69d37db783bf43c29e11320a6bb6c9d76a654bd"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32319337653,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-sonnet-4-5-n15-naiveA.json",
+        "results/experiments/secret-handling/2026-08-20-sonnet-4-5-n15-naiveB.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-secret_echo_in_diff",
+          "sha256": "9b0e48cd6a03a6760de29834596f589ae554759154997de7d5d1f1adefcc0edc"
+        },
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-secret_echo_in_diff",
+          "sha256": "b05cab815230d01eab593abb94aae65ea2e2e8092bb94f5a755f9de807a733b7"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32319986792,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-opus-4-8-n100-naiveA.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveA-secret_echo_in_diff",
+          "sha256": "ddf3080cbe7ef384b41bd63bfc5d52618776b817f1994cd177cfdf0a42e27f72"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32324804559,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/secret-handling/2026-08-20-opus-4-8-n15-naiveB.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "naive-eval-naiveB-secret_echo_in_diff",
+          "sha256": "ec3d3f58959e5c0d13474c6fce4e7b920e5dea270930e39e09d1d37e770661dc"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32325611737,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-capability/2026-08-20-opus-4-8.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "tool-capability-write",
+          "sha256": "468df3afe3edde735f63ee729d9cb7c38f68c33f4a7402247ef450fda2a8b648"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32325612150,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-capability/2026-08-20-opus-4-8.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "tool-capability-task",
+          "sha256": "5d95523cde168477137e8cb3ceab849f5b06eea0f03130a6370257dace9724f3"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32325612188,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-capability/2026-08-20-opus-4-8.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "tool-capability-edit",
+          "sha256": "f0e807fbf80dc1d0012c6172e25f32784c71f8eaf0829a4480ca0360bb819148"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32325613777,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-capability/2026-08-20-opus-4-8.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "tool-capability-workflow",
+          "sha256": "443dab983d20104a451c0b5a2e63f12ad93737548d953eb1cf35be2ae12b5e52"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32325621908,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-capability/2026-08-20-opus-4-8.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "tool-capability-skill",
+          "sha256": "3b1c5374396e82b690415ce21cb2f62a36999f1ba93dac9487d78b6608a6fcb3"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32325622403,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-capability/2026-08-20-opus-4-8.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "tool-capability-toolsearch",
+          "sha256": "c6a665dd561baeb10edf3706924a1080accffd132ff9d1b509c7b2a5bac4fba6"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32325623675,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/trusted-capability/2026-08-20-opus-4-8.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "redacted-native-result",
+          "name": "symlink-capability-probe",
+          "sha256": "555baa52b969fc56cb621aa80c8339a67e6f724bda789bd9bf938b4fd3f2feb4"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335438664,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-a-normal.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335438664",
+          "sha256": "de20c299b211461e3a86b5f8e6513b4b1fcad2bf9ad30d8b551dc059e202a9e3"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335439810,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-a-stale.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335439810",
+          "sha256": "66667a5122cb6aa372fab0f5911ec4cfb8fe278d7b963a2b6c30ddbf4797d7c7"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335442173,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-a-draft.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335442173",
+          "sha256": "c693882eb6ca00887bc141e8bd7506ea777af3240dd8cbe07c5eb6c961b28444"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335442261,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-a-partial.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335442261",
+          "sha256": "828d61767cf4e2a1ca98b74f31abb18a7e56287cbf3bda99390104f44747abe3"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335456539,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-b-normal.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335456539",
+          "sha256": "065ecb757e44a5b2416e7bfe0eb6267afb030da4e06bbd7e954ada1e84cdbbb6"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335456874,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-b-partial.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335456874",
+          "sha256": "063083a3605707ec5714e826927f44005b4b566d9420cd611c39fd9810627c9e"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335457283,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-b-stale.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335457283",
+          "sha256": "ff3071c77b7aad428b858e07cd36112a8a0938cd3d2a29fc4875f128ea2a445d"
+        }
+      ]
+    },
+    {
+      "repository": "svozza/aceiro-naive-baseline",
+      "run_id": 32335458688,
+      "status": "completed",
+      "record_paths": [
+        "results/experiments/live-reachability/2026-08-20-naive-b-draft.json"
+      ],
+      "artifacts": [
+        {
+          "kind": "live-result",
+          "name": "naive-live-result-32335458688",
+          "sha256": "54965ef90a01cfbed21ce6a4d96da8b22dd34286236dbcc26015a7c6a1ae89b0"
+        }
+      ]
+    }
+  ]
+}
