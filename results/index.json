@@ -1,13 +1,34 @@
 {
   "schema_version": 1,
-  "arm_id": "smtithy",
+  "arm_id": "aceiro",
   "results": [
+    {
+      "experiment_id": "common-prompt-attacks",
+      "cohort_id": "2026-08-20-opus-4-8-n15",
+      "path": "experiments/common-prompt-attacks/2026-08-20-opus-4-8-n15.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32297182253
+    },
+    {
+      "experiment_id": "full-review",
+      "cohort_id": "2026-08-20-opus-4-8-n3",
+      "path": "experiments/review-and-recovery/2026-08-20-opus-4-8-n3.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32295384347
+    },
     {
       "experiment_id": "live-reachability",
       "cohort_id": "draft-approval",
       "path": "experiments/live-reachability/draft-approval.json",
       "harness_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
       "github_run_id": 32253648790
+    },
+    {
+      "experiment_id": "live-reachability",
+      "cohort_id": "draft-approval",
+      "path": "experiments/live-reachability/2026-08-20-draft-approval.json",
+      "harness_sha": "0eb9a49f036d5eb3df86f6c5348e7aafa3a1cfb1",
+      "github_run_id": 32335424733
     },
     {
       "experiment_id": "live-reachability",
@@ -18,10 +39,24 @@
     },
     {
       "experiment_id": "live-reachability",
+      "cohort_id": "normal",
+      "path": "experiments/live-reachability/2026-08-20-normal.json",
+      "harness_sha": "0eb9a49f036d5eb3df86f6c5348e7aafa3a1cfb1",
+      "github_run_id": 32335421480
+    },
+    {
+      "experiment_id": "live-reachability",
       "cohort_id": "partial-cleanup",
       "path": "experiments/live-reachability/partial-cleanup.json",
       "harness_sha": "1dc4113636ab7725a0457bcb5cb4679c1867de24",
       "github_run_id": 32253615843
+    },
+    {
+      "experiment_id": "live-reachability",
+      "cohort_id": "partial-cleanup",
+      "path": "experiments/live-reachability/2026-08-20-partial-cleanup.json",
+      "harness_sha": "0eb9a49f036d5eb3df86f6c5348e7aafa3a1cfb1",
+      "github_run_id": 32335424297
     },
     {
       "experiment_id": "live-reachability",
@@ -31,11 +66,53 @@
       "github_run_id": 32253589886
     },
     {
+      "experiment_id": "live-reachability",
+      "cohort_id": "stale-head",
+      "path": "experiments/live-reachability/2026-08-20-stale-head.json",
+      "harness_sha": "0eb9a49f036d5eb3df86f6c5348e7aafa3a1cfb1",
+      "github_run_id": 32335422457
+    },
+    {
+      "experiment_id": "plan-remediation",
+      "cohort_id": "2026-08-20-opus-4-8-n3",
+      "path": "experiments/plan-remediation/2026-08-20-opus-4-8-n3.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32295384347
+    },
+    {
+      "experiment_id": "secret-handling",
+      "cohort_id": "2026-08-20-opus-4-8-n100",
+      "path": "experiments/secret-handling/2026-08-20-opus-4-8-n100.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32304247181
+    },
+    {
+      "experiment_id": "secret-handling",
+      "cohort_id": "2026-08-20-sonnet-4-5-n15",
+      "path": "experiments/secret-handling/2026-08-20-sonnet-4-5-n15.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32303107781
+    },
+    {
       "experiment_id": "secret-handling",
       "cohort_id": "sonnet-4-5-n15",
       "path": "experiments/secret-handling/sonnet-4-5-n15.json",
       "harness_sha": "2953043b5adeba3067062697f4487bcd7feaa40b",
       "github_run_id": 32027177422
+    },
+    {
+      "experiment_id": "tool-persuasion",
+      "cohort_id": "2026-08-20-opus-4-8-n20",
+      "path": "experiments/tool-persuasion/2026-08-20-opus-4-8-n20.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32299068333
+    },
+    {
+      "experiment_id": "tool-persuasion",
+      "cohort_id": "2026-08-20-sonnet-4-5-n20",
+      "path": "experiments/tool-persuasion/2026-08-20-sonnet-4-5-n20.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32300463071
     },
     {
       "experiment_id": "tool-persuasion-sonnet-4-5",
@@ -71,6 +148,13 @@
       "path": "experiments/tool-persuasion-sonnet-4-5/tool_persuasion_write-n20.json",
       "harness_sha": "0f639bc380fc46286a1e1cffdb524768a61b79a3",
       "github_run_id": 32184700959
+    },
+    {
+      "experiment_id": "tool-surface",
+      "cohort_id": "2026-08-20-opus-4-8-n10",
+      "path": "experiments/tool-surface/2026-08-20-opus-4-8-n10.json",
+      "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+      "github_run_id": 32308553541
     }
   ]
 }

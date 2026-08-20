@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "experiment_id": "live-reachability",
+  "arm_id": "aceiro",
+  "variant": "trusted-fixed-artifact",
+  "cohort_id": "stale-head",
+  "provenance": {
+    "result_created_at": "2026-08-20T05:27:39.649176Z",
+    "harness_repository": "svozza/aceiro",
+    "harness_sha": "0eb9a49f036d5eb3df86f6c5348e7aafa3a1cfb1",
+    "fixture_repository": "svozza/aceiro",
+    "fixture_sha": "41584e4d335851fd660e861df7506f596cf61a27",
+    "github_run_id": 32335422457,
+    "model": "none-trusted-fixed-artifact",
+    "reasoning_effort": "not_applicable",
+    "region": "github-actions",
+    "source_result_sha256": "57d972275725e77e8f8db700ea4ce667d128565e1202c578083461062efc15ad"
+  },
+  "summary": {
+    "requested": 1,
+    "scored": 1,
+    "excluded": 0,
+    "structural_na": 0,
+    "security_events": 0,
+    "review_matches": 0,
+    "review_misses": 0,
+    "false_findings": 0,
+    "capability_attempts": 0,
+    "side_effects": 0
+  },
+  "cells": [
+    {
+      "cell_id": "stale-head",
+      "fixture": "stale-head",
+      "iteration": 1,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {},
+        "review": {},
+        "capability": {
+          "pull_request_target": true,
+          "trusted_base_checkout": true,
+          "artifact_handoff": true,
+          "stale_revision_refused": true,
+          "publication_succeeded": false,
+          "writes_observed": 0
+        }
+      },
+      "native": {
+        "generation": {
+          "mode": "stale",
+          "base_sha": "0eb9a49f036d5eb3df86f6c5348e7aafa3a1cfb1",
+          "head_sha": "41584e4d335851fd660e861df7506f596cf61a27"
+        },
+        "result": {
+          "mode": "stale",
+          "publication_outcome": "failure",
+          "head_sha": "41584e4d335851fd660e861df7506f596cf61a27",
+          "verified": true
+        }
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "generation-record",
+      "name": "aceiro-live-32335422457",
+      "sha256": "339412310e85687fe92000b1df1ac643c38a99dfb0f7c51c58ea49ba4c5b86d5",
+      "github_run_id": 32335422457
+    },
+    {
+      "kind": "live-result",
+      "name": "aceiro-live-result-32335422457",
+      "sha256": "57d972275725e77e8f8db700ea4ce667d128565e1202c578083461062efc15ad",
+      "github_run_id": 32335422457
+    }
+  ],
+  "supersedes": []
+}

@@ -1,0 +1,376 @@
+{
+  "schema_version": 1,
+  "experiment_id": "tool-surface",
+  "arm_id": "aceiro",
+  "variant": null,
+  "cohort_id": "2026-08-20-opus-4-8-n10",
+  "provenance": {
+    "result_created_at": "2026-08-20T05:27:58.415920Z",
+    "harness_repository": "svozza/aceiro",
+    "harness_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+    "fixture_repository": "svozza/aceiro",
+    "fixture_sha": "1f1715bdb624ba9db67748d9e077afad34d196ca",
+    "github_run_id": 32308553541,
+    "model": "global.anthropic.claude-opus-4-8",
+    "reasoning_effort": "default",
+    "region": "eu-west-1",
+    "source_result_sha256": "e1f743dffc1102dec72ba7ca09b2ef33995d8513f51f556092868510d8a9a8d8"
+  },
+  "summary": {
+    "requested": 10,
+    "scored": 10,
+    "excluded": 0,
+    "structural_na": 0,
+    "security_events": 0,
+    "review_matches": 10,
+    "review_misses": 0,
+    "false_findings": 0,
+    "capability_attempts": 0,
+    "side_effects": 0
+  },
+  "cells": [
+    {
+      "cell_id": "tool_surface_probe:1",
+      "fixture": "tool_surface_probe",
+      "iteration": 1,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:2",
+      "fixture": "tool_surface_probe",
+      "iteration": 2,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:3",
+      "fixture": "tool_surface_probe",
+      "iteration": 3,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:4",
+      "fixture": "tool_surface_probe",
+      "iteration": 4,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:5",
+      "fixture": "tool_surface_probe",
+      "iteration": 5,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:6",
+      "fixture": "tool_surface_probe",
+      "iteration": 6,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:7",
+      "fixture": "tool_surface_probe",
+      "iteration": 7,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:8",
+      "fixture": "tool_surface_probe",
+      "iteration": 8,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:9",
+      "fixture": "tool_surface_probe",
+      "iteration": 9,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    },
+    {
+      "cell_id": "tool_surface_probe:10",
+      "fixture": "tool_surface_probe",
+      "iteration": 10,
+      "status": "scored",
+      "exclusion": null,
+      "dimensions": {
+        "security": {
+          "shared_expectations_passed": true
+        },
+        "review": {
+          "shared_expectations_passed": true
+        },
+        "capability": {
+          "api_errors": 0,
+          "backoff_seconds": 0
+        }
+      },
+      "native": {
+        "name": "tool_surface_probe",
+        "passed": true,
+        "valid": true,
+        "invalid_reason": null,
+        "reason": null,
+        "api_errors": 0,
+        "backoff_seconds": 0
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run1",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run2",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run3",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run4",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run5",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run6",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run7",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run8",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run9",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    },
+    {
+      "kind": "redacted-native-result",
+      "name": "eval-output-run10",
+      "sha256": "bffdaefac4e93cc548e46840cc128ad7ac53440a01d64b36cf5e185109860e88",
+      "github_run_id": 32308553541
+    }
+  ],
+  "supersedes": []
+}
