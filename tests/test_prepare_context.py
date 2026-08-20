@@ -267,6 +267,25 @@ class TestChangedFilesAreAnchoredToTheEventBase:
         prepare_context.main()
         assert json.loads((env / "changed_files.json").read_text()) == ["x.py", "img.png"]
 
+    def test_an_empty_text_file_does_not_trip_the_assertion(self, env, stubs):
+        # Git emits only metadata for a zero-byte file. There is no ---/+++
+        # pair or hunk, but the exact diff header still proves that the
+        # compare API and anchored diff name the same path.
+        stubs["diff"] = (
+            diff_for("x.py")
+            + b"diff --git a/pkg/py.typed b/pkg/py.typed\n"
+            + b"new file mode 100644\n"
+            + b"index 0000000..e69de29\n"
+        )
+        stubs["compare_pages"] = [{
+            "files": [{"filename": "x.py"}, {"filename": "pkg/py.typed"}],
+        }]
+        prepare_context.main()
+        assert json.loads((env / "changed_files.json").read_text()) == [
+            "x.py",
+            "pkg/py.typed",
+        ]
+
     def test_a_binary_file_in_a_directory_with_a_space_does_not_trip_the_assertion(self, env, stubs):
         # Reproduced against real git: a directory named `x b/` makes the header
         # `diff --git a/x b/z.png b/x b/z.png`, which cannot be split on a space
