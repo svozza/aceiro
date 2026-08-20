@@ -124,7 +124,17 @@ def assert_diff_and_list_agree(diff: bytes, changed_files: list[str]) -> None:
             "the two are not describing the same comparison"
         )
 
-    if unmentioned := sorted(listed - diff_mentioned_paths(text)):
+    mentioned = diff_mentioned_paths(text)
+    diff_headers = set(split_diff_lines(text))
+    # Empty text files have no ---/+++ pair or hunk. Since the API already
+    # supplies the exact path, compare the complete unquoted header instead of
+    # trying to split an otherwise ambiguous `diff --git` line.
+    mentioned.update(
+        path
+        for path in listed
+        if f"diff --git a/{path} b/{path}" in diff_headers
+    )
+    if unmentioned := sorted(listed - mentioned):
         fail(
             f"changed-file list names {unmentioned} which the anchored diff never mentions; "
             "the two are not describing the same comparison"
