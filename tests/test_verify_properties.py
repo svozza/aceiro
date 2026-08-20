@@ -5,7 +5,6 @@ contains no URL host outside the allowlist, no mention, no raw HTML and no
 image outside code — the grammar is allowlisted, not the attacks enumerated.
 """
 
-import copy
 import re
 import unicodedata
 from html.parser import HTMLParser
@@ -18,9 +17,7 @@ from markdown_it import MarkdownIt
 from conftest import CHANGED_FILES, POLICY, SAMPLE_DIFF
 from verify import (
     Rejection,
-    check_group_cardinality,
     check_schema,
-    check_scalar,
     extract_prose,
     normalize_host,
     parse_diff_hunks,
@@ -191,63 +188,6 @@ def test_any_extra_finding_key_is_rejected(key, value):
         verify(artifact, SAMPLE_DIFF, CHANGED_FILES, POLICY)
 
 
-@given(value=st.text(max_size=5000))
-def test_length_caps_are_enforced_for_any_string(value):
-    spec = {"type": "string", "min_length": 1, "max_length": 100}
-    normalized_length = len(unicodedata.normalize("NFC", value))
-    try:
-        check_scalar(value, spec, "field")
-        assert 1 <= normalized_length <= 100
-    except Rejection:
-        assert normalized_length < 1 or normalized_length > 100
-
-
-@given(value=st.one_of(st.none(), st.booleans(), st.integers(), st.floats(allow_nan=False), text_strategy))
-def test_artifact_schema_verdict_matches_legacy_scalar_gate(value):
-    """Differential corpus for the scalar contract retired from check_schema."""
-    policy = copy.deepcopy(POLICY)
-    policy["artifact_schema"]["ticket"] = {
-        "type": "string", "min_length": 1, "max_length": 100, "pattern": "[^\\r\\n]+",
-    }
-    artifact = build_artifact("x")
-    artifact["ticket"] = value
-
-    try:
-        check_scalar(value, policy["artifact_schema"]["ticket"], "ticket")
-        legacy_accepted = True
-    except Rejection:
-        legacy_accepted = False
-
-    try:
-        verify(artifact, "", [], policy)
-        schema_accepted = True
-    except Rejection:
-        schema_accepted = False
-
-    assert schema_accepted == legacy_accepted
-
-
-def legacy_check_schema(artifact, policy):
-    """The retired generic instance gate, retained only as a differential oracle."""
-    schema = policy["artifact_schema"]
-    if not isinstance(artifact, dict) or set(artifact) != set(schema):
-        raise Rejection("legacy shape rejection")
-    for field, spec in schema.items():
-        if field != "findings":
-            check_scalar(artifact[field], spec, field)
-    findings_spec = schema["findings"]
-    findings = artifact["findings"]
-    if not isinstance(findings, list) or len(findings) > findings_spec["max_items"]:
-        raise Rejection("legacy findings rejection")
-    item_fields = findings_spec["item_fields"]
-    for index, finding in enumerate(findings):
-        if not isinstance(finding, dict) or set(finding) != set(item_fields):
-            raise Rejection("legacy finding rejection")
-        for field, spec in item_fields.items():
-            check_scalar(finding[field], spec, f"findings[{index}].{field}")
-    check_group_cardinality(findings, findings_spec)
-
-
 @given(
     top_extra=st.booleans(),
     finding_extra=st.booleans(),
@@ -255,7 +195,7 @@ def legacy_check_schema(artifact, policy):
     severity=st.one_of(st.sampled_from(["critical", "high", "medium", "low"]), st.text(max_size=8)),
     summary=st.text(max_size=4100),
 )
-def test_generated_artifact_corpus_matches_retired_shape_gate(
+def test_artifact_corpus_matches_standard_json_schema(
     top_extra, finding_extra, line, severity, summary
 ):
     """Differential verdicts across keys, types, bounds, enums, and strings."""
@@ -276,14 +216,15 @@ def test_generated_artifact_corpus_matches_retired_shape_gate(
     if finding_extra:
         artifact["findings"][0]["patch"] = "x"
 
-    verdicts = []
-    for gate in (legacy_check_schema, check_schema):
-        try:
-            gate(artifact, POLICY)
-            verdicts.append(True)
-        except Rejection:
-            verdicts.append(False)
-    assert verdicts[0] == verdicts[1]
+    from jsonschema import Draft202012Validator
+
+    expected = Draft202012Validator(POLICY["artifact_schema"]).is_valid(artifact)
+    try:
+        check_schema(artifact, POLICY)
+        actual = True
+    except Rejection:
+        actual = False
+    assert actual == expected
 
 
 @given(url=st.text(max_size=200))

@@ -23,6 +23,8 @@ from plan_verify import (  # noqa: E402
     check_plan_ordering,
     glob_to_regexp,
     matches_denylist,
+    plan_arg_schemas,
+    plan_schema,
     parse_plan,
     tree_content_source,
     verify_plan,
@@ -33,6 +35,14 @@ POLICY = json.loads(
     (Path(__file__).parent.parent / "src" / "aceiro" / "policy.json").read_text()
 )
 PLAN_POLICY = POLICY["plan"]
+
+
+def max_steps(policy: dict = PLAN_POLICY) -> int:
+    return plan_schema(policy)["properties"]["steps"]["maxItems"]
+
+
+def arg_properties(kind: str, policy: dict = PLAN_POLICY) -> dict:
+    return plan_arg_schemas(policy)[kind]["properties"]
 
 
 def patch_step(step_id="s0", path="src/a.py", old="a", new="b"):
@@ -132,21 +142,18 @@ class TestPlanShape:
             parse_plan({"steps": []}, PLAN_POLICY)
 
     def test_max_steps_is_enforced(self):
-        steps = [patch_step(f"s{i}") for i in range(PLAN_POLICY["max_steps"] + 1)]
+        steps = [patch_step(f"s{i}") for i in range(max_steps() + 1)]
         with pytest.raises(Rejection, match="exceeds max_steps"):
             parse_plan({"steps": steps}, PLAN_POLICY)
 
     def test_generated_schema_is_checked_before_plan_validation(self, monkeypatch):
-        monkeypatch.setattr(
-            plan_verify,
-            "build_plan_schema",
-            lambda unused: {
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "type": 7,
-            },
-        )
+        policy = copy.deepcopy(PLAN_POLICY)
+        policy["schema"] = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": 7,
+        }
         with pytest.raises(Rejection, match="policy error.*schema"):
-            parse_plan(valid_plan(), PLAN_POLICY)
+            parse_plan(valid_plan(), policy)
 
     def test_verify_plan_enforces_id_uniqueness(self):
         # Driver-level for the reason test_verify_plan_enforces_ordering is, and
@@ -234,15 +241,13 @@ class TestArgs:
         with pytest.raises(Rejection, match=r"missing keys \['old'\]"):
             parse_plan({"steps": [step]}, PLAN_POLICY)
 
-    def test_scalar_specs_are_enforced_via_check_scalar(self):
-        # One case per spec facet; check_scalar itself is covered by the
-        # artifact suite. Length is measured on NFC there, so it is here too.
+    def test_standard_schema_constraints_are_enforced(self):
         too_long = patch_step(path="p" * 501)
         with pytest.raises(Rejection, match="max_length"):
             parse_plan({"steps": [too_long]}, PLAN_POLICY)
 
         bad_pattern = push_step(name="-starts-with-dash")
-        with pytest.raises(Rejection, match="pattern"):
+        with pytest.raises(Rejection, match="does not match"):
             parse_plan({"steps": [bad_pattern]}, PLAN_POLICY)
 
         bad_int = suggest_step()
@@ -260,8 +265,9 @@ class TestArgs:
 
     def test_length_is_measured_after_nfc_normalization(self):
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["patch"]["args"]["new"]["max_length"] = 1
-        parse_plan({"steps": [patch_step(new="e\u0301")]}, policy)
+        arg_properties("patch", policy)["new"]["maxLength"] = 1
+        with pytest.raises(Rejection, match="max_length"):
+            parse_plan({"steps": [patch_step(new="e\u0301")]}, policy)
 
     # JSON permits \ud800 and both parsers accept it, so a plan can carry a
     # string no UTF-8 encoder will take. The containment phase encodes, the
@@ -303,7 +309,7 @@ class TestShippedPolicyAgreement:
         # `base` arg here would make the merge target model-suppliable — the
         # same banned move as a model-selected policy version — so the arg set
         # is pinned exactly.
-        assert sorted(PLAN_POLICY["step_kinds"]["open_pr"]["args"]) == ["body", "branch", "title"]
+        assert sorted(arg_properties("open_pr")) == ["body", "branch", "title"]
 
     def test_every_string_arg_is_markdown_checked_or_charset_constrained(self):
         # verify.py's markdown_fields rule, applied to plan args, with the hole
@@ -315,11 +321,12 @@ class TestShippedPolicyAgreement:
         # NEGATED class is not a constraint for the property that matters. An arg
         # is gated by the markdown allowlist or by a pattern that allowlists its
         # characters; old/new are file bytes, never rendered as prose.
-        for kind, spec in PLAN_POLICY["step_kinds"].items():
-            for arg_name, arg_spec in spec["args"].items():
+        markdown_args = POLICY["markdown"]["plan_args"]
+        for kind in PLAN_POLICY["step_kinds"]:
+            for arg_name, arg_spec in arg_properties(kind).items():
                 if arg_spec["type"] != "string" or arg_name in ("old", "new"):
                     continue
-                if arg_spec.get("markdown"):
+                if arg_name in markdown_args.get(kind, []):
                     continue
                 pattern = arg_spec.get("pattern")
                 assert pattern, f"{kind}.{arg_name}: string arg with no markdown flag and no pattern"
@@ -333,9 +340,9 @@ class TestShippedPolicyAgreement:
         # the tree (ADR-0005 anchoring) and new is code whose only gate is the
         # human merge. Pinned so the exemption above stays a named decision.
         for kind in ("patch", "suggest"):
-            args = PLAN_POLICY["step_kinds"][kind]["args"]
-            assert "pattern" not in args["old"] and not args["old"].get("markdown")
-            assert "pattern" not in args["new"] and not args["new"].get("markdown")
+            args = arg_properties(kind)
+            assert "pattern" not in args["old"]
+            assert "pattern" not in args["new"]
 
     def test_branch_prefix_is_a_harness_owned_namespace(self):
         # The one argument that decides where `contents: write` is pointed. A
@@ -353,7 +360,7 @@ class TestShippedPolicyAgreement:
     def test_the_plan_byte_budget_bounds_more_than_the_per_step_cap(self):
         # A plan cap at or above max_steps x per-step is not a cap: several steps
         # may share one file, so max_patched_files does not bound the sum either.
-        assert PLAN_POLICY["max_plan_changed_bytes"] < PLAN_POLICY["max_changed_bytes"] * PLAN_POLICY["max_steps"]
+        assert PLAN_POLICY["max_plan_changed_bytes"] < PLAN_POLICY["max_changed_bytes"] * max_steps()
 
     def test_the_byte_budget_admits_the_patch_a_real_fix_needs(self):
         # Fail-closed must not mean useless: a per-step budget below the largest
@@ -361,7 +368,7 @@ class TestShippedPolicyAgreement:
         # unsatisfiable for a plausible fix. The `old` arg caps at 20000
         # characters, so a budget under that is deliberate — the point is that a
         # 40 KB substitution is not a "smallest correct fix" (prompts/ai-pr-plan).
-        assert PLAN_POLICY["max_changed_bytes"] < PLAN_POLICY["step_kinds"]["patch"]["args"]["old"]["max_length"] * 2
+        assert PLAN_POLICY["max_changed_bytes"] < arg_properties("patch")["old"]["maxLength"] * 2
 
     def test_label_allowlist_ships_empty(self):
         # link_host_allowlist's precedent (ADR-0010's too): a label is a control
@@ -552,8 +559,8 @@ class TestSpecsAreValidatedEagerly:
         # PatternError to Python's re — the shape of pattern most likely to
         # arrive in a policy authored against another engine.
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["patch"]["args"]["path"]["pattern"] = r"\p{L}"
-        with pytest.raises(Rejection, match="policy error.*pattern"):
+        arg_properties("patch", policy)["path"]["pattern"] = r"\p{L}"
+        with pytest.raises(Rejection, match="invalid JSON Schema"):
             parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_non_integer_minimum_is_a_policy_error(self):
@@ -561,20 +568,20 @@ class TestSpecsAreValidatedEagerly:
         # comparison raises TypeError rather than Rejection, so the gate crashed
         # instead of producing a verdict.
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["suggest"]["args"]["line"]["minimum"] = "bogus"
-        with pytest.raises(Rejection, match="policy error.*minimum"):
+        arg_properties("suggest", policy)["line"]["minimum"] = "bogus"
+        with pytest.raises(Rejection, match="invalid JSON Schema"):
             parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_non_integer_length_bound_is_a_policy_error(self):
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["patch"]["args"]["old"]["max_length"] = "20000"
-        with pytest.raises(Rejection, match="policy error.*max_length"):
+        arg_properties("patch", policy)["old"]["maxLength"] = "20000"
+        with pytest.raises(Rejection, match="invalid JSON Schema"):
             parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_non_list_enum_values_is_a_policy_error(self):
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["label"]["args"]["name"] = {"type": "enum", "values": "automated"}
-        with pytest.raises(Rejection, match="policy error.*values"):
+        arg_properties("label", policy)["name"] = {"type": "enum", "values": "automated"}
+        with pytest.raises(Rejection, match="invalid JSON Schema"):
             parse_plan({"steps": [patch_step()]}, policy)
 
     def test_the_sweep_reaches_a_kind_the_plan_never_uses(self):
@@ -582,8 +589,8 @@ class TestSpecsAreValidatedEagerly:
         # lazily-checked open_pr spec would never be read at all — and open_pr is
         # write-class, where a latent policy fault costs the most.
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["open_pr"]["args"]["title"]["pattern"] = r"(?<x>a)"
-        with pytest.raises(Rejection, match="policy error.*pattern"):
+        arg_properties("open_pr", policy)["title"]["pattern"] = r"(?<x>a)"
+        with pytest.raises(Rejection, match="invalid JSON Schema"):
             parse_plan({"steps": [patch_step()]}, policy)
 
     def test_a_pattern_another_engine_would_refuse_is_not_a_policy_error(self):
@@ -591,13 +598,13 @@ class TestSpecsAreValidatedEagerly:
         # SyntaxError to JS under `u`. The gate refuses what ITS enforcer cannot
         # compile, not what some other dialect would balk at.
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["open_pr"]["args"]["title"]["pattern"] = "a{,3}"
+        arg_properties("open_pr", policy)["title"]["pattern"] = "a{,3}"
         parse_plan({"steps": [patch_step()]}, policy)
 
     def test_the_refusal_precedes_any_step_check(self):
         # A policy fault reported as a bad plan sends a reader to the generator.
         policy = copy.deepcopy(PLAN_POLICY)
-        policy["step_kinds"]["patch"]["args"]["path"]["pattern"] = r"\p{L}"
+        arg_properties("patch", policy)["path"]["pattern"] = r"\p{L}"
         with pytest.raises(Rejection, match="policy error"):
             parse_plan({"steps": [{"id": "nope", "kind": "unknown_kind", "args": {}}]}, policy)
 
@@ -988,7 +995,7 @@ class TestBounding:
         # the delivery rather than of one step.
         cap = PLAN_POLICY["max_plan_changed_bytes"]
         per_step = PLAN_POLICY["max_changed_bytes"]
-        assert cap < per_step * PLAN_POLICY["max_steps"], "a plan cap at or above N*per-step bounds nothing new"
+        assert cap < per_step * max_steps(), "a plan cap at or above N*per-step bounds nothing new"
         filler = "z" * (per_step - 200)
         anchors = [f"anchor{i}\n" for i in range(cap // per_step + 2)]
         tree = {"src/app.py": "".join(anchors).encode()}
@@ -1979,7 +1986,7 @@ class TestTheF1CorpusIsStillRefused:
          r"exceeds max_plan_changed_bytes"),
         ("schema: one step over max_steps",
          lambda: TestTheF1CorpusIsStillRefused.chain(
-             *[anchored_patch(f"s{i}") for i in range(PLAN_POLICY["max_steps"] + 1)]),
+             *[anchored_patch(f"s{i}") for i in range(max_steps() + 1)]),
          r"exceeds max_steps"),
         ("schema: a control-flow step kind",
          lambda: TestTheF1CorpusIsStillRefused.chain(

@@ -23,7 +23,7 @@ SHIPPED_HOSTS = ["github.com/aws-powertools/", "docs.powertools.aws.dev"]
 def test_a_mutating_test_empties_the_allowlist(policy):
     # Exactly the shape the finding names.
     policy["markdown"]["link_host_allowlist"] = []
-    policy["artifact_schema"]["summary"]["max_length"] = 1
+    policy["artifact_schema"]["properties"]["summary"]["maxLength"] = 1
     assert policy["markdown"]["link_host_allowlist"] == []
 
 
@@ -31,7 +31,7 @@ def test_b_the_next_test_gets_an_unmutated_policy(policy):
     assert policy["markdown"]["link_host_allowlist"] == SHIPPED_HOSTS, (
         "a previous test's mutation reached this one; the fixture is shared mutable state"
     )
-    assert policy["artifact_schema"]["summary"]["max_length"] > 1
+    assert policy["artifact_schema"]["properties"]["summary"]["maxLength"] > 1
 
 
 def test_the_module_level_policy_is_not_handed_out(policy):

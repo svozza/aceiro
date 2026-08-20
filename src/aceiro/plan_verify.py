@@ -48,15 +48,12 @@ from typing import cast
 
 from jsonschema import Draft202012Validator, SchemaError, ValidationError
 
-from artifact import _scalar_to_json_schema
 from canonicalize import strip_invisible
 from verify import (
     ContractValidator,
-    SCALAR_KEYS,
     Rejection,
     check_markdown_field,
-    check_scalar,
-    check_scalar_spec,
+    checked_markdown_fields,
     fence_info_strings,
     parse_diff_hunks,
     scanned_representations,
@@ -70,7 +67,7 @@ from verify import (
 # consuming READER is asserted by TestEveryPlanPolicyKeyHasAReader, which
 # scans this module with this allowlist excised.
 PLAN_POLICY_KEYS = frozenset({
-    "max_steps",
+    "schema",
     "control_flow",
     "argument_forms",
     "step_kinds",
@@ -163,87 +160,49 @@ def check_plan_policy_keys(policy_plan: dict) -> None:
         )
 
 
-def check_plan_arg_specs(policy_plan: dict) -> None:
-    """Validate every step kind's spec — its shape, write_class and arg specs —
-    whether or not a plan uses that kind.
+def plan_schema(policy_plan: dict) -> dict:
+    """The checked-in standard schema used by planner and verifier."""
+    return policy_plan["schema"]
 
-    Swept eagerly for the reason check_reserved_closures is: the policy this gate
-    interprets must be one it can enforce, and that is settled before a step is
-    read. A lazy check reaches only the kinds a plan happens to carry, so a
-    malformed write-class spec — the ones deciding where `contents: write` points
-    — stays latent until some later plan exercises it.
 
-    write_class is validated here rather than where cardinality reads it, for the
-    same reason: a kind spec without it raised KeyError from the middle of that
-    check instead of naming the absent field before any step was read.
+def build_plan_schema(policy: dict) -> dict:
+    """Compatibility accessor; no schema translation occurs."""
+    return plan_schema(policy["plan"])
 
-    Patterns are compiled with THIS gate's own engine: the gate must refuse what
-    it cannot enforce as it will enforce it.
-    """
+
+def plan_step_branches(policy_plan: dict) -> list[dict]:
+    return plan_schema(policy_plan)["properties"]["steps"]["items"]["oneOf"]
+
+
+def plan_arg_schemas(policy_plan: dict) -> dict[str, dict]:
+    return {
+        branch["properties"]["kind"]["const"]: branch["properties"]["args"]
+        for branch in plan_step_branches(policy_plan)
+    }
+
+
+def check_step_kind_policy(policy_plan: dict) -> None:
+    """Validate effect classification and its agreement with the plan schema."""
     for kind, spec in policy_plan["step_kinds"].items():
         if not isinstance(spec, dict):
             raise Rejection(f"policy error: plan.step_kinds.{kind} is not an object")
+        if set(spec) != {"write_class"}:
+            raise Rejection(
+                f"policy error: plan.step_kinds.{kind} must contain only write_class"
+            )
         if not isinstance(spec.get("write_class"), bool):
             raise Rejection(
                 f"policy error: plan.step_kinds.{kind}.write_class must be true or false; "
                 "it decides which kinds the write-cardinality rule counts"
             )
-        args = spec.get("args")
-        if not isinstance(args, dict):
-            raise Rejection(f"policy error: plan.step_kinds.{kind}.args is not an object")
-        for name, arg_spec in args.items():
-            where = f"plan.step_kinds.{kind}.args.{name}"
-            if not isinstance(arg_spec, dict):
-                raise Rejection(f"policy error: scalar spec at {where} is not an object")
-            if arg_spec.get("type") not in ("string", "integer", "enum"):
-                raise Rejection(
-                    f"policy error: unknown scalar type {arg_spec.get('type')!r} at {where}"
-                )
-            if extra := set(arg_spec) - SCALAR_KEYS[arg_spec["type"]]:
-                raise Rejection(
-                    f"policy error: scalar spec at {where} carries keys no reader consults "
-                    f"{sorted(extra)} (allowed for {arg_spec['type']}: "
-                    f"{sorted(SCALAR_KEYS[arg_spec['type']])})"
-                )
-            check_scalar_spec(arg_spec, where)
-
-
-def build_plan_schema(policy: dict) -> dict:
-    """Translate policy.json's plan section into the submit_plan contract."""
-    plan = policy["plan"]
-    step_branches = []
-    for kind, spec in plan["step_kinds"].items():
-        step_branches.append({
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$"},
-                "kind": {"const": kind},
-                "args": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {
-                        name: _scalar_to_json_schema(arg) for name, arg in spec["args"].items()
-                    },
-                    "required": list(spec["args"]),
-                },
-            },
-            "required": ["id", "kind", "args"],
-        })
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "steps": {
-                "type": "array",
-                "minItems": 1,
-                "maxItems": plan["max_steps"],
-                "items": {"oneOf": step_branches},
-            },
-        },
-        "required": ["steps"],
-    }
+    schema_kinds = set(plan_arg_schemas(policy_plan))
+    policy_kinds = set(policy_plan["step_kinds"])
+    if schema_kinds != policy_kinds:
+        raise Rejection(
+            "policy error: plan.step_kinds and plan.schema declare different kinds "
+            f"(policy-only={sorted(policy_kinds - schema_kinds)}, "
+            f"schema-only={sorted(schema_kinds - policy_kinds)})"
+        )
 
 
 def _plan_error_path(error: ValidationError, step_index: int | None = None) -> str:
@@ -300,9 +259,9 @@ def _plan_validation_message(
             f"plan.steps[{step_index}].kind: {kind!r} is not a declared step kind "
             f"({', '.join(sorted(kinds))})"
         )
-    branches = schema["properties"]["steps"]["items"]["oneOf"]
+    branches = plan_step_branches(policy_plan)
     branch = next(item for item in branches if item["properties"]["kind"]["const"] == kind)
-    selected = next(ContractValidator(branch).iter_errors(step), error)
+    selected = next(iter(ContractValidator(branch).iter_errors(step)), error)
     return _format_plan_error(selected, step_index)
 
 
@@ -320,15 +279,13 @@ def parse_plan(candidate, policy_plan: dict) -> tuple[Step, ...]:
     # keys, so a missing one must be named here rather than raising KeyError there.
     check_plan_policy_keys(policy_plan)
     check_reserved_closures(policy_plan)
-    check_plan_arg_specs(policy_plan)
     try:
-        schema = build_plan_schema({"plan": policy_plan})
+        schema = plan_schema(policy_plan)
         Draft202012Validator.check_schema(schema)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise Rejection(f"policy error: cannot build plan schema: {exc}") from exc
     except SchemaError as exc:
-        raise Rejection(f"policy error: generated plan schema is invalid: {exc}") from exc
-    if error := next(ContractValidator(schema).iter_errors(candidate), None):
+        raise Rejection(f"policy error: plan.schema is invalid JSON Schema: {exc}") from exc
+    check_step_kind_policy(policy_plan)
+    if error := next(iter(ContractValidator(schema).iter_errors(candidate)), None):
         raise Rejection(_plan_validation_message(error, candidate, schema, policy_plan))
 
     steps = candidate["steps"]
@@ -963,28 +920,21 @@ def check_plan_ordering(steps: tuple[Step, ...], policy_plan: dict) -> None:
 # -------------------------------------------------- markdown + secret scan --
 
 
-def plan_markdown_args(args_spec: dict, kind: str) -> list[str]:
-    """Args the policy marks markdown-bearing, with verify.markdown_fields'
-    fail-closed rule: a string arg that is neither markdown-checked nor
-    pattern-constrained is a policy error — except patch/suggest old and new,
-    which are file bytes, never rendered as prose, and gated instead by
-    anchoring and the human merge (pinned in TestShippedPolicyAgreement)."""
-    fields = []
-    for name, spec in args_spec.items():
-        if spec.get("markdown"):
-            fields.append(name)
-        elif spec["type"] == "string" and "pattern" not in spec and name not in ("old", "new"):
-            raise Rejection(
-                f"policy error: {kind}.{name} is a string arg that is neither "
-                "markdown-checked nor pattern-constrained"
-            )
-    return fields
+def plan_markdown_args(policy: dict, kind: str) -> list[str]:
+    """Markdown-bearing args declared separately from the standard schema."""
+    properties = plan_arg_schemas(policy["plan"])[kind]["properties"]
+    declared = policy["markdown"]["plan_args"].get(kind, [])
+    return checked_markdown_fields(
+        declared,
+        properties,
+        f"markdown.plan_args.{kind}",
+        exempt={"old", "new"},
+    )
 
 
 def _iter_plan_markdown(steps: tuple[Step, ...], policy: dict):
-    step_kinds = policy["plan"]["step_kinds"]
     for index, step in enumerate(steps):
-        for arg_name in plan_markdown_args(step_kinds[step.kind]["args"], step.kind):
+        for arg_name in plan_markdown_args(policy, step.kind):
             yield f"plan.steps[{index}].args.{arg_name}", step.args[arg_name]
 
 

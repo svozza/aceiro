@@ -39,7 +39,6 @@ from pathlib import Path
 from artifact import (
     POLICY_PATH,
     Transcript,
-    _scalar_to_json_schema,
     apply_project_description,
     build_user_message,
     fence,
@@ -56,7 +55,7 @@ from cc_loop import (
     make_submit_tool,
     tool_guidance,
 )
-from plan_verify import build_plan_schema, tree_content_source, verify_plan
+from plan_verify import build_plan_schema, plan_schema, tree_content_source, verify_plan
 from verify import Rejection, verify
 
 SUBMIT_TOOL = "mcp__plan__submit_plan"
@@ -70,6 +69,7 @@ def render_plan_constraints(policy: dict) -> str:
     section, so the prose the model reads can never drift from what
     verify_plan enforces — render_constraints' rule, applied to plans."""
     plan = policy["plan"]
+    max_steps = plan_schema(plan)["properties"]["steps"]["maxItems"]
     kinds = ", ".join(f"`{kind}`" for kind in sorted(plan["step_kinds"]))
     denylist = ", ".join(f"`{p}`" for p in plan["path_denylist"])
     # Rendered from policy.ordering, not restated: the rule is enforced by both
@@ -88,7 +88,7 @@ def render_plan_constraints(policy: dict) -> str:
         "\n\n## Enforced plan constraints (verifier-rejected if violated)\n\n"
         f"- Step kinds: {kinds}. Nothing else exists; an unknown kind rejects "
         "the whole plan.\n"
-        f"- At most {plan['max_steps']} steps, at most {plan['max_patched_files']} "
+        f"- At most {max_steps} steps, at most {plan['max_patched_files']} "
         f"distinct patched files, at most {plan['max_changed_lines']} changed "
         "lines (old plus new) per patch or suggest step.\n"
         f"- Never these paths, even if the PR touched them: {denylist}.\n"
@@ -303,7 +303,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path,
     policy = json.loads(policy_text)
     transcript = Transcript(output_dir / "transcript.jsonl", policy)
 
-    schema = build_plan_schema(policy)
+    schema = plan_schema(policy["plan"])
     # The SAME description seam the review session uses (cc_loop.run). A consumer
     # setting ACEIRO_PROJECT_DESCRIPTION as documented had it read by the
     # reviewer and ignored here, so their planner was told its patch paths must be

@@ -198,11 +198,10 @@ def iter_markdown_args(plan: dict, policy: dict):
     sweep must cover all of them, run_evals.iter_text_fields' rule. Driven by
     the policy's own markdown flags so a new markdown arg is swept the day it
     is declared, not the day someone remembers this function."""
-    step_kinds = policy["plan"]["step_kinds"]
+    declared = policy["markdown"]["plan_args"]
     for index, step in enumerate(plan["steps"]):
-        for name, spec in step_kinds[step["kind"]]["args"].items():
-            if spec.get("markdown") or spec["type"] == "string" and name not in ("old", "new"):
-                yield f"steps[{index}].args.{name}", step["args"][name]
+        for name in declared.get(step["kind"], []):
+            yield f"steps[{index}].args.{name}", step["args"][name]
 
 
 def check_commanded_cardinality(commanded: list[dict], expect: dict) -> None:

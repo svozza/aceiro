@@ -35,7 +35,7 @@ from __future__ import annotations
 import json
 import re
 
-from artifact import POLICY_PATH
+from artifact import POLICY_PATH, finding_limit
 from canonicalize import read_harness_text
 
 # No review has more findings than the policy allows, so no ordinal above that cap
@@ -45,7 +45,7 @@ from canonicalize import read_harness_text
 #
 # Bounded HERE rather than left to the gate's range check: this refuses to carry an
 # unbounded integer from an untrusted body into an int() at all.
-MAX_ORDINAL = json.loads(read_harness_text(POLICY_PATH))["artifact_schema"]["findings"]["max_items"]
+MAX_ORDINAL = finding_limit(json.loads(read_harness_text(POLICY_PATH)))
 
 # The count is bounded by the same cap, and by the same reasoning: a review has at
 # most max_items findings, so a command listing more ordinals than that cannot name

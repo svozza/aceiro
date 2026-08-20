@@ -1,9 +1,8 @@
 """Artifact contract shared by the review generator and the eval harness.
 
-The schema and prompt text are derived from policy.json rather than restated, so
-the contract shown to a generator cannot drift from what verify.py enforces.
-Deliberately generator-agnostic: verify.py is the trust boundary and does not
-care who produced the artifact.
+The checked-in Draft 2020-12 schema in policy.json is passed directly to the
+generator and verifier. Deliberately generator-agnostic: verify.py is the trust
+boundary and does not care who produced the artifact.
 """
 
 from __future__ import annotations
@@ -44,70 +43,38 @@ POLICY_PATH = _HARNESS_ROOT / "policy.json"
 MAX_REPEATED_REJECTIONS = 3
 
 
-def _scalar_to_json_schema(spec: dict) -> dict:
-    match spec["type"]:
-        case "string":
-            out = {"type": "string", "maxLength": spec["max_length"]}
-            if spec.get("min_length"):
-                out["minLength"] = spec["min_length"]
-            if "pattern" in spec:
-                # ANCHORED, because JSON Schema's `pattern` is satisfied by a
-                # match anywhere while check_scalar uses re.fullmatch. Unanchored,
-                # the schema advertised '../base/settings.py' as a valid
-                # patch.path (it matches at 'base/settings.py') — so a generator
-                # trusting the tool's advertised input schema spends a submission
-                # to be rejected for an unrelated reason. This schema is
-                # documentation of what the verifier enforces; it has to say the
-                # same thing. Non-capturing group, so an alternation in the policy
-                # pattern cannot bind looser than it reads.
-                out["pattern"] = f"^(?:{spec['pattern']})$"
-            return out
-        case "integer":
-            out = {"type": "integer"}
-            if "minimum" in spec:
-                out["minimum"] = spec["minimum"]
-            if "maximum" in spec:
-                out["maximum"] = spec["maximum"]
-            return out
-        case "enum":
-            return {"enum": spec["values"]}
-        case kind:
-            raise ValueError(f"policy error: unknown scalar type {kind!r}")
+def review_schema(policy: dict) -> dict:
+    """The checked-in standard schema used by both generator and verifier."""
+    return policy["artifact_schema"]
 
 
 def build_artifact_schema(policy: dict) -> dict:
-    """Translate policy.json's artifact_schema into a JSON Schema for the
-    generator's submit_review tool input.
+    """Compatibility accessor; no schema translation occurs."""
+    return review_schema(policy)
 
-    Derived by iterating the policy rather than restating its field names: with
-    `additionalProperties: False`, a field the verifier requires and this schema
-    omits is one the model is forbidden to send and then rejected for omitting.
-    `required` is every declared field, which is what check_schema enforces.
-    """
-    schema = policy["artifact_schema"]
-    findings = schema["findings"]
-    findings_schema = {
-        "type": "array",
-        "maxItems": findings["max_items"],
-        "items": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                field: _scalar_to_json_schema(spec) for field, spec in findings["item_fields"].items()
-            },
-            "required": list(findings["item_fields"]),
-        },
-    }
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            name: findings_schema if name == "findings" else _scalar_to_json_schema(spec)
-            for name, spec in schema.items()
-        },
-        "required": list(schema),
-    }
+
+def review_properties(policy: dict) -> dict:
+    return review_schema(policy)["properties"]
+
+
+def finding_array_schema(policy: dict) -> dict:
+    return review_properties(policy)["findings"]
+
+
+def finding_schema(policy: dict) -> dict:
+    return finding_array_schema(policy)["items"]
+
+
+def finding_properties(policy: dict) -> dict:
+    return finding_schema(policy)["properties"]
+
+
+def finding_limit(policy: dict) -> int:
+    return finding_array_schema(policy)["maxItems"]
+
+
+def severity_values(policy: dict) -> list[str]:
+    return finding_properties(policy)["severity"]["enum"]
 
 
 def rejection_fingerprint(reason: str) -> str:
@@ -122,8 +89,8 @@ def rejection_fingerprint(reason: str) -> str:
 
 def render_rejection_guidance(policy: dict) -> str:
     """The retry message appended to every rejected submission."""
-    top_keys = ", ".join(policy["artifact_schema"])
-    finding_keys = ", ".join(policy["artifact_schema"]["findings"]["item_fields"])
+    top_keys = ", ".join(review_schema(policy)["required"])
+    finding_keys = ", ".join(finding_schema(policy)["required"])
     return (
         "Nothing was saved. Return one complete, "
         f"self-contained artifact: exactly the keys {top_keys} at the top "
@@ -414,8 +381,8 @@ def render_constraints(policy: dict) -> str:
     """Render the enforced artifact constraints from policy.json as a system
     prompt section, so the prose the model reads can never drift from what
     the verifier enforces."""
-    schema = policy["artifact_schema"]
-    fields = schema["findings"]["item_fields"]
+    schema = review_properties(policy)
+    fields = finding_properties(policy)
     allowlist = policy["markdown"]["link_host_allowlist"]
 
     # The allowlist ships EMPTY (fail-closed: a consumer names the hosts it
@@ -443,11 +410,11 @@ def render_constraints(policy: dict) -> str:
 
     return (
         "\n\n## Enforced artifact constraints (verifier-rejected if violated)\n\n"
-        f"- At most {schema['findings']['max_items']} findings; severity is one of "
-        f"{', '.join(f'`{s}`' for s in fields['severity']['values'])}.\n"
-        f"- Length caps: summary {schema['summary']['max_length']}, title "
-        f"{fields['title']['max_length']}, body {fields['body']['max_length']}, "
-        f"residual_risk {schema['residual_risk']['max_length']} characters.\n"
+        f"- At most {finding_limit(policy)} findings; severity is one of "
+        f"{', '.join(f'`{s}`' for s in severity_values(policy))}.\n"
+        f"- Length caps: summary {schema['summary']['maxLength']}, title "
+        f"{fields['title']['maxLength']}, body {fields['body']['maxLength']}, "
+        f"residual_risk {schema['residual_risk']['maxLength']} characters.\n"
         f"{link_rule}"
         f"{autolink_rule}"
         "- Markdown in text fields is limited to: plain text, emphasis, inline "
@@ -475,7 +442,7 @@ def severity_ranks(policy: dict) -> dict[str, int]:
     rebuilt per caller — a caller that enumerated the names itself would keep
     working while the policy's enum changed underneath it.
     """
-    values = policy["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]
+    values = severity_values(policy)
     return {name: rank for rank, name in enumerate(values)}
 
 

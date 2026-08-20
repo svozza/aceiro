@@ -73,11 +73,10 @@ class TestStructure:
     def test_generated_schema_is_checked_before_instance_validation(
         self, artifact, sample_diff, changed_files, policy, monkeypatch
     ):
-        monkeypatch.setattr(
-            verify_module,
-            "build_artifact_schema",
-            lambda unused: {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": 7},
-        )
+        policy["artifact_schema"] = {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": 7,
+        }
         with pytest.raises(Rejection, match="policy error.*schema"):
             verify(artifact, sample_diff, changed_files, policy)
 
@@ -120,9 +119,13 @@ class TestEveryTopLevelSpecIsEnforced:
     @pytest.fixture
     def policy_with_ticket(self, policy):
         extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {
-            "type": "string", "min_length": 1, "max_length": 10, "pattern": "[A-Z]+-[0-9]+",
+        extended["artifact_schema"]["properties"]["ticket"] = {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10,
+            "pattern": "^(?:[A-Z]+-[0-9]+)$",
         }
+        extended["artifact_schema"]["required"].append("ticket")
         return extended
 
     def test_a_conforming_value_is_accepted(self, artifact, sample_diff, changed_files, policy_with_ticket):
@@ -149,9 +152,11 @@ class TestEveryTopLevelSpecIsEnforced:
         self, artifact, sample_diff, changed_files, policy
     ):
         extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["addendum"] = {
-            "type": "string", "min_length": 0, "max_length": 20, "markdown": True,
+        extended["artifact_schema"]["properties"]["addendum"] = {
+            "type": "string", "minLength": 0, "maxLength": 20,
         }
+        extended["artifact_schema"]["required"].append("addendum")
+        extended["markdown"]["review_fields"].append("addendum")
         artifact["addendum"] = "prose " * 100
         rejected(artifact, sample_diff, changed_files, extended)
 
@@ -165,9 +170,12 @@ class TestEveryTopLevelSpecIsEnforced:
         # TestTheIntegerRangeIsEnforced, and note the key it names here is one no
         # reader has ever consulted rather than one that recently gained one.
         extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "exclusive_maximum": 2}
+        extended["artifact_schema"]["properties"]["ticket"] = {
+            "type": "integer", "minimum": 1, "exclusiveMaximum": 2,
+        }
+        extended["artifact_schema"]["required"].append("ticket")
         artifact["ticket"] = 100
-        with pytest.raises(Rejection, match="policy error"):
+        with pytest.raises(Rejection, match="greater than or equal to the maximum"):
             verify(artifact, sample_diff, changed_files, extended)
 
 
@@ -207,7 +215,7 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
     def test_more_distinct_groups_than_the_cap_is_rejected(
         self, sample_diff, changed_files, policy
     ):
-        policy["artifact_schema"]["findings"]["max_distinct_groups"] = 2
+        policy["review"]["max_distinct_groups"] = 2
         with pytest.raises(Rejection, match="distinct group values exceeds"):
             verify(self.grouped([1, 2, 3]), sample_diff, changed_files, policy)
 
@@ -215,14 +223,14 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
         # The complement, and it pins `>` rather than `>=`: the `>=` mutation survives
         # otherwise, and a cap refusing its own stated value makes the policy
         # unreadable — the same reasoning as the inclusive `maximum` above.
-        policy["artifact_schema"]["findings"]["max_distinct_groups"] = 2
+        policy["review"]["max_distinct_groups"] = 2
         verify(self.grouped([1, 2]), sample_diff, changed_files, policy)
 
     def test_repeated_groups_count_once(self, sample_diff, changed_files, policy):
         # It is the PARTITION that is bounded, not the number of findings: three
         # findings claiming one defect are the case ADR-0013 exists to enable, and
         # counting findings rather than distinct values would refuse it.
-        policy["artifact_schema"]["findings"]["max_distinct_groups"] = 2
+        policy["review"]["max_distinct_groups"] = 2
         verify(self.grouped([1, 1, 1, 2]), sample_diff, changed_files, policy)
 
     def test_a_cap_over_a_field_the_schema_does_not_have_is_a_policy_error(
@@ -231,7 +239,8 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
         # SCALAR_KEYS' rule for a key with no reader, applied to a reader with no
         # key: the cap would read as a bound on grouping in a policy where nothing is
         # grouped. Refused rather than passing vacuously.
-        del policy["artifact_schema"]["findings"]["item_fields"]["group"]
+        del policy["artifact_schema"]["properties"]["findings"]["items"]["properties"]["group"]
+        policy["artifact_schema"]["properties"]["findings"]["items"]["required"].remove("group")
         artifact = self.grouped([1])
         del artifact["findings"][0]["group"]
         with pytest.raises(Rejection, match="the cap bounds nothing"):
@@ -245,7 +254,7 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
         # `len(...) > "3"` raises TypeError from the middle of a check, which is a
         # crash where the caller expects a verdict. `True` is an int in Python and
         # would read as a cap of 1.
-        policy["artifact_schema"]["findings"]["max_distinct_groups"] = bogus
+        policy["review"]["max_distinct_groups"] = bogus
         with pytest.raises(Rejection, match="not an integer bound"):
             verify(self.grouped([1, 2]), sample_diff, changed_files, policy)
 
@@ -254,7 +263,7 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
     ):
         # A consumer policy need not declare it. Absent is different from vacuous:
         # nothing reads as enforcement, so nothing is misread.
-        del policy["artifact_schema"]["findings"]["max_distinct_groups"]
+        del policy["review"]["max_distinct_groups"]
         verify(self.grouped([1, 2, 3, 4, 5]), sample_diff, changed_files, policy)
 
     def test_the_SHIPPED_cap_is_satisfiable(self, policy):
@@ -269,13 +278,13 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
         future `max_items` bump or a widened group range cannot silently re-vacate
         the cap: this fails, and the number moves with the bounds it depends on.
         """
-        findings = policy["artifact_schema"]["findings"]
-        cap = findings["max_distinct_groups"]
-        group = findings["item_fields"]["group"]
-        reachable = min(findings["max_items"], group["maximum"] - group["minimum"] + 1)
+        findings = policy["artifact_schema"]["properties"]["findings"]
+        cap = policy["review"]["max_distinct_groups"]
+        group = findings["items"]["properties"]["group"]
+        reachable = min(findings["maxItems"], group["maximum"] - group["minimum"] + 1)
         assert cap < reachable, (
             f"max_distinct_groups is {cap} and at most {reachable} distinct groups are reachable "
-            f"(max_items {findings['max_items']}, group range [{group['minimum']}, "
+            f"(maxItems {findings['maxItems']}, group range [{group['minimum']}, "
             f"{group['maximum']}]), so no artifact can ever exceed the cap and every arm of "
             "check_group_cardinality is dead code that reads as a safety property"
         )
@@ -285,166 +294,52 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
         # enough for the reviews this harness asks for. The most demanding shipped
         # eval scenario is grouped_cross_file_defect at max_findings 3, so a cap
         # below 3 would refuse an artifact the harness's own evals grade as correct.
-        cap = policy["artifact_schema"]["findings"]["max_distinct_groups"]
+        cap = policy["review"]["max_distinct_groups"]
         assert cap >= 3, (
             f"max_distinct_groups is {cap}, below the 3 findings the most demanding shipped eval "
             "scenario asks for, so the cap can refuse an artifact the harness itself requests"
         )
 
 
-class TestTheIntegerRangeIsEnforced:
-    """`maximum` has a reader in both gates, because ADR-0013's `group` needs a
-    RANGE and a bound the policy can state but no gate enforces is exactly the
-    defect SCALAR_KEYS exists to refuse — arriving from the other direction.
+class TestStandardJsonSchemaIsEnforced:
+    def add_ticket(self, policy: dict, schema: dict) -> None:
+        policy["artifact_schema"]["properties"]["ticket"] = schema
+        policy["artifact_schema"]["required"].append("ticket")
 
-    So the key is admitted AND enforced, in one change: admitting it without a
-    reader would be the same defect wearing an ADR's authority.
-    """
-
-    def test_a_value_above_the_maximum_is_rejected(
+    def test_integer_range_is_enforced(
         self, artifact, sample_diff, changed_files, policy
     ):
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "maximum": 2}
+        self.add_ticket(policy, {"type": "integer", "minimum": 1, "maximum": 2})
         artifact["ticket"] = 3
         with pytest.raises(Rejection, match="above maximum 2"):
-            verify(artifact, sample_diff, changed_files, extended)
+            verify(artifact, sample_diff, changed_files, policy)
 
-    def test_a_value_at_the_maximum_is_accepted(
+    def test_integer_maximum_is_inclusive(
         self, artifact, sample_diff, changed_files, policy
     ):
-        # The complement: an inclusive bound, matching how `minimum` reads. A cap
-        # that refused its own stated value would make the policy unreadable.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "maximum": 2}
+        self.add_ticket(policy, {"type": "integer", "minimum": 1, "maximum": 2})
         artifact["ticket"] = 2
-        verify(artifact, sample_diff, changed_files, extended)
-
-    def test_a_maximum_that_is_not_an_integer_bound_is_a_policy_error(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        # The value-side rule `minimum` already has: `maximum: "bogus"` reads as a
-        # cap, and `value > "bogus"` raises TypeError from the middle of a check —
-        # a crash where the caller expects a verdict.
-        extended = copy.deepcopy(policy)
-        for bogus in ("2", 2.5, True):
-            extended["artifact_schema"]["ticket"] = {"type": "integer", "maximum": bogus}
-            artifact["ticket"] = 3
-            with pytest.raises(Rejection, match="not an integer bound"):
-                verify(artifact, sample_diff, changed_files, extended)
-
-    def test_an_inverted_range_is_a_policy_error(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        # No value satisfies it, so every artifact rejects on a field the policy
-        # appears merely to bound — and the rejection names the FIELD, so nobody
-        # would connect it to the policy. Refused as a policy fault instead.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 5, "maximum": 2}
-        artifact["ticket"] = 3
-        with pytest.raises(Rejection, match="policy error.*above maximum"):
-            verify(artifact, sample_diff, changed_files, extended)
-
-    def test_the_advertised_schema_carries_the_maximum_too(self, policy):
-        # build_artifact_schema is what the generator's tool input declares, and a
-        # bound the verifier enforces that the schema omits is a submission burned
-        # on a rejection the model was never told about.
-        import artifact as artifact_module
-
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["findings"]["item_fields"]["ticket"] = {
-            "type": "integer", "minimum": 1, "maximum": 4,
-        }
-        schema = artifact_module.build_artifact_schema(extended)
-        advertised = schema["properties"]["findings"]["items"]["properties"]["ticket"]
-        assert advertised == {"type": "integer", "minimum": 1, "maximum": 4}
-
-    def test_a_spec_key_belonging_to_another_type_is_a_policy_error(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        # max_length on an integer is a bound the integer branch never reads.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {"type": "integer", "minimum": 1, "max_length": 5}
-        artifact["ticket"] = 3
-        with pytest.raises(Rejection, match="policy error"):
-            verify(artifact, sample_diff, changed_files, extended)
-
-    def test_an_unknown_scalar_type_is_a_policy_error_at_the_top_level(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        # The same reachability the item_fields loop has: a policy typo must
-        # fail loudly rather than leave the field unchecked.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["ticket"] = {"type": "strnig", "pattern": "x"}
-        artifact["ticket"] = "anything at all"
-        with pytest.raises(Rejection, match="unknown scalar type"):
-            verify(artifact, sample_diff, changed_files, extended)
-
-    def test_a_pattern_the_enforcer_cannot_compile_is_a_policy_error(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        # A spec value the enforcer cannot use is the same class of fault as a
-        # spec KEY no reader consults, and the same gate refuses it. re.fullmatch
-        # raised PatternError from the middle of the check, which is a crash
-        # rather than a verdict.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["summary"]["pattern"] = r"\p{L}"
-        with pytest.raises(Rejection, match="policy error.*pattern"):
-            verify(artifact, sample_diff, changed_files, extended)
-
-    def test_a_non_integer_minimum_is_a_policy_error(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["findings"]["item_fields"]["line"]["minimum"] = "bogus"
-        with pytest.raises(Rejection, match="policy error.*minimum"):
-            verify(artifact, sample_diff, changed_files, extended)
-
-    def test_an_unknown_findings_array_key_is_a_policy_error(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        # The scalar rule one level out: `min_items` reads as a floor on the
-        # findings array and no reader consults it, so a zero-finding artifact was
-        # admitted against a policy that appears to require one.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["findings"]["min_items"] = 1
-        artifact["findings"] = []
-        with pytest.raises(Rejection, match="policy error.*min_items"):
-            verify(artifact, sample_diff, changed_files, extended)
-
-    def test_the_supported_findings_array_keys_still_load(
-        self, artifact, sample_diff, changed_files, policy
-    ):
-        # The complement: the shipped spelling must keep working, or the rule has
-        # cost the policy its expressiveness.
-        assert set(policy["artifact_schema"]["findings"]) <= verify_module.ARRAY_KEYS
         verify(artifact, sample_diff, changed_files, policy)
 
-    def test_a_second_array_field_is_not_left_wholly_unchecked(
+    def test_malformed_standard_schema_is_a_policy_error(
         self, artifact, sample_diff, changed_files, policy
     ):
-        # top_level_scalars selects by NOT being an array, and check_schema loops
-        # over `findings` by name — so a second array field is in neither set.
-        # 322b779's "all three readers or none" held for scalars only: 50 items
-        # against max_items 1, each body far over max_length, all admitted.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["warnings"] = {
-            "type": "array", "max_items": 1,
-            "item_fields": {"body": {"type": "string", "max_length": 10}},
-        }
-        artifact["warnings"] = [{"body": "x" * 500}] * 50
-        with pytest.raises(Rejection):
-            verify(artifact, sample_diff, changed_files, extended)
+        policy["artifact_schema"]["properties"]["summary"]["maxLength"] = "4000"
+        with pytest.raises(Rejection, match="invalid JSON Schema"):
+            verify(artifact, sample_diff, changed_files, policy)
 
-    def test_a_bad_spec_is_refused_even_where_no_artifact_value_reaches_it(
+    def test_a_second_array_is_validated_by_the_standard_engine(
         self, artifact, sample_diff, changed_files, policy
     ):
-        # findings is the array, so its own spec is never handed to check_scalar.
-        # Eager means the sweep still reads the item_fields under it.
-        extended = copy.deepcopy(policy)
-        extended["artifact_schema"]["findings"]["item_fields"]["title"]["max_length"] = "120"
-        with pytest.raises(Rejection, match="policy error.*max_length"):
-            verify(artifact, sample_diff, changed_files, extended)
+        policy["artifact_schema"]["properties"]["warnings"] = {
+            "type": "array",
+            "maxItems": 1,
+            "items": {"type": "string", "maxLength": 10},
+        }
+        policy["artifact_schema"]["required"].append("warnings")
+        artifact["warnings"] = ["x" * 500, "again"]
+        with pytest.raises(Rejection):
+            verify(artifact, sample_diff, changed_files, policy)
 
 
 class TestProvenance:
