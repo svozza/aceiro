@@ -26,6 +26,12 @@ from conftest import POLICY
 METADATA_RUN = "https://github.com/o/r/actions/runs/99"
 
 
+def plan_arg_pattern(policy: dict, kind: str, arg: str) -> str:
+    branches = policy["plan"]["schema"]["properties"]["steps"]["items"]["oneOf"]
+    branch = next(item for item in branches if item["properties"]["kind"]["const"] == kind)
+    return branch["properties"]["args"]["properties"][arg]["pattern"]
+
+
 @pytest.fixture
 def posted(monkeypatch):
     """Capture what reaches upsert_comment instead of GitHub."""
@@ -279,13 +285,13 @@ class TestTheEmittedOutputs:
     # value in it that can spell the delimiter suppresses the reply.
     INTERPOLATED_GRAMMARS = [
         ("finding path",
-         lambda policy: policy["artifact_schema"]["findings"]["item_fields"]["path"]["pattern"],
+         lambda policy: policy["artifact_schema"]["properties"]["findings"]["items"]["properties"]["path"]["pattern"],
          "src/a{c}b.py"),
         ("push_branch name",
-         lambda policy: policy["plan"]["step_kinds"]["push_branch"]["args"]["name"]["pattern"],
+         lambda policy: plan_arg_pattern(policy, "push_branch", "name"),
          "aceiro/a{c}b"),
         ("open_pr branch",
-         lambda policy: policy["plan"]["step_kinds"]["open_pr"]["args"]["branch"]["pattern"],
+         lambda policy: plan_arg_pattern(policy, "open_pr", "branch"),
          "aceiro/a{c}b"),
     ]
 
@@ -343,7 +349,7 @@ class TestTheEmittedOutputs:
         # pass here and fail there.
         import re
 
-        pattern = POLICY["artifact_schema"]["findings"]["item_fields"]["path"]["pattern"]
+        pattern = POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"]["path"]["pattern"]
         assert re.fullmatch(pattern, hostile), (
             f"{hostile!r} is no longer a legal path, so this case reproduces nothing — the "
             "suppression would now be blocked by the schema rather than by the delimiter"

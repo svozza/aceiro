@@ -28,7 +28,7 @@ class TestTheCapIsThePolicys:
         # that cap names one. Restated, this number would keep bounding at today's
         # value after an operator raised the cap, and every command for a
         # newly-enabled finding would read correctly and do nothing.
-        assert MAX_ORDINAL == POLICY["artifact_schema"]["findings"]["max_items"]
+        assert MAX_ORDINAL == POLICY["artifact_schema"]["properties"]["findings"]["maxItems"]
 
     def test_the_cap_TRACKS_the_policy_rather_than_agreeing_with_it_today(self, tmp_path,
                                                                          monkeypatch):
@@ -42,7 +42,7 @@ class TestTheCapIsThePolicys:
         import fix_command
 
         raised = _json.loads(Path(fix_command.POLICY_PATH).read_text())
-        raised["artifact_schema"]["findings"]["max_items"] = 4
+        raised["artifact_schema"]["properties"]["findings"]["maxItems"] = 4
         policy = tmp_path / "policy.json"
         policy.write_text(_json.dumps(raised))
 
@@ -78,7 +78,7 @@ class TestTheCapIsThePolicys:
         # ordinals than that cannot name a distinct finding with each. Derived from
         # the one ceiling that already exists rather than a second number to keep
         # in step with it.
-        assert MAX_ORDINALS == POLICY["artifact_schema"]["findings"]["max_items"]
+        assert MAX_ORDINALS == POLICY["artifact_schema"]["properties"]["findings"]["maxItems"]
 
 
 class TestParseFixCommand:

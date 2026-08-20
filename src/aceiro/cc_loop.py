@@ -52,12 +52,12 @@ from artifact import (
     PROMPT_PATH,
     Transcript,
     apply_project_description,
-    build_artifact_schema,
     build_user_message,
     redact_text,
     rejection_fingerprint,
     render_constraints,
     render_rejection_guidance,
+    review_schema,
     sha256,
 )
 from canonicalize import read_contributor_text, read_harness_text
@@ -1008,7 +1008,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
     policy = json.loads(policy_text)
     transcript = Transcript(output_dir / "transcript.jsonl", policy)
 
-    schema = build_artifact_schema(policy)
+    schema = review_schema(policy)
     # ACEIRO_PROJECT_DESCRIPTION is the consumer's own account of their
     # repository; absent, the assembled prompt is byte-identical to before
     # this seam existed, so the shipped default carries its eval history.

@@ -46,7 +46,7 @@ class TestPromptFile:
     def test_it_names_every_field_the_schema_requires(self):
         # Rename a field in policy.json and the prompt silently disagrees with
         # the schema the CLI enforces.
-        for field in SHIPPED_POLICY["artifact_schema"]:
+        for field in SHIPPED_POLICY["artifact_schema"]["required"]:
             assert f"`{field}`" in PROMPT, f"prompt never mentions {field!r}"
 
     def test_it_shows_every_finding_field(self):
@@ -55,13 +55,13 @@ class TestPromptFile:
         # critical = ...") rather than by field name, which is fine as long as
         # the examples demonstrate them -- but a field appearing in NEITHER means
         # the model is never shown a field the schema requires.
-        for field in SHIPPED_POLICY["artifact_schema"]["findings"]["item_fields"]:
+        for field in SHIPPED_POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"]:
             in_prose = f"`{field}`" in PROMPT
             in_example = any(field in f for e in EXAMPLES for f in json.loads(e)["findings"])
             assert in_prose or in_example, f"findings.{field} appears in neither prose nor an example"
 
     def test_it_names_every_severity(self):
-        for severity in SHIPPED_POLICY["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]:
+        for severity in SHIPPED_POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"]["severity"]["enum"]:
             assert f"`{severity}`" in PROMPT
 
 
@@ -189,14 +189,14 @@ class TestEmbeddedExamples:
     def test_examples_respect_the_policy_caps(self, index):
         # An example longer than a cap would teach the model to exceed it.
         example = json.loads(EXAMPLES[index])
-        schema = SHIPPED_POLICY["artifact_schema"]
-        assert len(example["summary"]) <= schema["summary"]["max_length"]
-        assert len(example["residual_risk"]) <= schema["residual_risk"]["max_length"]
-        assert len(example["findings"]) <= schema["findings"]["max_items"]
+        schema = SHIPPED_POLICY["artifact_schema"]["properties"]
+        assert len(example["summary"]) <= schema["summary"]["maxLength"]
+        assert len(example["residual_risk"]) <= schema["residual_risk"]["maxLength"]
+        assert len(example["findings"]) <= schema["findings"]["maxItems"]
         for finding in example["findings"]:
-            for field, spec in schema["findings"]["item_fields"].items():
-                if spec["type"] == "string":
-                    assert len(finding[field]) <= spec["max_length"], f"{field} exceeds its cap"
+            for field, spec in schema["findings"]["items"]["properties"].items():
+                if spec.get("type") == "string":
+                    assert len(finding[field]) <= spec["maxLength"], f"{field} exceeds its cap"
 
 
 class TestResidualRiskIsDefinedOnce:

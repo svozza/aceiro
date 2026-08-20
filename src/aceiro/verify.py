@@ -27,10 +27,10 @@ import unicodedata
 from pathlib import Path
 from urllib.parse import unquote
 
-from jsonschema import Draft202012Validator, SchemaError, ValidationError, validators
+from jsonschema import Draft202012Validator, SchemaError, ValidationError
 from markdown_it import MarkdownIt
 
-from artifact import build_artifact_schema
+from artifact import finding_properties, review_properties, review_schema
 from canonicalize import is_invisible, read_contributor_text, read_harness_text, strip_invisible
 from diff_map import walk_diff
 
@@ -87,26 +87,6 @@ class Rejection(Exception):
 # ---------------------------------------------------------------- schema ---
 
 
-# Every key a scalar spec of each type may carry, being exactly the keys the
-# branch below reads for it. Twin of ts/plan/policy.ts's SCALAR_KEYS: a spec key
-# with no reader reads as a constraint to whoever reviews policy.json while
-# constraining nothing, which is worse than an absent bound because it is read as
-# present. `maximum` was the example of that defect and is now enforced in both
-# gates, because ADR-0013's `group` needs a RANGE and an unbounded upper end is
-# the same defect from the other direction — a bound the ADR states that the
-# policy cannot express.
-SCALAR_KEYS = {
-    "string": frozenset({"type", "min_length", "max_length", "pattern", "markdown"}),
-    "integer": frozenset({"type", "minimum", "maximum"}),
-    "enum": frozenset({"type", "values"}),
-}
-
-# The findings array's own keys, being exactly the ones check_schema reads for it.
-# The same rule as SCALAR_KEYS and for the same reason: `min_items` reads as a
-# floor on the array and no reader consults it, so a policy appearing to require a
-# finding admitted an artifact with none.
-ARRAY_KEYS = frozenset({"type", "max_items", "item_fields", "max_distinct_groups"})
-
 # The item field a `max_distinct_groups` cap counts, named once so the cap and the
 # field cannot come apart. A policy declaring the cap without the field would be a
 # bound over nothing; check_group_cardinality refuses that rather than passing
@@ -114,156 +94,7 @@ ARRAY_KEYS = frozenset({"type", "max_items", "item_fields", "max_distinct_groups
 GROUP_FIELD = "group"
 
 
-def check_scalar_spec(spec: dict, where: str) -> None:
-    """Refuse a scalar spec this gate cannot enforce as written.
-
-    SCALAR_KEYS refuses a key with no reader; this refuses a VALUE the reader
-    cannot use. Both are policy faults rather than claims about an artifact, and
-    both must be decided before any value is checked: `{"minimum": "bogus"}`
-    reads as a floor, and `value < "bogus"` raises TypeError from the middle of a
-    check — a crash where the caller expects a verdict. (The retired TS gate
-    evaluated the same comparison as `false` and admitted a negative integer,
-    which is why this is checked at load rather than trusted to fail loudly.)
-
-    A pattern is compiled here, not merely inspected, because "valid regex" is
-    the compiler's judgement: this gate must refuse what its OWN enforcer cannot
-    compile (`\\p{L}` is a PatternError to Python's re), or the loader admits a
-    policy that throws at enforcement time.
-    """
-    kind = spec.get("type")
-    if kind not in SCALAR_KEYS:
-        raise Rejection(f"policy error: unknown scalar type {kind!r} at {where}")
-    if extra := set(spec) - SCALAR_KEYS[kind]:
-        raise Rejection(
-            f"policy error: scalar spec at {where} carries keys no reader consults "
-            f"{sorted(extra)} (allowed for {kind}: {sorted(SCALAR_KEYS[kind])})"
-        )
-    if isinstance(spec.get("pattern"), str):
-        try:
-            re.compile(spec["pattern"])
-        except re.error as exc:
-            raise Rejection(
-                f"policy error: scalar spec at {where} has a pattern this gate cannot "
-                f"compile ({exc}); it would raise rather than reject"
-            ) from exc
-    for key in ("min_length", "max_length", "minimum", "maximum"):
-        # bool is an int in Python, and `minimum: true` is not a bound.
-        if key in spec and (not isinstance(spec[key], int) or isinstance(spec[key], bool)):
-            raise Rejection(
-                f"policy error: scalar spec at {where} declares {key}="
-                f"{spec[key]!r}, which is not an integer bound"
-            )
-    # An inverted range admits nothing, so every artifact rejects on a field the
-    # policy appears merely to bound. A policy fault rather than a claim about an
-    # artifact, which is why it lands here with the others.
-    if (
-        isinstance(spec.get("minimum"), int) and not isinstance(spec.get("minimum"), bool)
-        and isinstance(spec.get("maximum"), int) and not isinstance(spec.get("maximum"), bool)
-        and spec["maximum"] < spec["minimum"]
-    ):
-        raise Rejection(
-            f"policy error: scalar spec at {where} declares minimum {spec['minimum']} above "
-            f"maximum {spec['maximum']}, so no value satisfies it and every artifact rejects"
-        )
-    if spec["type"] == "enum" and not isinstance(spec.get("values"), list):
-        raise Rejection(
-            f"policy error: scalar spec at {where} declares values="
-            f"{spec.get('values')!r}, which is not a list"
-        )
-
-
-def check_scalar(value, spec: dict, where: str) -> None:
-    match spec["type"]:
-        case "string":
-            if not isinstance(value, str):
-                raise Rejection(f"{where}: expected string, got {type(value).__name__}")
-            # Length measured on NFC so decomposed forms can't smuggle extra budget.
-            length = len(unicodedata.normalize("NFC", value))
-            if length < spec.get("min_length", 0):
-                raise Rejection(f"{where}: shorter than min_length {spec['min_length']}")
-            if length > spec["max_length"]:
-                raise Rejection(f"{where}: exceeds max_length {spec['max_length']}")
-            if "pattern" in spec and not re.fullmatch(spec["pattern"], value):
-                raise Rejection(f"{where}: does not match required pattern {spec['pattern']!r}")
-        case "integer":
-            if not isinstance(value, int) or isinstance(value, bool):
-                raise Rejection(f"{where}: expected integer, got {type(value).__name__}")
-            if value < spec.get("minimum", float("-inf")):
-                raise Rejection(f"{where}: below minimum {spec['minimum']}")
-            if value > spec.get("maximum", float("inf")):
-                raise Rejection(f"{where}: above maximum {spec['maximum']}")
-        case "enum":
-            if value not in spec["values"]:
-                raise Rejection(f"{where}: {value!r} not in {spec['values']}")
-        case kind:
-            raise Rejection(f"policy error: unknown scalar type {kind!r} at {where}")
-
-
-def top_level_scalars(schema: dict) -> dict[str, dict]:
-    """The artifact's top-level scalar specs: everything except `findings`.
-
-    One definition, used by the schema gate, the markdown walk and the secret
-    scan, so a field the policy adds cannot be enforced by some of them and not
-    others.
-
-    Selected by name rather than by type, because `findings` is the one array
-    check_schema actually loops over. Excluding every array instead would put a
-    second array field in no reader at all — neither here nor in that loop — so
-    its max_items and item_fields would be read by nothing. Naming the exception
-    means a new array field lands in check_scalar and is refused as an
-    unsupported type until a reader for it exists, which is the fail-closed
-    direction.
-    """
-    return {name: spec for name, spec in schema.items() if name != "findings"}
-
-
-def sweep_scalar_specs(schema: dict, where: str) -> None:
-    """Validate every scalar spec in an artifact_schema, before any value is read.
-
-    Eagerly, so a spec the enforcer cannot use is a load-time fault rather than
-    one that waits for an artifact to reach the field it is on. Recurses into the
-    findings array's item_fields, whose own specs no check_scalar call sees until
-    a finding carries them, and checks the array spec's OWN keys against
-    ARRAY_KEYS on the way past — check_scalar never sees an array spec, so that
-    rule has nowhere else to live.
-    """
-    for name, spec in schema.items():
-        if not isinstance(spec, dict):
-            raise Rejection(f"policy error: scalar spec at {where}.{name} is not an object")
-        if spec.get("type") == "array":
-            if extra := sorted(set(spec) - ARRAY_KEYS):
-                raise Rejection(
-                    f"policy error: array spec at {where}.{name} carries keys no reader consults "
-                    f"{extra} (allowed: {sorted(ARRAY_KEYS)})"
-                )
-            sweep_scalar_specs(spec.get("item_fields") or {}, f"{where}.{name}.item_fields")
-            continue
-        check_scalar_spec(spec, f"{where}.{name}")
-
-
-def _nfc_min_length(validator, minimum, instance, schema):
-    if isinstance(instance, str) and len(unicodedata.normalize("NFC", instance)) < minimum:
-        yield ValidationError(f"is shorter than NFC-normalized minLength {minimum}")
-
-
-def _nfc_max_length(validator, maximum, instance, schema):
-    if isinstance(instance, str) and len(unicodedata.normalize("NFC", instance)) > maximum:
-        yield ValidationError(f"is longer than NFC-normalized maxLength {maximum}")
-
-
-def _python_fullmatch(validator, pattern, instance, schema):
-    if isinstance(instance, str) and re.fullmatch(pattern, instance) is None:
-        yield ValidationError(f"does not fully match Python pattern {pattern!r}")
-
-
-ContractValidator = validators.extend(
-    Draft202012Validator,
-    {
-        "minLength": _nfc_min_length,
-        "maxLength": _nfc_max_length,
-        "pattern": _python_fullmatch,
-    },
-)
+ContractValidator = Draft202012Validator
 
 
 def _instance_path(error: ValidationError) -> str:
@@ -293,25 +124,19 @@ def validation_message(error: ValidationError) -> str:
 
 
 def check_schema(artifact: dict, policy: dict) -> None:
-    policy_schema = policy["artifact_schema"]
-    # The policy is a small DSL shared with the plan gate. Refuse malformed or
-    # unsupported declarations before deriving a JSON Schema from them.
-    sweep_scalar_specs(policy_schema, "artifact_schema")
+    schema = review_schema(policy)
     try:
-        schema = build_artifact_schema(policy)
         Draft202012Validator.check_schema(schema)
-    except (KeyError, TypeError, ValueError) as exc:
-        raise Rejection(f"policy error: cannot build artifact schema: {exc}") from exc
     except SchemaError as exc:
-        raise Rejection(f"policy error: generated artifact schema is invalid: {exc}") from exc
+        raise Rejection(f"policy error: artifact_schema is invalid JSON Schema: {exc}") from exc
 
-    if error := next(ContractValidator(schema).iter_errors(artifact), None):
+    if error := next(iter(ContractValidator(schema).iter_errors(artifact)), None):
         raise Rejection(f"{_instance_path(error)}: {validation_message(error)}")
 
-    check_group_cardinality(artifact["findings"], policy_schema["findings"])
+    check_group_cardinality(artifact["findings"], policy)
 
 
-def check_group_cardinality(findings: list[dict], findings_spec: dict) -> None:
+def check_group_cardinality(findings: list[dict], policy: dict) -> None:
     """ADR-0013: a cap on how many DISTINCT groups one artifact may claim.
 
     The per-field range bounds each VALUE; this bounds the PARTITION — how finely one
@@ -334,7 +159,7 @@ def check_group_cardinality(findings: list[dict], findings_spec: dict) -> None:
     Whether the claim is TRUE is never asked. That is ADR-0005's content question,
     and it is exactly why a group can never be the source of a write's scope.
     """
-    cap = findings_spec.get("max_distinct_groups")
+    cap = policy["review"].get("max_distinct_groups")
     if cap is None:
         return
     # Type before use, like check_scalar_spec's rule: `len(...) > "bogus"` raises
@@ -342,13 +167,13 @@ def check_group_cardinality(findings: list[dict], findings_spec: dict) -> None:
     # expects a verdict.
     if not isinstance(cap, int) or isinstance(cap, bool):
         raise Rejection(
-            f"policy error: artifact_schema.findings declares max_distinct_groups={cap!r}, "
+            f"policy error: review.max_distinct_groups={cap!r}, "
             "which is not an integer bound"
         )
-    if GROUP_FIELD not in findings_spec["item_fields"]:
+    if GROUP_FIELD not in finding_properties(policy):
         raise Rejection(
-            f"policy error: artifact_schema.findings declares max_distinct_groups={cap} but its "
-            f"item_fields carry no {GROUP_FIELD!r} field, so the cap bounds nothing"
+            f"policy error: review.max_distinct_groups={cap} but artifact_schema "
+            f"carries no {GROUP_FIELD!r} finding field, so the cap bounds nothing"
         )
     distinct = {finding[GROUP_FIELD] for finding in findings}
     if len(distinct) > cap:
@@ -770,28 +595,52 @@ def check_markdown_field(text: str, policy_markdown: dict, where: str) -> None:
         raise Rejection(f"{where}: email address {match.group(0)!r} renders as a mailto link; put it in backticks")
 
 
-def markdown_fields(specs: dict) -> list[str]:
-    """String fields the policy marks as markdown-bearing. Fail closed: a
-    string field that is neither markdown-checked nor pattern-constrained
-    would flow into the posted comment unchecked, so it is a policy error."""
-    fields = []
-    for name, spec in specs.items():
-        if spec.get("markdown"):
-            fields.append(name)
-        elif spec["type"] == "string" and "pattern" not in spec:
-            raise Rejection(f"policy error: string field {name!r} is neither markdown-checked nor pattern-constrained")
-    return fields
+def checked_markdown_fields(
+    declared: list[str],
+    properties: dict,
+    where: str,
+    *,
+    exempt: set[str] | None = None,
+) -> list[str]:
+    """Validate an explicit Markdown-field list against a standard schema."""
+    if not isinstance(declared, list) or not all(isinstance(field, str) for field in declared):
+        raise Rejection(f"policy error: {where} must be a list of field names")
+    if len(set(declared)) != len(declared):
+        raise Rejection(f"policy error: {where} contains duplicate field names")
+    if unknown := sorted(set(declared) - set(properties)):
+        raise Rejection(f"policy error: {where} names fields absent from the schema {unknown}")
+    exempt = exempt or set()
+    if unchecked := sorted(
+        name
+        for name, schema in properties.items()
+        if schema.get("type") == "string"
+        and "pattern" not in schema
+        and name not in declared
+        and name not in exempt
+    ):
+        raise Rejection(
+            f"policy error: string fields {unchecked} are neither Markdown-checked "
+            "nor pattern-constrained"
+        )
+    return declared
 
 
 def check_all_markdown(artifact: dict, policy: dict) -> None:
     markdown_policy = policy["markdown"]
-    schema = policy["artifact_schema"]
-
-    top_level = top_level_scalars(schema)
-    for field in markdown_fields(top_level):
+    top_level = review_properties(policy)
+    for field in checked_markdown_fields(
+        markdown_policy["review_fields"],
+        top_level,
+        "markdown.review_fields",
+        exempt={"findings"},
+    ):
         check_markdown_field(artifact[field], markdown_policy, field)
 
-    finding_fields = markdown_fields(schema["findings"]["item_fields"])
+    finding_fields = checked_markdown_fields(
+        markdown_policy["finding_fields"],
+        finding_properties(policy),
+        "markdown.finding_fields",
+    )
     for index, finding in enumerate(artifact["findings"]):
         for field in finding_fields:
             check_markdown_field(finding[field], markdown_policy, f"findings[{index}].{field}")
@@ -801,11 +650,20 @@ def check_all_markdown(artifact: dict, policy: dict) -> None:
 
 
 def _iter_markdown_values(artifact: dict, policy: dict):
-    schema = policy["artifact_schema"]
-    top_level = top_level_scalars(schema)
-    for field in markdown_fields(top_level):
+    markdown_policy = policy["markdown"]
+    top_level = review_properties(policy)
+    for field in checked_markdown_fields(
+        markdown_policy["review_fields"],
+        top_level,
+        "markdown.review_fields",
+        exempt={"findings"},
+    ):
         yield artifact[field]
-    finding_fields = markdown_fields(schema["findings"]["item_fields"])
+    finding_fields = checked_markdown_fields(
+        markdown_policy["finding_fields"],
+        finding_properties(policy),
+        "markdown.finding_fields",
+    )
     for finding in artifact["findings"]:
         for field in finding_fields:
             yield finding[field]

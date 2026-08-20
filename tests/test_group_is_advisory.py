@@ -239,7 +239,7 @@ def test_the_group_field_has_NO_reader_in_the_fix_lane():
 def test_the_group_field_is_the_one_the_policy_ships():
     # Restated, this constant would keep guarding `group` after a rename, and the
     # new field would have no assertion at all.
-    item_fields = json.loads(POLICY_PATH.read_text())["artifact_schema"]["findings"]["item_fields"]
+    item_fields = json.loads(POLICY_PATH.read_text())["artifact_schema"]["properties"]["findings"]["items"]["properties"]
     assert GROUP_FIELD in item_fields, (
         f"policy.json's findings carry no {GROUP_FIELD!r} field, so this assertion guards nothing"
     )

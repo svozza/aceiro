@@ -480,15 +480,15 @@ class TestRenderConstraints:
         # The whole point of generating this section: a cap changed in policy.json
         # must change the sentence the model reads, or the two silently diverge.
         policy = copy.deepcopy(POLICY)
-        policy["artifact_schema"]["summary"]["max_length"] = 1234
-        policy["artifact_schema"]["findings"]["max_items"] = 2
+        policy["artifact_schema"]["properties"]["summary"]["maxLength"] = 1234
+        policy["artifact_schema"]["properties"]["findings"]["maxItems"] = 2
         text = render_constraints(policy)
         assert "summary 1234" in text
         assert "At most 2 findings" in text
 
     def test_severities_come_from_policy(self):
         text = render_constraints(SHIPPED_POLICY)
-        for severity in POLICY["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]:
+        for severity in POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"]["severity"]["enum"]:
             assert f"`{severity}`" in text
 
 
@@ -521,20 +521,18 @@ class TestBuildArtifactSchema:
     def test_every_finding_field_is_required(self):
         schema = build_artifact_schema(POLICY)
         required = schema["properties"]["findings"]["items"]["required"]
-        assert set(required) == set(POLICY["artifact_schema"]["findings"]["item_fields"])
+        assert set(required) == set(POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"])
 
     def test_the_findings_cap_is_expressed_to_the_generator(self):
         schema = build_artifact_schema(POLICY)
-        assert schema["properties"]["findings"]["maxItems"] == POLICY["artifact_schema"]["findings"]["max_items"]
+        assert schema["properties"]["findings"]["maxItems"] == POLICY["artifact_schema"]["properties"]["findings"]["maxItems"]
 
     def test_a_policy_added_scalar_reaches_the_generator_contract(self):
-        # The contract restated the three shipped names, so a policy-added field
-        # was required by the verifier and absent from the schema the model is
-        # given — with additionalProperties false, the model cannot send it and is
-        # rejected for not sending it. Both readers must move together, the way
-        # render_rejection_guidance already iterates the policy.
         extended = copy.deepcopy(POLICY)
-        extended["artifact_schema"]["ticket"] = {"type": "string", "min_length": 1, "max_length": 10}
+        extended["artifact_schema"]["properties"]["ticket"] = {
+            "type": "string", "minLength": 1, "maxLength": 10,
+        }
+        extended["artifact_schema"]["required"].append("ticket")
         schema = build_artifact_schema(extended)
         assert "ticket" in schema["properties"], "the model is told a shape the verifier rejects"
         assert "ticket" in schema["required"]
@@ -544,5 +542,4 @@ class TestBuildArtifactSchema:
         # Not the three names spelled again: `required` and the schema's own keys
         # cannot disagree.
         schema = build_artifact_schema(POLICY)
-        assert set(schema["required"]) == set(POLICY["artifact_schema"])
-        assert set(schema["properties"]) == set(POLICY["artifact_schema"])
+        assert set(schema["required"]) == set(schema["properties"])

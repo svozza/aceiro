@@ -150,10 +150,8 @@ class TestPlanSchema:
     def test_each_branch_requires_exactly_the_declared_args(self):
         schema = plan_loop.build_plan_schema(POLICY)
         for branch in schema["properties"]["steps"]["items"]["oneOf"]:
-            kind = branch["properties"]["kind"]["const"]
-            declared = set(POLICY["plan"]["step_kinds"][kind]["args"])
+            declared = set(branch["properties"]["args"]["properties"])
             assert set(branch["properties"]["args"]["required"]) == declared
-            assert set(branch["properties"]["args"]["properties"]) == declared
             assert branch["properties"]["args"]["additionalProperties"] is False
 
     def test_every_advertised_pattern_is_anchored(self):
@@ -179,38 +177,26 @@ class TestPlanSchema:
                 "satisfies on a substring match while check_scalar requires a full match"
             )
 
-    def test_the_anchored_pattern_admits_exactly_what_check_scalar_admits(self):
-        # The two must agree in both directions, or anchoring the schema has only
-        # moved the disagreement. Compared over the shipped path pattern against
-        # a corpus that brackets it.
+    def test_the_anchored_path_pattern_has_the_expected_verdicts(self):
         import re
 
-        from verify import Rejection, check_scalar
-
-        spec = POLICY["plan"]["step_kinds"]["patch"]["args"]["path"]
-        schema = plan_loop._scalar_to_json_schema(spec)
+        branch = next(
+            item for item in plan_loop.build_plan_schema(POLICY)["properties"]["steps"]["items"]["oneOf"]
+            if item["properties"]["kind"]["const"] == "patch"
+        )
+        pattern = branch["properties"]["args"]["properties"]["path"]["pattern"]
         for candidate in (
             "src/a.py", ".github/workflows/x.yml", "a", "a/b/c-d_e.txt",
             "../base/settings.py", "/etc/passwd", "a b.py", "", "x\ny",
         ):
-            advertised = re.search(schema["pattern"], candidate) is not None
-            try:
-                check_scalar(candidate, spec, "patch.path")
-                enforced = True
-            except Rejection:
-                enforced = False
-            # min_length/max_length are advertised separately and agree already;
-            # this compares the pattern's verdict, so an empty string (rejected
-            # by min_length, not by the pattern) is excluded.
-            if candidate == "":
-                continue
-            assert advertised == enforced, (
-                f"{candidate!r}: the schema says {advertised} and check_scalar says {enforced}"
-            )
+            matched = re.search(pattern, candidate) is not None
+            assert matched == (candidate in {
+                "src/a.py", ".github/workflows/x.yml", "a", "a/b/c-d_e.txt",
+            })
 
     def test_steps_are_bounded_by_the_policy_cap(self):
         schema = plan_loop.build_plan_schema(POLICY)
-        assert schema["properties"]["steps"]["maxItems"] == POLICY["plan"]["max_steps"]
+        assert schema["properties"]["steps"]["maxItems"] == 20
         assert schema["properties"]["steps"]["minItems"] == 1
 
 
@@ -285,7 +271,8 @@ class TestPlanPromptMechanics:
     def test_constraints_render_the_shipped_numbers(self):
         rendered = plan_loop.render_plan_constraints(POLICY)
         plan = POLICY["plan"]
-        for value in (plan["max_steps"], plan["max_patched_files"], plan["max_changed_lines"]):
+        max_steps = plan["schema"]["properties"]["steps"]["maxItems"]
+        for value in (max_steps, plan["max_patched_files"], plan["max_changed_lines"]):
             assert str(value) in rendered
         for pattern in plan["path_denylist"]:
             assert pattern in rendered
@@ -480,7 +467,7 @@ class TestPlanUserMessage:
         # artifact's body cannot be that long, so the cap that already bounds it
         # is the cap to enforce — no second number to keep in step.
         context = self.write_context(tmp_path)
-        cap = POLICY["artifact_schema"]["findings"]["item_fields"]["body"]["max_length"]
+        cap = POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"]["body"]["maxLength"]
         self.mutate_finding(context, body="prose " * cap)
         with pytest.raises(Rejection, match="max_length"):
             plan_loop.build_plan_user_message(context, POLICY)

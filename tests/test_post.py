@@ -19,7 +19,7 @@ import post
 from conftest import CHANGED_FILES, POLICY, SAMPLE_DIFF
 from verify import verify
 
-SEVERITIES = POLICY["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]
+SEVERITIES = POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"]["severity"]["enum"]
 SEVERITY_ORDER = {name: rank for rank, name in enumerate(SEVERITIES)}
 
 METADATA = {
@@ -153,11 +153,11 @@ class TestRenderedFindings:
         # severe first. Hardcoding the quartet here would keep ranking after an
         # operator edited that enum — and the failure is an inverted ordinal, so
         # `/fix 1` would name the LEAST severe finding with everything green.
-        severities = POLICY["artifact_schema"]["findings"]["item_fields"]["severity"]["values"]
+        severities = POLICY["artifact_schema"]["properties"]["findings"]["items"]["properties"]["severity"]["enum"]
         assert artifact_mod.severity_ranks(POLICY) == {n: i for i, n in enumerate(severities)}
         # Not merely equal to today's policy: derived from whatever it says.
         reordered = copy.deepcopy(POLICY)
-        reordered["artifact_schema"]["findings"]["item_fields"]["severity"]["values"] = ["low", "critical"]
+        reordered["artifact_schema"]["properties"]["findings"]["items"]["properties"]["severity"]["enum"] = ["low", "critical"]
         assert artifact_mod.severity_ranks(reordered) == {"low": 0, "critical": 1}
 
     def test_the_order_is_the_rendered_order(self, valid_artifact):

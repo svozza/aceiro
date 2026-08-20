@@ -179,17 +179,18 @@ flowchart LR
 ### Policy language
 
 [`policy.json`](../src/aceiro/policy.json) is the reviewable security object
-interpreted by the deterministic verifiers. It describes the admissible shape
-and bounds of a review artifact and a remediation plan. The effective policy's
-SHA-256 digest is recorded with run evidence and rendered in the posted review,
-so an accepted object can be tied to the policy that admitted it.
+interpreted by the deterministic verifiers. `artifact_schema` and
+`plan.schema` are JSON Schema Draft 2020-12 documents consumed directly by the
+model contracts and verifiers. The remaining policy fields configure
+contextual checks that cannot be decided from the candidate JSON object alone.
+The effective policy's SHA-256 digest is recorded with run evidence and
+rendered in the posted review, so an accepted object can be tied to the policy
+that admitted it.
 
-The policy is declarative, but it is not a general-purpose rule language. The
-enforced artifact and plan vocabularies are deliberately closed: an unknown
-constraint, a missing required field, an unsupported scalar constraint, or a
-reserved feature with no implemented semantics is a policy error. This prevents
-a policy from appearing to express a constraint that no verifier actually
-enforces.
+Aceiro defines no custom JSON Schema vocabulary or keywords. Structural
+validation therefore has the standard Draft 2020-12 meaning. Markdown,
+provenance, secret, ordering, containment, and effect checks remain explicit
+verifier phases rather than extensions hidden inside the schema.
 
 The top-level fields are:
 
@@ -197,40 +198,27 @@ The top-level fields are:
 | --- | --- |
 | `version` | Policy format metadata. The current verifiers do not dispatch on it. |
 | `description` | Maintainer-facing rationale for the shipped policy. It has no enforcement semantics. |
-| `artifact_schema` | The fields, types, value bounds, and cardinality limits of a review artifact. |
+| `artifact_schema` | Draft 2020-12 schema for a review artifact. |
+| `review` | Contextual review constraints not expressible in the structural schema. |
 | `provenance` | Whether each finding must name a changed file and a line inside a diff hunk. |
 | `markdown` | Which Markdown syntax may be published and which link destinations are trusted. |
-| `plan` | The grammar, ordering, containment, effect, and size bounds of remediation plans. |
+| `plan` | Draft 2020-12 plan schema plus ordering, containment, effect, and aggregate size constraints. |
 | `secret_scan_patterns` | Regular expressions for values that must not survive in accepted model output. |
 
 #### Artifact schema
 
-`artifact_schema` defines the complete review artifact. The shipped policy
-requires `summary`, `findings`, and `residual_risk`, and defines every field of
-a finding: `path`, `line`, `severity`, `group`, `title`, and `body`.
+`artifact_schema` defines the complete review artifact using standard keywords
+such as `properties`, `required`, `additionalProperties`, `maxItems`,
+`minLength`, `maxLength`, `minimum`, `maximum`, `enum`, `pattern`, and
+`oneOf`. The shipped policy requires `summary`, `findings`, and
+`residual_risk`, and defines every field of a finding: `path`, `line`,
+`severity`, `group`, `title`, and `body`.
 
-Scalar specifications support this closed vocabulary:
-
-| Scalar type | Supported constraints |
-| --- | --- |
-| `string` | `min_length`, `max_length`, `pattern`, and `markdown` |
-| `integer` | `minimum` and `maximum` |
-| `enum` | `values` |
-
-String lengths are measured after NFC normalization. `pattern` is a Python
-regular expression matched as a full value, not a substring. `markdown: true`
-also subjects the value to the `markdown` policy.
-
-The findings array supports `max_items`, `item_fields`, and
-`max_distinct_groups`. The last field bounds how many separate defect groups an
-artifact may claim; group identity remains advisory and is never trusted to
-authorize or scope a remediation.
-
-`artifact_schema` can describe additional top-level scalar fields and finding
-fields using the same vocabulary, but every declared field is required. It
-cannot currently express optional fields, nested objects, multiple array
-shapes, conditional fields, or cross-field relationships other than the
-distinct-group bound.
+The separate `review.max_distinct_groups` constraint bounds how many defect
+groups an artifact may claim. It remains a verifier phase because JSON Schema
+does not project one property from each array item and bound the number of
+distinct projected values. Group identity remains advisory and is never
+trusted to authorize or scope remediation.
 
 #### Provenance and Markdown
 
@@ -255,10 +243,10 @@ field.
 
 | Field | Meaning |
 | --- | --- |
-| `max_steps` | Maximum number of steps in one plan. |
+| `schema` | Draft 2020-12 schema for the complete plan and every step kind. |
 | `control_flow` | Reserved for future semantics; it must currently be empty. |
 | `argument_forms` | Permitted argument forms; currently exactly `["literal"]`. |
-| `step_kinds` | Closed set of step names, their argument schemas, and whether each is a write-class effect. |
+| `step_kinds` | Effect classification for each step kind declared by the schema. |
 | `ordering` | Required before/after relationships between step kinds. |
 | `max_patched_files` | Maximum distinct files affected by `patch` or `suggest` steps. |
 | `max_changed_lines` | Per-step changed-line limit. |
@@ -269,10 +257,12 @@ field.
 | `label_allowlist` | Exact labels a plan may apply. It ships empty. |
 
 The shipped step kinds are `patch`, `suggest`, `push_branch`, `open_pr`, and
-`label`. Each kind declares a complete argument schema using the same scalar
-vocabulary as review artifacts. Step arguments cannot refer to another step's
-output, and the plan cannot branch or loop. Ordering constraints apply to every
-matching pair of steps, not merely adjacent steps.
+`label`. `plan.schema` declares each kind and its complete argument object
+through `oneOf`; `plan.step_kinds` classifies the same kinds by whether they
+carry a write-class effect. The verifier refuses disagreement between those two
+sets. Step arguments cannot refer to another step's output, and the plan cannot
+branch or loop. Ordering constraints apply to every matching pair of steps, not
+merely adjacent steps.
 
 Policy is only one layer of plan authorization. The verifier also checks the
 plan against run-specific facts that do not live in `policy.json`: the pinned
