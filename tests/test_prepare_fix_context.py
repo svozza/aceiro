@@ -17,6 +17,7 @@ reached:
 """
 
 import json
+from urllib.error import HTTPError
 
 import pytest
 
@@ -54,8 +55,7 @@ def lane(monkeypatch, tmp_path):
     """Every collaborator stubbed to the happy path; each test breaks one."""
     state = {
         "pr": pr_payload(),
-        # The /issues/N view: `pull_request` present is what marks it as one.
-        "issue": {"number": 7, "pull_request": {"url": "https://api/pulls/7"}},
+        "pr_status": 200,
         "trusted": True,
         "witness": 4242,
         # The run whose footer the witness read, and so the run whose artifact the
@@ -69,13 +69,12 @@ def lane(monkeypatch, tmp_path):
     }
 
     def fake_api_json(path, **kw):
-        # Two endpoints, deliberately distinguished: /issues/N is what an
-        # issue_comment resolves against and is where the "is this a pull request?"
-        # marker lives, while /pulls/N is what carries the head and base. A stub
-        # answering both with one payload would let the probe pass on a shape the
-        # real issues endpoint never returns.
-        if "/issues/" in path:
-            return state["issue"]
+        # Match the command job's pull-requests:read permission. An issue lookup
+        # returned 403 on the first live Rito fix, before any plan was composed.
+        if path != "/repos/o/r/pulls/7":
+            raise HTTPError(path, 403, "Forbidden", {}, None)
+        if state["pr_status"] != 200:
+            raise HTTPError(path, state["pr_status"], "PR lookup failed", {}, None)
         return state["pr"]
 
     monkeypatch.setattr(pfc, "api_json", fake_api_json)
@@ -198,9 +197,18 @@ class TestThePreconditions:
     def test_an_issue_that_is_no_pull_request_is_refused(self, lane):
         # issue_comment fires for issues as well as pull requests, so the
         # resolution can legitimately find something with no head to review.
-        lane["issue"] = {"number": 7}
+        lane["pr_status"] = 404
         with pytest.raises(pfc.Refused, match="pull request"):
             run(lane)
+        assert not lane["output"].exists()
+
+    @pytest.mark.parametrize("status", [401, 403, 500])
+    def test_pr_api_failures_are_not_misreported_as_non_prs(self, lane, status):
+        lane["pr_status"] = status
+        with pytest.raises(HTTPError) as exc:
+            run(lane)
+        assert exc.value.code == status
+        assert not lane["output"].exists()
 
     def test_a_head_with_no_posted_review_is_refused(self, lane):
         # The witness: the commander acts on a comment they read, so a command for
@@ -588,7 +596,7 @@ class TestTheDeclineChannelRepliesToExactlyTwoRefusals:
         # unasserted gate-lane list already cost.
         self.fork(self.two_file_command(lane))
         if break_it == "not_a_pr":
-            lane["issue"] = {"number": 7}
+            lane["pr_status"] = 404
         elif break_it == "no_witness":
             lane["witness"] = None
         elif break_it == "no_run_link":

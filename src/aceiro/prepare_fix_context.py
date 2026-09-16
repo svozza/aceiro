@@ -45,6 +45,7 @@ import os
 import sys
 from pathlib import Path
 from typing import cast
+from urllib.error import HTTPError
 
 from artifact import POLICY_PATH, rendered_findings, severity_ranks
 from author_trust import is_trusted
@@ -192,12 +193,16 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
             "fix (ADR-0007: trust follows the commander)"
         )
 
-    pr = cast("dict", api_json(f"/repos/{repo}/issues/{issue_number}"))
-    if "pull_request" not in pr:
+    # The pull endpoint establishes PR identity and supplies the metadata in one
+    # request. The issues endpoint needs issues:read, which this job does not hold.
+    try:
+        pr = cast("dict", api_json(f"/repos/{repo}/pulls/{issue_number}"))
+    except HTTPError as exc:
+        if exc.code != 404:
+            raise
         raise Refused(
-            f"issue #{issue_number} is not a pull request, so there is no change to fix"
-        )
-    pr = cast("dict", api_json(f"/repos/{repo}/pulls/{issue_number}"))
+            f"issue #{issue_number} does not resolve to an accessible pull request; no fix"
+        ) from exc
     head_sha = pr["head"]["sha"]
     base_sha = pr["base"]["sha"]
     # Both REFS as well as both SHAs, because an issue_comment payload carries none
