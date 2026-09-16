@@ -782,6 +782,25 @@ class TestTheCommandLaneHoldsNoCredential:
 
     FIX = "ai-pr-fix.yml"
 
+    def test_fix_draft_status_reaches_both_approval_checks(self):
+        text = (WORKFLOWS / self.FIX).read_text()
+        assert "pr_draft: ${{ steps.compose.outputs.pr_draft }}" in job_block(text, "command")
+        gate = job_condition(text, "approve")
+        assert (
+            "needs.command.outputs.author_trusted != 'true' "
+            "|| needs.command.outputs.pr_draft != 'false'"
+        ) in gate
+        worker = job_condition(text, "plan")
+        assert (
+            "needs.command.outputs.author_trusted == 'true' "
+            "&& needs.command.outputs.pr_draft == 'false'"
+        ) in worker
+        assertion = next(
+            step for step in parse_steps(text, "plan")
+            if step.get("name") == "Assert the approval gate was real"
+        )
+        assert assertion["env.PR_DRAFT"] == "${{ needs.command.outputs.pr_draft }}"
+
     def test_the_command_job_has_no_write_scope(self):
         text = (WORKFLOWS / self.FIX).read_text()
         block = job_block(text, "command")

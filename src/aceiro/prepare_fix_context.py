@@ -66,7 +66,7 @@ from verify import Rejection, verify
 # cosmetic gap: BASE_REF is the retarget comparison (ADR-0012, compared by ref
 # because base.sha tracks the branch tip) and HEAD_REF is what makes the
 # reviewed-head-branch push refusal reachable at all (ADR-0009 addendum).
-STEP_OUTPUTS = ("head_sha", "base_sha", "base_ref", "head_ref")
+STEP_OUTPUTS = ("head_sha", "base_sha", "base_ref", "head_ref", "pr_draft")
 
 
 class Refused(Exception):
@@ -308,7 +308,10 @@ def prepare(*, repo: str, issue_number: int, comment_body: str, commenter: str,
     (output_dir / "commanded_index.json").write_text(
         json.dumps({"indices": sorted(indices)}), encoding="utf-8")
     return {"head_sha": head_sha, "base_sha": base_sha,
-            "base_ref": base_ref, "head_ref": head_ref, "indices": sorted(indices)}
+            "base_ref": base_ref, "head_ref": head_ref, "indices": sorted(indices),
+            # issue_comment has no draft field. Only a confirmed API false
+            # permits the trusted-author path without environment approval.
+            "pr_draft": "false" if pr.get("draft") is False else "true"}
 
 
 def main() -> int:
