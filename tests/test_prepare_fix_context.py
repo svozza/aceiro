@@ -791,6 +791,23 @@ class TestTheEmittedOutputsMatchWhatPrepareReturned:
         for key, value in emitted.items():
             assert value != "", f"{key} was emitted empty; the reader cannot tell it apart from a real value"
 
+    @pytest.mark.parametrize("trusted", [True, False])
+    @pytest.mark.parametrize("draft", [False, True, None, "false", 0])
+    def test_emitted_draft_state_drives_the_approval_gate(
+        self, lane, monkeypatch, tmp_path, capsys, trusted, draft,
+    ):
+        import environment_gate
+
+        if draft is not None:
+            lane["pr"]["draft"] = draft
+        emitted = self.emit(lane, monkeypatch, tmp_path, capsys)
+        assert emitted["pr_draft"] == ("false" if draft is False else "true")
+        monkeypatch.setenv("PR_DRAFT", emitted["pr_draft"])
+        monkeypatch.setenv("AUTHOR_TRUSTED", "true" if trusted else "false")
+        monkeypatch.setenv("GATE_ENVIRONMENT", "ai-pr-review")
+        monkeypatch.setattr(environment_gate, "has_required_reviewers", lambda *args: False)
+        assert environment_gate.main() == (0 if trusted and draft is False else 1)
+
     @pytest.mark.parametrize("ref", ["base_ref", "head_ref"])
     def test_an_empty_ref_is_refused_rather_than_emitted(self, lane, monkeypatch, tmp_path,
                                                          capsys, ref):

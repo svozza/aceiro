@@ -162,6 +162,7 @@ jobs:
       base_ref: ${{ steps.compose.outputs.base_ref }}
       head_ref: ${{ steps.compose.outputs.head_ref }}
       author_trusted: ${{ steps.author.outputs.trusted }}
+      pr_draft: ${{ steps.compose.outputs.pr_draft }}
       # ADR-0014: this job DERIVES the undeliverable-by-construction refusal (it
       # already fetches the pull request, and two commanded findings on distinct
       # paths guarantee the stacked route) and emits it. It does NOT post it — see
@@ -251,7 +252,10 @@ jobs:
     if: >-
       always()
       && needs.command.outputs.commanded == 'true'
-      && needs.command.outputs.author_trusted != 'true'
+      && (
+        needs.command.outputs.author_trusted != 'true'
+        || needs.command.outputs.pr_draft != 'false'
+      )
     runs-on: ubuntu-latest
     environment: ai-pr-review
     steps:
@@ -271,6 +275,7 @@ jobs:
         || (
           needs.approve.result == 'skipped'
           && needs.command.outputs.author_trusted == 'true'
+          && needs.command.outputs.pr_draft == 'false'
         )
       )
     runs-on: ubuntu-latest
@@ -354,14 +359,14 @@ jobs:
           --policy harness/src/aceiro/policy.json
 
       # ADR-0006: asserted INSIDE the gated job, before any credential exists in
-      # it. PR_DRAFT is not available on an issue_comment payload, so it is not
-      # guessed: absent reads as draft, which is environment_gate's fail-closed
-      # direction, and the assertion then turns on the author's trust alone.
+      # it. issue_comment has no draft field; command resolves it from the PR API.
+      # Missing or unrecognized draft state still requires approval.
       - name: Assert the approval gate was real
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GATE_ENVIRONMENT: ai-pr-review
           AUTHOR_TRUSTED: ${{ needs.command.outputs.author_trusted }}
+          PR_DRAFT: ${{ needs.command.outputs.pr_draft }}
         run: python harness/src/aceiro/environment_gate.py
 
       - name: Download plan context
