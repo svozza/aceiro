@@ -1,0 +1,58 @@
+name: CodeBuild runner smoke (temporary)
+
+on:
+  workflow_call:
+    inputs:
+      runner-labels:
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  runtime:
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out pinned harness
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with:
+          version: "0.12.3"
+          python-version: "3.13"
+          enable-cache: false
+      - name: Check permission-job bootstrap
+        env:
+          PYTHONPATH: src/aceiro
+        run: >-
+          uv run --no-project python -c
+          'import sys, author_trust; assert sys.version_info[:2] == (3, 13);
+          print("Permission-job Python bootstrap passed")'
+      - name: Install frozen harness dependencies
+        run: uv sync --frozen --no-install-project
+      - name: Check ARM runtime and bundled CLI
+        run: |
+          uv run --frozen --no-sync python - <<'PY'
+          import platform
+          import subprocess
+          import sys
+          from pathlib import Path
+          import claude_agent_sdk
+          import detect_secrets
+          import jsonschema
+          import markdown_it
+          import rpds
+          assert sys.version_info[:2] == (3, 13)
+          assert platform.machine() == "aarch64", platform.machine()
+          print(f"Python {platform.python_version()} on {platform.platform()}", flush=True)
+          print("Frozen dependency imports passed", flush=True)
+          cli = Path(claude_agent_sdk.__file__).parent / "_bundled" / "claude"
+          subprocess.run([str(cli), "--version"], check=True)
+          PY
