@@ -43,6 +43,13 @@ name: AI PR review (reusable)
 on:
   workflow_call:
     inputs:
+      runner-labels:
+        description: >-
+          JSON array of Linux runner labels for every job, including permission
+          checks and delivery. Custom runners must be isolated for each job.
+        type: string
+        required: false
+        default: '["ubuntu-latest"]'
       project-description:
         description: >-
           The consumer's own one-clause description of their repository,
@@ -155,7 +162,7 @@ jobs:
   # Resolves the author's REAL repo permission (write-or-above), never
   # author_association. Fails closed to untrusted; see author_trust.py.
   author_trust:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 5
     permissions:
       pull-requests: read
@@ -181,12 +188,18 @@ jobs:
           ref: ${{ job.workflow_sha }}
           persist-credentials: false
           fetch-depth: 1
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          python-version: "3.13"
+          enable-cache: false
       - name: Resolve author permission
         id: resolve
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-        run: python src/aceiro/author_trust.py
+        run: uv run --no-project python src/aceiro/author_trust.py
 
   approve:
     # Human gate: resolves against the CALLER's `ai-pr-review` environment.
@@ -204,7 +217,7 @@ jobs:
         needs.author_trust.outputs.trusted != 'true'
         || github.event.pull_request.draft
       )
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     environment: ai-pr-review
     steps:
       - name: Record approved head SHA
@@ -228,7 +241,7 @@ jobs:
           && needs.author_trust.outputs.trusted == 'true'
         )
       )
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     environment: ai-pr-review-runtime
     # The consumer's number, and the same one the generator's deadline is stamped
     # from below (ADR-0015). Verified rather than assumed: jobs.<job_id>.timeout-minutes
@@ -286,14 +299,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync harness dependencies (locked)
@@ -441,7 +451,7 @@ jobs:
     # review already needs approve; its success implies the gate passed.
     needs: review
     if: always() && needs.review.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 10
     permissions:
       # contents:read is what re-fetching the SHA-anchored diff needs. The
@@ -473,14 +483,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync verifier dependencies (locked)

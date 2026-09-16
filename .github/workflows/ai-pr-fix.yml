@@ -52,6 +52,13 @@ name: AI PR fix (reusable)
 on:
   workflow_call:
     inputs:
+      runner-labels:
+        description: >-
+          JSON array of Linux runner labels for every job, including permission
+          checks and delivery. Custom runners must be isolated for each job.
+        type: string
+        required: false
+        default: '["ubuntu-latest"]'
       project-description:
         description: >-
           The consumer's own one-clause description of their repository,
@@ -149,7 +156,7 @@ jobs:
     if: >-
       github.event.issue.pull_request
       && contains(github.event.comment.body, '/fix ')
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 10
     permissions:
       contents: read # the SHA-anchored diff
@@ -193,14 +200,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync harness dependencies (locked)
@@ -256,7 +260,7 @@ jobs:
         needs.command.outputs.author_trusted != 'true'
         || needs.command.outputs.pr_draft != 'false'
       )
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     environment: ai-pr-review
     steps:
       - name: Record approved head SHA
@@ -278,7 +282,7 @@ jobs:
           && needs.command.outputs.pr_draft == 'false'
         )
       )
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     environment: ai-pr-review-runtime
     # The consumer's number, and the same one the generator's deadline is stamped
     # from below (ADR-0015). Verified rather than assumed: jobs.<job_id>.timeout-minutes
@@ -336,14 +340,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync harness dependencies (locked)
@@ -496,7 +497,7 @@ jobs:
   route:
     needs: [command, plan]
     if: always() && needs.plan.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 5
     permissions: {}
     outputs:
@@ -518,14 +519,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync harness dependencies (locked)
@@ -551,7 +549,7 @@ jobs:
     # plan already needs approve; its success implies the gate passed.
     needs: [command, plan, route]
     if: always() && needs.route.outputs.mode == 'suggestions'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -580,14 +578,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync verifier dependencies (locked)
@@ -658,7 +653,7 @@ jobs:
   stack:
     needs: [command, plan, route]
     if: always() && needs.route.outputs.mode == 'stacked_pr'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 15
     permissions:
       # The one place in either lane that holds it. A branch cannot be created
@@ -706,14 +701,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync verifier dependencies (locked)
@@ -809,7 +801,7 @@ jobs:
         needs.command.outputs.replied == 'true'
         || needs.stack.outputs.replied == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runner-labels) }}
     timeout-minutes: 5
     permissions:
       # The only scope this job needs, and the only one it has. It posts one comment
@@ -832,14 +824,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
       - name: Set up uv
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
+          python-version: "3.13"
           enable-cache: false
 
       - name: Sync harness dependencies (locked)

@@ -11,6 +11,7 @@ properties. Not a general YAML implementation: it reads step lists, step keys an
 scalar values, which is all the assertions below use.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -1261,6 +1262,41 @@ class TestOtherWorkflowsStayCorrect:
             )
             assert "with.cache-dependency-glob" not in step
 
+
+
+class TestReusableRunnerSelection:
+    @pytest.mark.parametrize("workflow", ["ai-pr-review.yml", "ai-pr-fix.yml"])
+    def test_runner_override_covers_permission_checks_and_delivery(self, workflow):
+        text = (WORKFLOWS / workflow).read_text()
+        runner = workflow_input(text, "runner-labels")
+        assert runner["type"] == "string"
+        assert runner["required"] == "false"
+        assert json.loads(runner["default"].strip("'")) == ["ubuntu-latest"]
+        for job in job_names(text):
+            block = job_block(text, job)
+            assert "runs-on: ${{ fromJSON(inputs.runner-labels) }}" in block, (
+                f"{workflow} {job}: a hard-coded runner can leave the pipeline queued "
+                "even when the caller has its own capacity"
+            )
+
+    @pytest.mark.parametrize("workflow", ["ai-pr-review.yml", "ai-pr-fix.yml"])
+    def test_python_jobs_bootstrap_without_the_ubuntu_tool_cache(self, workflow):
+        text = (WORKFLOWS / workflow).read_text()
+        for job in job_names(text):
+            if not re.search(r"\bpython ", job_block(text, job)):
+                continue
+            steps = parse_steps(text, job)
+            assert not any("setup-python@" in step.get("uses", "") for step in steps)
+            setup = next(step for step in steps if "setup-uv@" in step.get("uses", ""))
+            assert setup["with.python-version"] == "3.13"
+            assert setup["with.enable-cache"] == "false"
+
+    def test_author_check_uses_uv_without_installing_project_dependencies(self):
+        steps = parse_steps((WORKFLOWS / "ai-pr-review.yml").read_text(), "author_trust")
+        setup = next(i for i, step in enumerate(steps) if "setup-uv@" in step.get("uses", ""))
+        resolve = next(i for i, step in enumerate(steps) if step.get("id") == "resolve")
+        assert setup < resolve
+        assert steps[resolve]["run"] == "uv run --no-project python src/aceiro/author_trust.py"
 
 
 class TestSupplyChainPinning:
