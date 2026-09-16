@@ -183,6 +183,49 @@ their own per-pull-request concurrency behavior.
 Commit both workflows to the repository's default branch. Opening or updating a
 pull request will then start a review.
 
+### Runner selection
+
+Both reusable workflows accept `runner-labels`, a JSON array of Linux runner
+labels. The default is `["ubuntu-latest"]`. The selection applies to every job,
+including the initial permission checks, approval jobs, and delivery. Moving
+only the model job would leave the pipeline waiting for GitHub-hosted capacity
+at its other stages.
+
+For an existing CodeBuild GitHub Actions runner project, add the same input to
+both caller workflows:
+
+```yaml
+    with:
+      runner-labels: >-
+        ["codebuild-my-project-${{ github.run_id }}-${{ github.run_attempt }}",
+         "instance-size:small"]
+```
+
+Replace `my-project` with the CodeBuild project name. Its webhook must handle
+`WORKFLOW_JOB_QUEUED`, and its GitHub connection must cover the caller repository.
+CodeBuild starts a fresh runner for each job. The optional instance-size label
+overrides the project's default compute size; size it against measured memory
+usage and concurrency. See the [AWS runner setup guide](https://docs.aws.amazon.com/codebuild/latest/userguide/action-runner.html).
+
+The workflows use uv to select and, when needed, download Python 3.13, so they
+do not require Ubuntu's Python tool cache. Custom images still need Bash, Git,
+the system libraries required by GitHub's JavaScript actions, and outbound
+access to GitHub, Python package downloads, and the selected model provider.
+Amazon Linux and ARM deployments need a smoke test of the locked dependencies
+and bundled model CLI before rollout.
+
+Use a fresh, isolated runner for each job. Runner-provided credentials remain
+available independently of `GITHUB_TOKEN` permissions, so the runner's AWS role
+must not grant deployment or repository-write authority to generation jobs.
+Keep model access behind the existing approval checks and Bedrock OIDC role.
+
+GitHub [documents self-hosted runner access for reusable workflows owned by the
+same user or organization](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#how-reusable-workflows-use-runners).
+Verify routing before enabling a caller and reusable workflow with different
+owners, such as `ritofactory/rito-mvp` calling `svozza/aceiro`. Runner selection
+does not change GitHub's access rules. CodeBuild also remains subject to AWS
+capacity and concurrency quotas and to GitHub's scheduler and webhook delivery.
+
 ## Use
 
 Aceiro maintains one review comment per pull request and updates it when a new
