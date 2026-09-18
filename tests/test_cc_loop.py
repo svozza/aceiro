@@ -379,6 +379,54 @@ class TestRunFailureModes:
         events = transcript_events(out)
         assert {"event": "secret_taint", "candidates": 1}.items() <= events[1].items()
 
+    def test_provenance_is_anchored_to_the_diff_as_fetched(self, tmp_path, monkeypatch):
+        # Run 35323035751: a redaction placeholder landed in a `+++ ` header, so
+        # the verifier indexed the file under the placeholder while
+        # changed_files.json and the checkout kept the real name, and a correct
+        # line anchor was rejected as outside every hunk. Redaction rewrites
+        # only the model-visible copy; the hunk map comes from the diff as fetched.
+        from canonicalize import read_contributor_text
+        from diff_map import walk_diff
+        from verify import parse_diff_hunks
+
+        context = tmp_path / "context"
+        pr_root = tmp_path / "pr_root"
+        shutil.copytree(SCENARIO / "context", context)
+        shutil.copytree(SCENARIO / "pr_root", pr_root)
+        token = "kQ9zX2vB7nM4pL8wR3tY6uH1"
+        path = f"pkg/{token}/settings.py"
+        with (context / "diff.patch").open("a", encoding="utf-8") as handle:
+            handle.write(
+                f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+                f"@@ -1,2 +1,2 @@\n import os\n+MODULE = `{token}`\n"
+            )
+        fetched = read_contributor_text(context / "diff.patch")
+        handed = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(schema, state, transcript, verify_fn, diff_text, *rest):
+            handed.append(diff_text)
+            return original(schema, state, transcript, verify_fn, diff_text, *rest)
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        prompts = []
+
+        async def _query(prompt, options):
+            prompts.append(prompt)
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        cc_loop.run(REPO_ROOT, pr_root, context, tmp_path / "out")
+
+        assert token not in prompts[0]
+        assert handed == [fetched]
+        assert 2 in parse_diff_hunks(handed[0])[path]
+        # The copy the model reads names the file by placeholder, so it is not
+        # the copy the verifier may use; its line numbering is still identical.
+        shown = (context / "diff.patch").read_text(encoding="utf-8")
+        assert path not in parse_diff_hunks(shown)
+        assert [p.new_line for p in walk_diff(shown)] == [p.new_line for p in walk_diff(fetched)]
+
     def test_a_403_is_not_retried(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not back off"))
         stream = [result_message(

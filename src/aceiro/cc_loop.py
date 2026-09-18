@@ -1027,6 +1027,16 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         max_rounds=MAX_SUBMISSIONS,
     )
 
+    # Provenance is checked against the diff as fetched. Redaction rewrites the
+    # model-visible copy in place, and a placeholder landing in a `+++ ` header
+    # would otherwise rename the file in the verifier's hunk map while the
+    # changed-file list and the checkout keep the real name.
+    try:
+        diff_text = read_contributor_text(context_dir / "diff.patch")
+        changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
+    except (OSError, ValueError, UnicodeError) as exc:
+        return fail(transcript, f"cannot assemble the review context: {exc}")
+
     try:
         assert_no_symlinks(pr_root, transcript)
         candidates = redact_review_inputs(context_dir, pr_root, policy)
@@ -1043,8 +1053,6 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         return fail(transcript, f"cannot assemble the review context: {exc}")
     transcript.log("context", sha256=sha256(user_message), bytes=len(user_message.encode()))
 
-    diff_text = read_contributor_text(context_dir / "diff.patch")
-    changed_files = json.loads(read_harness_text(context_dir / "changed_files.json"))
     guidance = render_rejection_guidance(policy)
 
     return drive_session(

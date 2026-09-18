@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from detect_secrets.core.scan import scan_line
+from detect_secrets.plugins.high_entropy_strings import (
+    Base64HighEntropyString,
+    HexHighEntropyString,
+    HighEntropyStringsPlugin,
+)
 from detect_secrets.settings import transient_settings
 
 
@@ -46,8 +51,12 @@ _LOCKFILE_NAMES = frozenset({
     "uv.lock",
     "yarn.lock",
 })
-_ENTROPY_KINDS = frozenset({"Base64 High Entropy String", "Hex High Entropy String"})
+_QUOTES = ("'", '"', "`")
 
+# Pattern and keyword detectors run through detect-secrets' ad-hoc scan_line.
+# The entropy detectors do not: scan_line's eager fallback returns candidates
+# without applying the entropy limit, so they are scanned here, where quoting
+# (including Markdown backticks) and the configured limit are both enforced.
 _PLUGINS = [
     {"name": "ArtifactoryDetector"},
     {"name": "AWSKeyDetector"},
@@ -73,9 +82,8 @@ _PLUGINS = [
     {"name": "StripeDetector"},
     {"name": "TelegramBotTokenDetector"},
     {"name": "TwilioKeyDetector"},
-    {"name": "Base64HighEntropyString", "limit": 4.5},
-    {"name": "HexHighEntropyString", "limit": 3.0},
 ]
+_ENTROPY_PLUGINS = (Base64HighEntropyString(limit=4.5), HexHighEntropyString(limit=3.0))
 
 
 @dataclass(frozen=True)
@@ -101,6 +109,22 @@ def _is_allowlisted(value: str, kind: str, path: Path | None) -> bool:
     return False
 
 
+def _quoted_high_entropy(plugin: HighEntropyStringsPlugin, line: str) -> list[str]:
+    """Charset runs on `line` that are quote-enclosed and clear the plugin's limit.
+
+    Every run is examined, so a low-entropy quoted string elsewhere on the line
+    cannot mask a secret, which detect-secrets' eager fallback allows.
+    """
+    with plugin.non_quoted_string_regex(is_exact_match=False):
+        runs = list(plugin.analyze_string(line))
+    return [
+        value
+        for value in runs
+        if any(f"{quote}{value}{quote}" in line for quote in _QUOTES)
+        and plugin.calculate_shannon_entropy(value) > plugin.entropy_limit
+    ]
+
+
 def detect_candidates(text: str, path: Path | None = None) -> list[tuple[str, str]]:
     """Return unique plaintext candidates and detector kinds in source order."""
     found: list[tuple[str, str]] = []
@@ -108,13 +132,11 @@ def detect_candidates(text: str, path: Path | None = None) -> list[tuple[str, st
     settings = {"plugins_used": _PLUGINS, "filters_used": []}
     with transient_settings(settings):
         for line in text.splitlines():
-            for secret in scan_line(line):
-                value = secret.secret_value
+            matches = [(secret.secret_value, secret.type) for secret in scan_line(line)]
+            for plugin in _ENTROPY_PLUGINS:
+                matches.extend((value, plugin.secret_type) for value in _quoted_high_entropy(plugin, line))
+            for value, kind in matches:
                 if value is None:
-                    continue
-                if secret.type in _ENTROPY_KINDS and not any(
-                    f"{quote}{value}{quote}" in line for quote in ("'", '"', "`")
-                ):
                     continue
                 allowlisted_containers = [
                     *(match.group() for match in _UUID_IN_TEXT_RE.finditer(line)),
@@ -122,10 +144,10 @@ def detect_candidates(text: str, path: Path | None = None) -> list[tuple[str, st
                 ]
                 if any(value in container for container in allowlisted_containers):
                     continue
-                if value in seen or _is_allowlisted(value, secret.type, path):
+                if value in seen or _is_allowlisted(value, kind, path):
                     continue
                 seen.add(value)
-                found.append((value, secret.type))
+                found.append((value, kind))
     return found
 
 
