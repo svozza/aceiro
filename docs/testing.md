@@ -313,8 +313,8 @@ Before the review model runs, Aceiro scans contributor-controlled pull request
 metadata, the diff, and text files in the quarantined PR head with
 `detect-secrets`. Enabled detectors cover common cloud, source-control, package
 registry, messaging, payment, private-key, JWT, and secret-keyword formats, plus
-quoted high-entropy strings. Detected plaintext values are replaced with stable
-placeholders such as:
+quoted or backticked strings above the configured entropy limits. Detected
+plaintext values are replaced with stable placeholders such as:
 
 ```text
 <SECRET_1:type=secret_keyword,length=20>

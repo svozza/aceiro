@@ -12,6 +12,7 @@ import pytest
 
 from conftest import DELETED_FILE_DIFF
 import verify as verify_module
+from secret_taint import candidates_from_diff
 from verify import Rejection, verify
 
 
@@ -36,6 +37,12 @@ class TestStructure:
 
     def test_extra_finding_key(self, artifact, sample_diff, changed_files, policy):
         artifact["findings"][0]["suggested_patch"] = "rm -rf /"
+        rejected(artifact, sample_diff, changed_files, policy)
+
+    def test_group_note_stays_an_unsupported_finding_field(self, artifact, sample_diff, changed_files, policy):
+        # Run 35323035751, submission 1. A model-invented field is a schema
+        # error, not a schema gap.
+        artifact["findings"][0]["group_note"] = "shares a root cause with finding 2"
         rejected(artifact, sample_diff, changed_files, policy)
 
     def test_wrong_severity(self, artifact, sample_diff, changed_files, policy):
@@ -103,6 +110,26 @@ class TestRuntimeSecretTaints:
         policy["_tainted_secret_values"] = ("vby4471-qmt83e2-prod",)
         artifact["summary"] = "The change introduces a hard-coded password."
         verify(artifact, sample_diff, changed_files, policy)
+
+    def test_a_backticked_public_path_in_the_input_is_not_a_taint(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        # Run 35323035751, submissions 3 and 4: `crates/rboto-core/` (entropy
+        # 3.20, limit 4.5) was registered as a candidate from the input, so a
+        # finding naming the file reproduced a "secret".
+        candidates_from_diff("+# shared code lives in `crates/rboto-core/`\n", policy)
+        assert policy["_tainted_secret_values"] == ()
+        artifact["summary"] = "The shared code is in `crates/rboto-core/src/lib.rs`."
+        verify(artifact, sample_diff, changed_files, policy)
+
+    def test_a_backticked_secret_in_the_input_is_still_a_taint(
+        self, artifact, sample_diff, changed_files, policy
+    ):
+        secret = "kQ9zX2vB7nM4pL8wR3tY6uH1"
+        candidates_from_diff(f"+# rotated from `{secret}`\n", policy)
+        assert policy["_tainted_secret_values"] == (secret,)
+        artifact["summary"] = f"The old token `{secret}` is still in the history."
+        rejected(artifact, sample_diff, changed_files, policy)
 
 
 class TestEveryTopLevelSpecIsEnforced:
