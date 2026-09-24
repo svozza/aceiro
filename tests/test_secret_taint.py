@@ -2,6 +2,7 @@ import json
 
 import pytest
 from hypothesis import given, settings, strategies as st
+import secret_taint
 
 from secret_taint import (
     RUNTIME_SECRET_VALUES,
@@ -234,3 +235,43 @@ class TestEntropyScanEquivalence:
             '<path d="' + "M1 2L3 4 " * 10_000 + f'" data-value=`{HIGH_ENTROPY}`/>'
         )
         assert _quoted_high_entropy(_ENTROPY_PLUGINS[0], line) == [HIGH_ENTROPY]
+
+
+class TestRepeatedLines:
+    def test_repeated_lines_are_scanned_once_and_keep_first_seen_order(self, monkeypatch):
+        original = secret_taint.scan_line
+        scanned = []
+
+        def record(line):
+            scanned.append(line)
+            return original(line)
+
+        monkeypatch.setattr(secret_taint, "scan_line", record)
+        password_line = f'password = "{PROPRIETARY_SECRET}"'
+        entropy_line = f'token = "{HIGH_ENTROPY}"'
+        text = "\n".join([password_line, "", entropy_line, password_line, "", entropy_line])
+        assert detect_candidates(text) == [
+            (PROPRIETARY_SECRET, "Secret Keyword"), (HIGH_ENTROPY, ENTROPY_KIND),
+        ]
+        assert scanned == [password_line, "", entropy_line]
+
+    def test_line_reuse_does_not_cross_file_allowlists(self, tmp_path):
+        text = f'password = "{PROPRIETARY_SECRET}"'
+        assert detect_candidates(text, tmp_path / "uv.lock") == []
+        assert detect_candidates(text, tmp_path / "config.py") == [
+            (PROPRIETARY_SECRET, "Secret Keyword"),
+        ]
+
+    def test_every_repeated_occurrence_is_redacted(self, tmp_path):
+        context = tmp_path / "context"
+        head = tmp_path / "head"
+        context.mkdir()
+        head.mkdir()
+        (context / "pr.json").write_text("{}")
+        line = f'password = "{PROPRIETARY_SECRET}"\n'
+        (context / "diff.patch").write_text(line * 2)
+        (head / "config.py").write_text(line * 3)
+        candidates = redact_review_inputs(context, head, {})
+        assert len(candidates) == 1
+        assert (context / "diff.patch").read_text().count(candidates[0].placeholder) == 2
+        assert (head / "config.py").read_text().count(candidates[0].placeholder) == 3

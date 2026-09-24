@@ -140,9 +140,15 @@ def detect_candidates(text: str, path: Path | None = None) -> list[tuple[str, st
     """Return unique plaintext candidates and detector kinds in source order."""
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
+    seen_lines: set[str] = set()
     settings = {"plugins_used": _PLUGINS, "filters_used": []}
     with transient_settings(settings):
         for line in text.splitlines():
+            # Ad-hoc detection has only this line as context. An identical line
+            # in the same file cannot add a new candidate or change its order.
+            if line in seen_lines:
+                continue
+            seen_lines.add(line)
             matches = [(secret.secret_value, secret.type) for secret in scan_line(line)]
             for plugin in _ENTROPY_PLUGINS:
                 matches.extend((value, plugin.secret_type) for value in _quoted_high_entropy(plugin, line))
