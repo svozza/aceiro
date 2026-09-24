@@ -1,9 +1,13 @@
 import json
 
 import pytest
+from hypothesis import given, settings, strategies as st
 
 from secret_taint import (
     RUNTIME_SECRET_VALUES,
+    _ENTROPY_PLUGINS,
+    _QUOTES,
+    _quoted_high_entropy,
     candidates_from_diff,
     detect_candidates,
     redact_review_inputs,
@@ -171,3 +175,62 @@ class TestEntropyDetectors:
         assert redacted.startswith("+++ b/packages/rboto-sns/python/rboto_sns/exceptions.py\n")
         assert HIGH_ENTROPY not in redacted
         assert candidates[0].placeholder in redacted
+
+
+class TestEntropyScanEquivalence:
+    @pytest.mark.parametrize("plugin", _ENTROPY_PLUGINS)
+    @settings(max_examples=300, deadline=None)
+    @given(parts=st.lists(st.one_of(
+        st.sampled_from([
+            HIGH_ENTROPY, HEX_SECRET, "hello-world-value", "0123456789012",
+            "'", '"', "`", "\\", " ", "=", ";", ".", "é", "\x00",
+        ]),
+        st.text(alphabet="abcdefgABCDEF0123456789+/\\-_'\"` ", max_size=40),
+    ), max_size=30))
+    def test_matches_original_scanner(self, plugin, parts):
+        line = "".join(parts)
+        # Frozen legacy algorithm is intentionally independent of the optimized
+        # boundary checks. Keep duplicate occurrences and ordering in this oracle.
+        with plugin.non_quoted_string_regex(is_exact_match=False):
+            runs = list(plugin.analyze_string(line))
+        expected = [
+            value for value in runs
+            if any(f"{quote}{value}{quote}" in line for quote in _QUOTES)
+            and plugin.calculate_shannon_entropy(value) > plugin.entropy_limit
+        ]
+        assert _quoted_high_entropy(plugin, line) == expected
+
+    def test_later_quoting_preserves_candidate_and_placeholder_order(self):
+        other = HIGH_ENTROPY[::-1]
+        line = f'{HIGH_ENTROPY} "{other}" `{HIGH_ENTROPY}`'
+        assert detect_candidates(line) == [
+            (HIGH_ENTROPY, ENTROPY_KIND), (other, ENTROPY_KIND),
+        ]
+        policy = {}
+        candidates = candidates_from_diff("+ " + line, policy)
+        assert [candidate.value for candidate in candidates] == [HIGH_ENTROPY, other]
+        assert candidates[0].placeholder.startswith("<SECRET_1:")
+        assert candidates[1].placeholder.startswith("<SECRET_2:")
+
+    @pytest.mark.parametrize("quote", _QUOTES)
+    def test_shared_quote_boundary_does_not_hide_the_next_secret(self, quote):
+        other = HIGH_ENTROPY[::-1]
+        assert detect_candidates(f"{quote}{HIGH_ENTROPY}{quote}{other}{quote}") == [
+            (HIGH_ENTROPY, ENTROPY_KIND), (other, ENTROPY_KIND),
+        ]
+
+    @pytest.mark.parametrize("quotes", [("'", '"'), ('"', "`"), ("`", "'")])
+    def test_mismatched_quotes_do_not_qualify(self, quotes):
+        assert detect_candidates(f"{quotes[0]}{HIGH_ENTROPY}{quotes[1]}") == []
+
+    def test_minified_line_does_not_search_the_line_per_candidate(self):
+        class NoSubstringSearch(str):
+            def __contains__(self, value):
+                raise AssertionError("repeated whole-line substring search")
+
+        # Many short runs reproduce the SVG's expensive search pattern. The
+        # sentinel at the end ensures the fast path still scans the whole line.
+        line = NoSubstringSearch(
+            '<path d="' + "M1 2L3 4 " * 10_000 + f'" data-value=`{HIGH_ENTROPY}`/>'
+        )
+        assert _quoted_high_entropy(_ENTROPY_PLUGINS[0], line) == [HIGH_ENTROPY]

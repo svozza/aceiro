@@ -115,12 +115,23 @@ def _quoted_high_entropy(plugin: HighEntropyStringsPlugin, line: str) -> list[st
     Every run is examined, so a low-entropy quoted string elsewhere on the line
     cannot mask a secret, which detect-secrets' eager fallback allows.
     """
+    # Index quoted values once, rather than searching the entire line for every
+    # run. Keep all occurrences in source order: an earlier unquoted occurrence
+    # still qualifies when the same value appears quoted later on this line.
+    runs: list[str] = []
+    quoted: set[str] = set()
     with plugin.non_quoted_string_regex(is_exact_match=False):
-        runs = list(plugin.analyze_string(line))
+        for match in plugin.regex.finditer(line):
+            value = match.group()
+            runs.append(value)
+            start, end = match.span()
+            if (start > 0 and end < len(line)
+                    and line[start - 1] in _QUOTES and line[end] == line[start - 1]):
+                quoted.add(value)
     return [
         value
         for value in runs
-        if any(f"{quote}{value}{quote}" in line for quote in _QUOTES)
+        if value in quoted
         and plugin.calculate_shannon_entropy(value) > plugin.entropy_limit
     ]
 
