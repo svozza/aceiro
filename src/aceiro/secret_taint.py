@@ -8,8 +8,12 @@ and the in-memory plaintext set used by the verifier.
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 from collections.abc import Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from detect_secrets.core.scan import scan_line
@@ -85,6 +89,64 @@ _PLUGINS = [
 ]
 _ENTROPY_PLUGINS = (Base64HighEntropyString(limit=4.5), HexHighEntropyString(limit=3.0))
 
+# Retain digests and results, not source texts. These bounds keep reuse within
+# one review affordable even for a tree with many distinct files or candidates.
+_MAX_CACHED_FILES = 32768
+_MAX_CACHED_RESULT_BYTES = 16 * 1024 * 1024
+
+
+class _ScanCache:
+    def __init__(self):
+        self.results: OrderedDict[
+            tuple[bytes, str | None], tuple[tuple[tuple[str, str], ...], int]
+        ] = OrderedDict()
+        self.result_bytes = 0
+        self.closed = False
+
+    def get(self, key):
+        if self.closed:
+            return None
+        entry = self.results.get(key)
+        if entry is None:
+            return None
+        self.results.move_to_end(key)
+        return list(entry[0])
+
+    def put(self, key, found):
+        if self.closed:
+            return
+        previous = self.results.pop(key, None)
+        if previous is not None:
+            self.result_bytes -= previous[1]
+        size = sum(len(value.encode()) + len(kind.encode()) for value, kind in found)
+        if size > _MAX_CACHED_RESULT_BYTES:
+            return
+        while self.results and (
+            len(self.results) >= _MAX_CACHED_FILES
+            or self.result_bytes + size > _MAX_CACHED_RESULT_BYTES
+        ):
+            _, (_, removed_size) = self.results.popitem(last=False)
+            self.result_bytes -= removed_size
+        self.results[key] = (tuple(found), size)
+        self.result_bytes += size
+
+
+_SCAN_CACHE: ContextVar[_ScanCache | None] = ContextVar("secret_scan_cache", default=None)
+
+
+@contextmanager
+def reuse_secret_scans():
+    """Reuse identical content only within one review; always discard on exit."""
+    cache = _ScanCache()
+    token = _SCAN_CACHE.set(cache)
+    try:
+        yield
+    finally:
+        cache.closed = True
+        cache.results.clear()
+        cache.result_bytes = 0
+        _SCAN_CACHE.reset(token)
+
 
 @dataclass(frozen=True)
 class SecretCandidate:
@@ -138,6 +200,22 @@ def _quoted_high_entropy(plugin: HighEntropyStringsPlugin, line: str) -> list[st
 
 def detect_candidates(text: str, path: Path | None = None) -> list[tuple[str, str]]:
     """Return unique plaintext candidates and detector kinds in source order."""
+    cache = _SCAN_CACHE.get()
+    if cache is None:
+        return _detect_candidates(text, path)
+    # All detectors receive ad-hoc line context. The only path-dependent rule
+    # is _is_allowlisted's basename check; preserve that distinction across roots.
+    key = (sha256(text.encode("utf-8", errors="surrogatepass")).digest(),
+           path.name.lower() if path else None)
+    found = cache.get(key)
+    if found is not None:
+        return found
+    found = _detect_candidates(text, path)
+    cache.put(key, found)
+    return found
+
+
+def _detect_candidates(text: str, path: Path | None) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
     seen_lines: set[str] = set()

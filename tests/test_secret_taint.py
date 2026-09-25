@@ -12,6 +12,7 @@ from secret_taint import (
     candidates_from_diff,
     detect_candidates,
     redact_review_inputs,
+    reuse_secret_scans,
 )
 
 
@@ -275,3 +276,93 @@ class TestRepeatedLines:
         assert len(candidates) == 1
         assert (context / "diff.patch").read_text().count(candidates[0].placeholder) == 2
         assert (head / "config.py").read_text().count(candidates[0].placeholder) == 3
+
+
+class TestReviewScanReuse:
+    def test_reuses_content_across_roots_but_not_edits_or_lockfile_names(self, tmp_path, monkeypatch):
+        original = secret_taint._detect_candidates
+        calls = []
+
+        def record(text, path):
+            calls.append((text, path))
+            return original(text, path)
+
+        monkeypatch.setattr(secret_taint, "_detect_candidates", record)
+        text = f'password = "{PROPRIETARY_SECRET}"'
+        expected = [(PROPRIETARY_SECRET, "Secret Keyword")]
+        with reuse_secret_scans():
+            first = detect_candidates(text, tmp_path / "head/config.py")
+            assert first == expected
+            first.clear()  # A caller cannot change the cached result.
+            assert detect_candidates(text, tmp_path / "base/config.py") == expected
+            assert len(calls) == 1
+            assert detect_candidates(text, tmp_path / "head/uv.lock") == []
+            assert len(calls) == 2
+            assert detect_candidates("no secret", tmp_path / "head/config.py") == []
+            assert len(calls) == 3
+            assert detect_candidates("no secret", tmp_path / "head/config.py") == []
+            assert len(calls) == 3  # Empty results are reusable too.
+        assert detect_candidates(text, tmp_path / "head/config.py") == expected
+        assert len(calls) == 4  # No result survives the review's scope.
+
+    def test_reuse_does_not_suppress_base_only_or_newly_added_secrets(self, tmp_path):
+        context, head, base = (tmp_path / name for name in ("context", "head", "base"))
+        for root in (context, head, base):
+            root.mkdir()
+        (context / "pr.json").write_text("{}")
+        (context / "diff.patch").write_text("")
+        (head / "config.py").write_text("not a secret")
+        (base / "config.py").write_text(f'password = "{PROPRIETARY_SECRET}"')
+        with reuse_secret_scans():
+            assert redact_review_inputs(context, head, {}) == []
+            base_policy = {}
+            assert redact_review_inputs(context, base, base_policy)
+            assert base_policy[RUNTIME_SECRET_VALUES] == (PROPRIETARY_SECRET,)
+            assert PROPRIETARY_SECRET not in (base / "config.py").read_text()
+            # Same name and path, different contents: it must be scanned again.
+            (head / "config.py").write_text(f'token = "{HIGH_ENTROPY}"')
+            head_policy = {}
+            assert redact_review_inputs(context, head, head_policy)
+            assert head_policy[RUNTIME_SECRET_VALUES] == (HIGH_ENTROPY,)
+            assert HIGH_ENTROPY not in (head / "config.py").read_text()
+
+    def test_scope_restores_on_failure_and_nested_reviews(self):
+        parent = None
+        assert secret_taint._SCAN_CACHE.get() is None
+        with pytest.raises(RuntimeError):
+            with reuse_secret_scans():
+                parent = secret_taint._SCAN_CACHE.get()
+                detect_candidates(f'token = "{HIGH_ENTROPY}"')
+                with reuse_secret_scans():
+                    assert secret_taint._SCAN_CACHE.get() is not parent
+                assert secret_taint._SCAN_CACHE.get() is parent
+                raise RuntimeError("review failed")
+        assert secret_taint._SCAN_CACHE.get() is None
+        assert parent is not None and parent.closed
+        assert parent.results == {}
+        parent.put((b"after", None), [(HIGH_ENTROPY, ENTROPY_KIND)])
+        assert parent.results == {}
+
+    def test_capacity_limits_evict_instead_of_skipping_detection(self, monkeypatch):
+        monkeypatch.setattr(secret_taint, "_MAX_CACHED_FILES", 2)
+        monkeypatch.setattr(secret_taint, "_MAX_CACHED_RESULT_BYTES", 100)
+        text = f'password = "{PROPRIETARY_SECRET}"'
+        expected = [(PROPRIETARY_SECRET, "Secret Keyword")]
+        with reuse_secret_scans():
+            cache = secret_taint._SCAN_CACHE.get()
+            assert cache is not None
+            for prefix in ("", "# first\n", "# second\n", ""):
+                assert detect_candidates(prefix + text) == expected
+                assert len(cache.results) <= 2
+                assert cache.result_bytes <= 100
+            monkeypatch.setattr(secret_taint, "_MAX_CACHED_RESULT_BYTES", 1)
+            # Oversize results still enforce detection, without entering cache.
+            assert detect_candidates("# oversized\n" + text) == expected
+            assert all(key[0] != secret_taint.sha256(("# oversized\n" + text).encode()).digest()
+                       for key in cache.results)
+
+    def test_cache_key_preserves_unpaired_surrogates(self):
+        text = "\ud800 " + f'token = "{HIGH_ENTROPY}"'
+        expected = detect_candidates(text)
+        with reuse_secret_scans():
+            assert detect_candidates(text) == expected

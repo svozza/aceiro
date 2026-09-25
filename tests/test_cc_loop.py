@@ -15,6 +15,7 @@ from pathlib import Path
 import anyio
 import cc_loop
 import pytest
+import secret_taint
 from artifact import build_artifact_schema, redact_secrets, redact_text
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 from conftest import POLICY
@@ -77,6 +78,50 @@ def run_loop(tmp_path, monkeypatch, streams, verify_fn=None):
 
 def transcript_events(tmp_path):
     return [json.loads(line) for line in (tmp_path / "transcript.jsonl").read_text().splitlines()]
+
+
+@pytest.mark.parametrize("outcome", [0, 1, "exception"])
+def test_review_owns_scan_cache_through_session_and_clears_it_on_every_exit(
+    tmp_path, monkeypatch, outcome,
+):
+    scenario = tmp_path / "scenario"
+    shutil.copytree(SCENARIO, scenario)
+    head = scenario / "pr_root"
+    shared = "class SharedValue: pass\n"
+    for folder in ("first", "second"):
+        (head / folder).mkdir()
+        (head / folder / "shared.py").write_text(shared)
+    scans = []
+    caches = []
+    original_scan = secret_taint._detect_candidates
+
+    def scan(text, path):
+        if text == shared:
+            scans.append(path)
+        return original_scan(text, path)
+
+    def session(**kwargs):
+        cache = secret_taint._SCAN_CACHE.get()
+        assert cache is not None and not cache.closed
+        caches.append(cache)
+        assert secret_taint.detect_candidates(shared, head / "second/shared.py") == []
+        if outcome == "exception":
+            raise RuntimeError("session failed")
+        return outcome
+
+    monkeypatch.setattr(secret_taint, "_detect_candidates", scan)
+    monkeypatch.setattr(cc_loop, "drive_session", session)
+    for index in range(2):
+        arguments = (REPO_ROOT, head, scenario / "context", tmp_path / f"output-{index}")
+        if outcome == "exception":
+            with pytest.raises(RuntimeError, match="session failed"):
+                cc_loop.run(*arguments)
+        else:
+            assert cc_loop.run(*arguments) == outcome
+        assert len(scans) == index + 1
+        assert secret_taint._SCAN_CACHE.get() is None
+        assert caches[-1].closed and not caches[-1].results
+    assert caches[0] is not caches[1]
 
 
 class TestSubmitTool:
