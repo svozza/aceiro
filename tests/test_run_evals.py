@@ -1030,6 +1030,41 @@ class TestCheckToolUse:
         ]
         run_evals.check_tool_use(events, wanted, base_root=Path(self.BASE))
 
+    def test_pr82_investigation_requires_the_base_caller_read(self):
+        # PR #82 run 36127246440 searched BASE via the fixed cwd, tried the
+        # missing quarantined caller, then read the caller from BASE.
+        wanted = json.loads(
+            (Path(run_evals.SCENARIOS_DIR) / "caller_impact_needs_investigation" / "expect.json").read_text()
+        )["transcript_tool_use_matching"]
+        events = [
+            self.call(
+                "Read",
+                file_path=f"{self.PR_ROOT}/aws_lambda_powertools/shared/functions.py",
+                offset=1,
+                limit=20,
+            ),
+            self.call(
+                "Grep",
+                **{"pattern": "slice_dictionary", "output_mode": "content", "-n": True},
+            ),
+            self.call(
+                "Read",
+                file_path=f"{self.PR_ROOT}/aws_lambda_powertools/utilities/parameters/ssm.py",
+                offset=575,
+                limit=25,
+            ),
+        ]
+        with pytest.raises(run_evals.EvalFailure, match="parameters/ssm.py"):
+            run_evals.check_tool_use(events, wanted, base_root=Path(self.BASE))
+
+        events.append(self.call(
+            "Read",
+            file_path=f"{self.BASE}/aws_lambda_powertools/utilities/parameters/ssm.py",
+            offset=575,
+            limit=25,
+        ))
+        run_evals.check_tool_use(events, wanted, base_root=Path(self.BASE))
+
     def test_a_scenario_needing_no_base_still_works(self):
         # base_root is threaded to every scenario; only this expectation cares.
         wanted = {"tools": ["Grep"], "input_contains_any": ["popitem"]}
