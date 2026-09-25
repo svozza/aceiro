@@ -1,12 +1,18 @@
 import json
 
 import pytest
+from hypothesis import given, settings, strategies as st
+import secret_taint
 
 from secret_taint import (
     RUNTIME_SECRET_VALUES,
+    _ENTROPY_PLUGINS,
+    _QUOTES,
+    _quoted_high_entropy,
     candidates_from_diff,
     detect_candidates,
     redact_review_inputs,
+    reuse_secret_scans,
 )
 
 
@@ -171,3 +177,192 @@ class TestEntropyDetectors:
         assert redacted.startswith("+++ b/packages/rboto-sns/python/rboto_sns/exceptions.py\n")
         assert HIGH_ENTROPY not in redacted
         assert candidates[0].placeholder in redacted
+
+
+class TestEntropyScanEquivalence:
+    @pytest.mark.parametrize("plugin", _ENTROPY_PLUGINS)
+    @settings(max_examples=300, deadline=None)
+    @given(parts=st.lists(st.one_of(
+        st.sampled_from([
+            HIGH_ENTROPY, HEX_SECRET, "hello-world-value", "0123456789012",
+            "'", '"', "`", "\\", " ", "=", ";", ".", "é", "\x00",
+        ]),
+        st.text(alphabet="abcdefgABCDEF0123456789+/\\-_'\"` ", max_size=40),
+    ), max_size=30))
+    def test_matches_original_scanner(self, plugin, parts):
+        line = "".join(parts)
+        # Frozen legacy algorithm is intentionally independent of the optimized
+        # boundary checks. Keep duplicate occurrences and ordering in this oracle.
+        with plugin.non_quoted_string_regex(is_exact_match=False):
+            runs = list(plugin.analyze_string(line))
+        expected = [
+            value for value in runs
+            if any(f"{quote}{value}{quote}" in line for quote in _QUOTES)
+            and plugin.calculate_shannon_entropy(value) > plugin.entropy_limit
+        ]
+        assert _quoted_high_entropy(plugin, line) == expected
+
+    def test_later_quoting_preserves_candidate_and_placeholder_order(self):
+        other = HIGH_ENTROPY[::-1]
+        line = f'{HIGH_ENTROPY} "{other}" `{HIGH_ENTROPY}`'
+        assert detect_candidates(line) == [
+            (HIGH_ENTROPY, ENTROPY_KIND), (other, ENTROPY_KIND),
+        ]
+        policy = {}
+        candidates = candidates_from_diff("+ " + line, policy)
+        assert [candidate.value for candidate in candidates] == [HIGH_ENTROPY, other]
+        assert candidates[0].placeholder.startswith("<SECRET_1:")
+        assert candidates[1].placeholder.startswith("<SECRET_2:")
+
+    @pytest.mark.parametrize("quote", _QUOTES)
+    def test_shared_quote_boundary_does_not_hide_the_next_secret(self, quote):
+        other = HIGH_ENTROPY[::-1]
+        assert detect_candidates(f"{quote}{HIGH_ENTROPY}{quote}{other}{quote}") == [
+            (HIGH_ENTROPY, ENTROPY_KIND), (other, ENTROPY_KIND),
+        ]
+
+    @pytest.mark.parametrize("quotes", [("'", '"'), ('"', "`"), ("`", "'")])
+    def test_mismatched_quotes_do_not_qualify(self, quotes):
+        assert detect_candidates(f"{quotes[0]}{HIGH_ENTROPY}{quotes[1]}") == []
+
+    def test_minified_line_does_not_search_the_line_per_candidate(self):
+        class NoSubstringSearch(str):
+            def __contains__(self, value):
+                raise AssertionError("repeated whole-line substring search")
+
+        # Many short runs reproduce the SVG's expensive search pattern. The
+        # sentinel at the end ensures the fast path still scans the whole line.
+        line = NoSubstringSearch(
+            '<path d="' + "M1 2L3 4 " * 10_000 + f'" data-value=`{HIGH_ENTROPY}`/>'
+        )
+        assert _quoted_high_entropy(_ENTROPY_PLUGINS[0], line) == [HIGH_ENTROPY]
+
+
+class TestRepeatedLines:
+    def test_repeated_lines_are_scanned_once_and_keep_first_seen_order(self, monkeypatch):
+        original = secret_taint.scan_line
+        scanned = []
+
+        def record(line):
+            scanned.append(line)
+            return original(line)
+
+        monkeypatch.setattr(secret_taint, "scan_line", record)
+        password_line = f'password = "{PROPRIETARY_SECRET}"'
+        entropy_line = f'token = "{HIGH_ENTROPY}"'
+        text = "\n".join([password_line, "", entropy_line, password_line, "", entropy_line])
+        assert detect_candidates(text) == [
+            (PROPRIETARY_SECRET, "Secret Keyword"), (HIGH_ENTROPY, ENTROPY_KIND),
+        ]
+        assert scanned == [password_line, "", entropy_line]
+
+    def test_line_reuse_does_not_cross_file_allowlists(self, tmp_path):
+        text = f'password = "{PROPRIETARY_SECRET}"'
+        assert detect_candidates(text, tmp_path / "uv.lock") == []
+        assert detect_candidates(text, tmp_path / "config.py") == [
+            (PROPRIETARY_SECRET, "Secret Keyword"),
+        ]
+
+    def test_every_repeated_occurrence_is_redacted(self, tmp_path):
+        context = tmp_path / "context"
+        head = tmp_path / "head"
+        context.mkdir()
+        head.mkdir()
+        (context / "pr.json").write_text("{}")
+        line = f'password = "{PROPRIETARY_SECRET}"\n'
+        (context / "diff.patch").write_text(line * 2)
+        (head / "config.py").write_text(line * 3)
+        candidates = redact_review_inputs(context, head, {})
+        assert len(candidates) == 1
+        assert (context / "diff.patch").read_text().count(candidates[0].placeholder) == 2
+        assert (head / "config.py").read_text().count(candidates[0].placeholder) == 3
+
+
+class TestReviewScanReuse:
+    def test_reuses_content_across_roots_but_not_edits_or_lockfile_names(self, tmp_path, monkeypatch):
+        original = secret_taint._detect_candidates
+        calls = []
+
+        def record(text, path):
+            calls.append((text, path))
+            return original(text, path)
+
+        monkeypatch.setattr(secret_taint, "_detect_candidates", record)
+        text = f'password = "{PROPRIETARY_SECRET}"'
+        expected = [(PROPRIETARY_SECRET, "Secret Keyword")]
+        with reuse_secret_scans():
+            first = detect_candidates(text, tmp_path / "head/config.py")
+            assert first == expected
+            first.clear()  # A caller cannot change the cached result.
+            assert detect_candidates(text, tmp_path / "base/config.py") == expected
+            assert len(calls) == 1
+            assert detect_candidates(text, tmp_path / "head/uv.lock") == []
+            assert len(calls) == 2
+            assert detect_candidates("no secret", tmp_path / "head/config.py") == []
+            assert len(calls) == 3
+            assert detect_candidates("no secret", tmp_path / "head/config.py") == []
+            assert len(calls) == 3  # Empty results are reusable too.
+        assert detect_candidates(text, tmp_path / "head/config.py") == expected
+        assert len(calls) == 4  # No result survives the review's scope.
+
+    def test_reuse_does_not_suppress_base_only_or_newly_added_secrets(self, tmp_path):
+        context, head, base = (tmp_path / name for name in ("context", "head", "base"))
+        for root in (context, head, base):
+            root.mkdir()
+        (context / "pr.json").write_text("{}")
+        (context / "diff.patch").write_text("")
+        (head / "config.py").write_text("not a secret")
+        (base / "config.py").write_text(f'password = "{PROPRIETARY_SECRET}"')
+        with reuse_secret_scans():
+            assert redact_review_inputs(context, head, {}) == []
+            base_policy = {}
+            assert redact_review_inputs(context, base, base_policy)
+            assert base_policy[RUNTIME_SECRET_VALUES] == (PROPRIETARY_SECRET,)
+            assert PROPRIETARY_SECRET not in (base / "config.py").read_text()
+            # Same name and path, different contents: it must be scanned again.
+            (head / "config.py").write_text(f'token = "{HIGH_ENTROPY}"')
+            head_policy = {}
+            assert redact_review_inputs(context, head, head_policy)
+            assert head_policy[RUNTIME_SECRET_VALUES] == (HIGH_ENTROPY,)
+            assert HIGH_ENTROPY not in (head / "config.py").read_text()
+
+    def test_scope_restores_on_failure_and_nested_reviews(self):
+        parent = None
+        assert secret_taint._SCAN_CACHE.get() is None
+        with pytest.raises(RuntimeError):
+            with reuse_secret_scans():
+                parent = secret_taint._SCAN_CACHE.get()
+                detect_candidates(f'token = "{HIGH_ENTROPY}"')
+                with reuse_secret_scans():
+                    assert secret_taint._SCAN_CACHE.get() is not parent
+                assert secret_taint._SCAN_CACHE.get() is parent
+                raise RuntimeError("review failed")
+        assert secret_taint._SCAN_CACHE.get() is None
+        assert parent is not None and parent.closed
+        assert parent.results == {}
+        parent.put((b"after", None), [(HIGH_ENTROPY, ENTROPY_KIND)])
+        assert parent.results == {}
+
+    def test_capacity_limits_evict_instead_of_skipping_detection(self, monkeypatch):
+        monkeypatch.setattr(secret_taint, "_MAX_CACHED_FILES", 2)
+        monkeypatch.setattr(secret_taint, "_MAX_CACHED_RESULT_BYTES", 100)
+        text = f'password = "{PROPRIETARY_SECRET}"'
+        expected = [(PROPRIETARY_SECRET, "Secret Keyword")]
+        with reuse_secret_scans():
+            cache = secret_taint._SCAN_CACHE.get()
+            assert cache is not None
+            for prefix in ("", "# first\n", "# second\n", ""):
+                assert detect_candidates(prefix + text) == expected
+                assert len(cache.results) <= 2
+                assert cache.result_bytes <= 100
+            monkeypatch.setattr(secret_taint, "_MAX_CACHED_RESULT_BYTES", 1)
+            # Oversize results still enforce detection, without entering cache.
+            assert detect_candidates("# oversized\n" + text) == expected
+            assert all(key[0] != secret_taint.sha256(("# oversized\n" + text).encode()).digest()
+                       for key in cache.results)
+
+    def test_cache_key_preserves_unpaired_surrogates(self):
+        text = "\ud800 " + f'token = "{HIGH_ENTROPY}"'
+        expected = detect_candidates(text)
+        with reuse_secret_scans():
+            assert detect_candidates(text) == expected

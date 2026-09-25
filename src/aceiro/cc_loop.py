@@ -61,7 +61,7 @@ from artifact import (
     sha256,
 )
 from canonicalize import read_contributor_text, read_harness_text
-from secret_taint import redact_review_inputs
+from secret_taint import redact_review_inputs, reuse_secret_scans
 from verify import Rejection, verify
 
 SUBMIT_TOOL = "mcp__review__submit_review"
@@ -997,6 +997,7 @@ def assert_no_symlinks(pr_root: Path, transcript: Transcript) -> None:
     )
 
 
+@reuse_secret_scans()
 def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify) -> int:
     """Return 0 with a verified review.json written, or non-zero with none.
 

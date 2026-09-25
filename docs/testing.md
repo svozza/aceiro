@@ -164,6 +164,55 @@ Use at least three runs before merging changes to:
 A successful rerun does not erase an earlier failure. Preserve and investigate
 the failed run, especially when different scenarios fail across attempts.
 
+## Secret-scanner performance checks
+
+Secret scanning must preserve detector results, their first-seen order, and
+redaction coverage while handling large generated files. The deterministic
+tests in `test_secret_taint.py` compare quoted-entropy detection with the former
+algorithm, exercise long minified lines, and verify cache invalidation,
+filename allowlists, bounded storage, and cleanup. `test_cc_loop.py` checks that
+the existing review entry point owns the cache for one invocation, including
+failed sessions.
+
+The cache uses the exact content digest and basename; changed contents are
+scanned again. It retains candidate results rather than source texts, with
+32,768-entry and 16 MiB candidate-text limits (excluding Python object overhead).
+All redaction and verification calls still run. Duplicate input lines are
+detected once per file, while every occurrence of a secret is redacted.
+
+A public regression fixture is Sentry's
+[`data-retention.svg` at `9966ec5`](https://github.com/getsentry/sentry/blob/9966ec5a13e331659c3ea00981f9b11b0faf821f/static/images/features/data-retention.svg):
+350,451 bytes on one line, SHA-256
+`720ba5807cfc8fc5e57a9e56702a9ced2da5c545c21dfd2f600da1036794d5ca`.
+It took 95.98 seconds with the previous scanner and 0.59 seconds with this
+implementation in a local single-run comparison. Both returned no candidates.
+These timings measure scanning only, not model review quality or whole-PR
+latency; machine load affects wall-clock measurements.
+
+After saving that pinned file to `/tmp/aceiro-scan-fixture.svg`, reproduce with:
+
+```bash
+uv run --frozen python - <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+import time
+
+sys.path.insert(0, "src/aceiro")
+from secret_taint import detect_candidates
+
+path = Path("/tmp/aceiro-scan-fixture.svg")
+data = path.read_bytes()
+assert hashlib.sha256(data).hexdigest() == (
+    "720ba5807cfc8fc5e57a9e56702a9ced2da5c545c21dfd2f600da1036794d5ca"
+)
+text = data.decode("utf-8")
+started = time.monotonic()
+candidates = detect_candidates(text, path)
+print(f"{time.monotonic() - started:.3f}s; {len(candidates)} candidates")
+PY
+```
+
 ## Scenario design
 
 Each scenario must isolate a property that the grader can establish from the
