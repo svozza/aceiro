@@ -779,8 +779,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
 
         timed_out = False
         try:
-            message = user_message + (review_budget.introduction() if review_budget is not None else "")
-            result = anyio.run(_run_session, message, options, transcript, state, output_dir,
+            result = anyio.run(_run_session, user_message, options, transcript, state, output_dir,
                                attempt, policy, budget)
         except TimeoutError:
             # Recorded here and decided below: the session was cut off, but it may

@@ -7,7 +7,7 @@ import pytest
 
 import cc_loop
 import review_budget
-from artifact import Transcript
+from artifact import Transcript, build_user_message
 from test_cc_loop import REPO_ROOT, SCENARIO, result_message
 
 
@@ -32,7 +32,6 @@ def notice(budget, event="PostToolUse", tool="Read", **data):
 
 
 def test_reminders_follow_elapsed_time_once_per_threshold(budget, clock):
-    assert "1000 seconds" in budget.introduction()
     assert notice(budget) == {}
     clock[0] = 600
     first = notice(budget)["hookSpecificOutput"]["additionalContext"]
@@ -91,7 +90,8 @@ def test_actual_review_loop_needs_no_checkpoint_and_preserves_timeout_failure(tm
         return created[-1]
 
     async def session(message, options, trace, state, result, attempt, policy, seconds):
-        assert "Review time allowance:" in message
+        assert message == build_user_message(scenario / "context")
+        assert "Review time allowance:" not in message
         assert "save_finding" not in message
         assert options.allowed_tools == ["Read", "Grep", "Glob", "mcp__review__submit_review"]
         assert options.extra_args == {"safe-mode": None}
@@ -99,6 +99,9 @@ def test_actual_review_loop_needs_no_checkpoint_and_preserves_timeout_failure(tm
         assert "Bash" in options.disallowed_tools
         assert set(options.hooks) == {"PostToolUse", "PostToolUseFailure"}
         hook = options.hooks["PostToolUse"][0].hooks[0]
+        assert await hook(
+            {"hook_event_name": "PostToolUse", "tool_name": "Read"}, None, {"signal": None},
+        ) == {}
         clock[0] += 100000
         feedback = await hook({"hook_event_name": "PostToolUse", "tool_name": "Read"}, None, {"signal": None})
         assert "submit_review now" in feedback["hookSpecificOutput"]["additionalContext"]

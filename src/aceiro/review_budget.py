@@ -15,15 +15,6 @@ class ReviewBudget:
         self.transcript = transcript
         self.stage = 0
 
-    def introduction(self) -> str:
-        return (
-            f"\n\nReview time allowance: about {int(self.seconds)} seconds for this attempt, "
-            "including thinking and tool calls. Reserve time to finish the review and "
-            "call submit_review. Budget notices after source calls "
-            "will update the remaining time. Do not promote unresolved concerns merely "
-            "because time is short."
-        )
-
     def hooks(self):
         matcher = HookMatcher(matcher="Read|Grep|Glob", hooks=[self.after_source], timeout=2)
         return {"PostToolUse": [matcher], "PostToolUseFailure": [matcher]}
