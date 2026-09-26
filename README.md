@@ -26,6 +26,11 @@ Add Aceiro to a repository and it becomes part of the pull request workflow:
 Reviewing and fixing are separate. Aceiro never changes code merely because it
 found a problem, and only users with write access can request a fix.
 
+During review generation, Aceiro tells the reviewer its available time and
+reminds it to finish as that allowance runs down. These reminders preserve the
+configured timeout. If no verified review is submitted before the limit, the
+run still fails without posting a review.
+
 ## How safety works
 
 Aceiro assumes that prompts and model behavior are not security boundaries.
