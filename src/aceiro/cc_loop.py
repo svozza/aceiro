@@ -61,6 +61,7 @@ from artifact import (
     sha256,
 )
 from canonicalize import read_contributor_text, read_harness_text
+from review_budget import ReviewBudget
 from secret_taint import redact_review_inputs, reuse_secret_scans
 from verify import Rejection, verify
 
@@ -653,7 +654,8 @@ def start_session_on(verify_fn) -> None:
 def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, user_message: str,
                   base_root: Path, pr_root: Path, output_dir: Path, make_tool, verify_fn,
                   server_name: str = "review", submit_tool_name: str = SUBMIT_TOOL,
-                  artifact_filename: str = "review.json", tool_display_name: str = "submit_review") -> int:
+                  artifact_filename: str = "review.json", tool_display_name: str = "submit_review",
+                  review_time_feedback: bool = False) -> int:
     """The generator-agnostic session loop: attempts, backoff, failure naming,
     stream capture, and the fail-closed artifact write. Everything specific to
     a channel — what the tool verifies, what the artifact is called — arrives
@@ -664,6 +666,10 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     `verify_fn` is passed in addition to being closed over by `make_tool`
     because this loop is what decides where a session begins, and a stateful
     verifier (the eval harness's fault injector) has to be told.
+
+    `review_time_feedback` enables advisory clock notices for the review caller.
+    The remediation caller keeps its existing behavior; neither path gets a
+    longer deadline or additional tools.
 
     The quarantine assertion lives here, not in the callers: this is the function
     that grants `pr_root` to a session, so every channel inherits the refusal
@@ -767,6 +773,9 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         server = build_review_server(submit, server_name)
         options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
                                 server_name, submit_tool_name, turns)
+        review_budget = ReviewBudget(budget, state, transcript) if review_time_feedback else None
+        if review_budget is not None:
+            options.hooks = review_budget.hooks()
 
         timed_out = False
         try:
@@ -1068,6 +1077,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
             schema, state, transcript, verify_fn, diff_text, changed_files, policy, guidance
         ),
         verify_fn=verify_fn,
+        review_time_feedback=True,
     )
 
 
