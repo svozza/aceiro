@@ -178,8 +178,8 @@ a valid first-party model name for direct Anthropic runs.
 
 These settings match the reusable review and `/fix` workflows. High effort is
 part of the measured generator configuration; other model/effort combinations
-need their own evaluations. The semantic judge is unchanged by the generator
-upgrade.
+need their own evaluations. The semantic judge keeps its model and prompt,
+but shares the upgraded client and the evaluation process's high effort setting.
 
 Run the review scenarios:
 
