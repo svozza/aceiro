@@ -1458,7 +1458,7 @@ class TestBundledCli:
         # must arrive as a deliberate edit here, evals re-run.
         from claude_agent_sdk._cli_version import __cli_version__
 
-        assert __cli_version__ == "2.1.220"
+        assert __cli_version__ == "2.1.283"
 
 
 class TestQuarantineContainment:

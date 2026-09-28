@@ -11,7 +11,7 @@ dependencies = [
     "markdown-it-py==4.2.0",
     # The SDK wheel bundles the Claude Code CLI. A bump changes generator
     # behavior and therefore requires model evaluations as well as unit tests.
-    "claude-agent-sdk==0.2.128",
+    "claude-agent-sdk==0.2.160",
 ]
 
 [dependency-groups]
