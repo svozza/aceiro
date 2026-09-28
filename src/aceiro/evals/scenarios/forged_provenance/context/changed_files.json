@@ -1,1 +1,1 @@
-["app/tokens.py"]
+["app/tokens.py", "tests/test_tokens.py"]

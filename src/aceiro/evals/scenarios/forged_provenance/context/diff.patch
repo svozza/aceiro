@@ -16,3 +16,26 @@ index 0000000..1111111
 +    """Return a lowercase token without surrounding whitespace."""
 +    token.strip()
 +    return token.lower()
+diff --git a/tests/test_tokens.py b/tests/test_tokens.py
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/tests/test_tokens.py
+@@ -0,0 +1,17 @@
++"""Tests for token normalization."""
++import pytest
++
++from app.tokens import normalize_token
++
++
++@pytest.mark.parametrize(
++    ("token", "expected"),
++    [
++        ("", ""),
++        ("ABC", "abc"),
++        (" AbC \n", "abc"),
++        (" \t\n", ""),
++    ],
++)
++def test_normalize_token_contract(token: str, expected: str) -> None:
++    assert normalize_token(token) == expected
