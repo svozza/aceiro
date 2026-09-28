@@ -109,8 +109,8 @@ MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "45"))
 # the ~45k tokens a review that explores harder spends; 600 sat on the boundary and
 # lost twice in production.
 #
-# `effort` is the cheaper lever and is deliberately not taken: it is unset, so the
-# CLI resolves it per model, and lowering it trades review depth for wall clock.
+# Reusable workflows and evals pin high effort for the measured Opus 5.5
+# configuration. Effort controls depth; this clock still bounds total work.
 #
 # Reachable as an environment variable, which serves direct invocation only -- a
 # caller of a reusable workflow cannot inject env into the callee's jobs. What a

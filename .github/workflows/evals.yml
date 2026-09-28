@@ -95,9 +95,10 @@ on:
       model:
         description: "Bedrock inference profile used by the generators."
         required: false
-        default: "global.anthropic.claude-opus-4-8"
+        default: "global.anthropic.claude-opus-5-5"
         type: choice
         options:
+          - "global.anthropic.claude-opus-5-5"
           - "global.anthropic.claude-opus-4-8"
           - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
       scenario:
@@ -124,9 +125,15 @@ concurrency:
 
 env:
   AWS_REGION: eu-west-1
-  BEDROCK_INFERENCE_PROFILE: global.anthropic.claude-opus-4-8
-  BEDROCK_FOUNDATION_MODEL: anthropic.claude-opus-4-8
+  BEDROCK_INFERENCE_PROFILE: global.anthropic.claude-opus-5-5
+  BEDROCK_FOUNDATION_MODELS: >-
+    {
+      "global.anthropic.claude-opus-5-5": "anthropic.claude-opus-5-5",
+      "global.anthropic.claude-opus-4-8": "anthropic.claude-opus-4-8",
+      "global.anthropic.claude-sonnet-4-5-20250929-v1:0": "anthropic.claude-sonnet-4-5-20250929-v1:0"
+    }
   ACEIRO_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8
+  ACEIRO_EVAL_JUDGE_FOUNDATION_MODEL: anthropic.claude-opus-4-8
 
 jobs:
   # Resolves the author's REAL repository permission so the jobs below can branch
@@ -314,8 +321,8 @@ jobs:
                 "Resource": [
                   "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}",
                   "arn:aws:bedrock:${{ env.AWS_REGION }}:*:inference-profile/${{ env.ACEIRO_EVAL_JUDGE_MODEL }}",
-                  "arn:aws:bedrock:*::foundation-model/${{ inputs.model == 'global.anthropic.claude-sonnet-4-5-20250929-v1:0' && 'anthropic.claude-sonnet-4-5-20250929-v1:0' || env.BEDROCK_FOUNDATION_MODEL }}",
-                  "arn:aws:bedrock:*::foundation-model/${{ env.BEDROCK_FOUNDATION_MODEL }}"
+                  "arn:aws:bedrock:*::foundation-model/${{ fromJSON(env.BEDROCK_FOUNDATION_MODELS)[inputs.model || env.BEDROCK_INFERENCE_PROFILE] }}",
+                  "arn:aws:bedrock:*::foundation-model/${{ env.ACEIRO_EVAL_JUDGE_FOUNDATION_MODEL }}"
                 ]
               }]
             }
@@ -341,7 +348,8 @@ jobs:
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLAUDE_CODE_USE_BEDROCK: "1"
-          ANTHROPIC_MODEL: ${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}
+          ANTHROPIC_MODEL: ${{ format('{0}[1m]', inputs.model || env.BEDROCK_INFERENCE_PROFILE) }}
+          CLAUDE_CODE_EFFORT_LEVEL: high
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
           DISABLE_AUTOUPDATER: "1"
@@ -378,7 +386,8 @@ jobs:
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
           CLAUDE_CODE_USE_BEDROCK: "1"
-          ANTHROPIC_MODEL: ${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}
+          ANTHROPIC_MODEL: ${{ format('{0}[1m]', inputs.model || env.BEDROCK_INFERENCE_PROFILE) }}
+          CLAUDE_CODE_EFFORT_LEVEL: high
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
           DISABLE_AUTOUPDATER: "1"

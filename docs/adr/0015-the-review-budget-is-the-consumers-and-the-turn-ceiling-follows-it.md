@@ -107,6 +107,14 @@ they did not.
 
 ## Why `effort` is not exposed alongside it
 
+**2026-09-28 update:** the reusable review and remediation workflows and their
+evals now explicitly set `CLAUDE_CODE_EFFORT_LEVEL=high` with Opus 5.5. The
+earlier model-resolved default described below is superseded. Full-snapshot
+trials found low-effort 5.5 too shallow, while high effort recovered known
+defects; the default is therefore a measured model/effort combination.
+No new consumer effort input is added. The deadline and turn-budget controls
+are unchanged, and alternative model/effort combinations remain unmeasured.
+
 The same generalisation argument reaches `effort`, and it is refused for a reason the
 budget does not share.
 

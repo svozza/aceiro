@@ -263,19 +263,61 @@ class TestEvalDispatchControls:
         text = (WORKFLOWS / "evals.yml").read_text()
         sonnet = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
         assert sonnet in text
-        assert "ANTHROPIC_MODEL: ${{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}" in text
+        assert "ANTHROPIC_MODEL: ${{ format('{0}[1m]', inputs.model || env.BEDROCK_INFERENCE_PROFILE) }}" in text
         assert f"inference-profile/${{{{ inputs.model || env.BEDROCK_INFERENCE_PROFILE }}}}" in text
 
     def test_semantic_judge_is_pinned_and_allowed_independently(self):
         text = (WORKFLOWS / "evals.yml").read_text()
         assert "ACEIRO_EVAL_JUDGE_MODEL: global.anthropic.claude-opus-4-8" in text
         assert "inference-profile/${{ env.ACEIRO_EVAL_JUDGE_MODEL }}" in text
+        assert "ACEIRO_EVAL_JUDGE_FOUNDATION_MODEL: anthropic.claude-opus-4-8" in text
+        assert "foundation-model/${{ env.ACEIRO_EVAL_JUDGE_FOUNDATION_MODEL }}" in text
+
+    def test_every_dispatch_model_has_its_own_foundation_permission(self):
+        text = (WORKFLOWS / "evals.yml").read_text()
+        model_block = re.search(r"(?ms)^      model:\n(.*?)(?=^      [\w-]+:)", text)
+        assert model_block
+        choices = re.findall(r'^\s+- "([^"]+)"$', model_block[1], re.MULTILINE)
+        mapping_block = re.search(
+            r"(?ms)^  BEDROCK_FOUNDATION_MODELS: >-\n(.*?)(?=^  [A-Z_]+:)", text,
+        )
+        assert mapping_block
+        mapping = json.loads(mapping_block[1])
+        assert set(mapping) == set(choices)
+        assert all(mapping[profile] == profile.removeprefix("global.") for profile in choices)
+        assert "foundation-model/${{ fromJSON(env.BEDROCK_FOUNDATION_MODELS)[inputs.model || env.BEDROCK_INFERENCE_PROFILE] }}" in text
 
     def test_fifteen_run_comparison_is_supported(self):
         text = (WORKFLOWS / "evals.yml").read_text()
         runs = workflow_input(text, "runs")
         assert runs["type"] == "choice"
         assert '"15"' in text
+
+
+class TestGeneratorConfiguration:
+    @pytest.mark.parametrize(("filename", "job"), [
+        ("ai-pr-review.yml", "review"), ("ai-pr-fix.yml", "plan"),
+    ])
+    def test_reusable_model_and_permission_defaults_match(self, filename, job):
+        text = (WORKFLOWS / filename).read_text()
+        profile = workflow_input(text, "bedrock-inference-profile")["default"]
+        assert profile == "global.anthropic.claude-opus-5-5"
+        assert workflow_input(text, "bedrock-foundation-model")["default"] == profile.removeprefix("global.")
+        assert workflow_input(text, "cli-model")["default"] == profile + "[1m]"
+        generators = [step for step in parse_steps(text, job) if "env.ANTHROPIC_MODEL" in step]
+        assert len(generators) == 1
+        assert generators[0]["env.ANTHROPIC_MODEL"] == "${{ inputs.cli-model }}"
+        assert generators[0]["env.CLAUDE_CODE_EFFORT_LEVEL"] == "high"
+
+    def test_evals_use_the_same_generator_defaults(self, evals_steps):
+        text = (WORKFLOWS / "evals.yml").read_text()
+        assert workflow_input(text, "model")["default"].strip('"') == "global.anthropic.claude-opus-5-5"
+        assert "BEDROCK_INFERENCE_PROFILE: global.anthropic.claude-opus-5-5" in text
+        generators = [step for step in evals_steps if "env.ANTHROPIC_MODEL" in step]
+        assert len(generators) == 2
+        for step in generators:
+            assert step["env.CLAUDE_CODE_EFFORT_LEVEL"] == "high"
+            assert step["env.ANTHROPIC_MODEL"] == "${{ format('{0}[1m]', inputs.model || env.BEDROCK_INFERENCE_PROFILE) }}"
 
 
 class TestEvalsApprovalGate:

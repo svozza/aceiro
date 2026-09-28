@@ -127,11 +127,12 @@ jobs:
     with:
       project-description: "owner/repository, a short description of the project"
       use-bedrock: false
+      cli-model: claude-opus-5-5[1m]
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-For Bedrock, omit `use-bedrock: false` and replace the secret mapping with:
+For Bedrock, omit `use-bedrock: false` and `cli-model` and replace the secret mapping with:
 
 ```yaml
     secrets:
@@ -176,12 +177,21 @@ jobs:
     with:
       project-description: "owner/repository, a short description of the project"
       use-bedrock: false
+      cli-model: claude-opus-5-5[1m]
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 Use the same Bedrock OIDC or API-key substitution as the review workflow when
 applicable.
+
+Review and `/fix` generation default to Opus 5.5 with high effort. The SDK is
+pinned to 0.2.160, which bundles Claude Code 2.1.283 with Opus 5.5 support.
+For Bedrock, the role's identity policy must allow
+`global.anthropic.claude-opus-5-5` and its
+`anthropic.claude-opus-5-5` foundation model. The workflow's session policy
+narrows that permission; it cannot grant access missing from the role.
+Explicit model inputs continue to take precedence over the defaults.
 
 Do not add a concurrency block to either caller. The reusable workflows define
 their own per-pull-request concurrency behavior.
