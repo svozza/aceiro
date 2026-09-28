@@ -186,8 +186,8 @@ Use the same Bedrock OIDC or API-key substitution as the review workflow when
 applicable.
 
 Review and `/fix` generation default to Opus 5.5 with high effort. The SDK is
-pinned to 0.2.160, which bundles Claude Code 2.1.283; older clients cannot invoke
-Opus 5.5. For Bedrock, the role's identity policy must allow
+pinned to 0.2.160, which bundles Claude Code 2.1.283 with Opus 5.5 support.
+For Bedrock, the role's identity policy must allow
 `global.anthropic.claude-opus-5-5` and its
 `anthropic.claude-opus-5-5` foundation model. The workflow's session policy
 narrows that permission; it cannot grant access missing from the role.
