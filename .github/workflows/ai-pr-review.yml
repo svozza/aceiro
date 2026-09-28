@@ -84,12 +84,12 @@ on:
         description: Invoked profile; also the session policy's resource and the attribution stamp.
         type: string
         required: false
-        default: global.anthropic.claude-opus-4-8
+        default: global.anthropic.claude-opus-5-5
       bedrock-foundation-model:
         description: Foundation-model id the session policy allows (region-wildcarded).
         type: string
         required: false
-        default: anthropic.claude-opus-4-8
+        default: anthropic.claude-opus-5-5
       cli-model:
         description: >-
           What the CLI is told to use. On Bedrock this is the inference profile
@@ -99,7 +99,7 @@ on:
           no real resource. For the API arm, a first-party model name.
         type: string
         required: false
-        default: global.anthropic.claude-opus-4-8[1m]
+        default: global.anthropic.claude-opus-5-5[1m]
       agent-timeout-minutes:
         description: >-
           How long the review may take. This is the agent's WHOLE budget: it sets
@@ -399,6 +399,7 @@ jobs:
           AWS_BEARER_TOKEN_BEDROCK: ${{ inputs.use-bedrock && inputs.use-bedrock-api-key && secrets.BEDROCK_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ !inputs.use-bedrock && secrets.ANTHROPIC_API_KEY || '' }}
           ANTHROPIC_MODEL: ${{ inputs.cli-model }}
+          CLAUDE_CODE_EFFORT_LEVEL: high
           ACEIRO_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
           # No telemetry, no auto-update inside a credential-bearing job.
           DISABLE_TELEMETRY: "1"

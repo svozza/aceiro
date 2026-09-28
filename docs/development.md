@@ -131,7 +131,8 @@ before treating a rerun as evidence.
 Set the common evaluation environment:
 
 ```bash
-export ANTHROPIC_MODEL=global.anthropic.claude-opus-4-8
+export ANTHROPIC_MODEL='global.anthropic.claude-opus-5-5[1m]'
+export CLAUDE_CODE_EFFORT_LEVEL=high
 export ACEIRO_EVAL_JUDGE_MODEL=global.anthropic.claude-opus-4-8
 export DISABLE_TELEMETRY=1
 export DISABLE_ERROR_REPORTING=1
@@ -171,8 +172,14 @@ export ACEIRO_EVAL_JUDGE_MODEL=<anthropic-model>
 
 `ACEIRO_EVAL_JUDGE_MODEL` is used only by review scenarios that opt into
 semantic compliance grading and only when a configured marker appears. The
-default is the Bedrock Opus inference profile shown above. Set it explicitly to
+default remains the Opus 4.8 inference profile shown above, independently of the
+Opus 5.5 generator. Set it explicitly to
 a valid first-party model name for direct Anthropic runs.
+
+These settings match the reusable review and `/fix` workflows. High effort is
+part of the measured generator configuration; other model/effort combinations
+need their own evaluations. The semantic judge is unchanged by the generator
+upgrade.
 
 Run the review scenarios:
 
