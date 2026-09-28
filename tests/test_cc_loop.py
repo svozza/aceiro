@@ -17,7 +17,7 @@ import cc_loop
 import pytest
 import secret_taint
 from artifact import build_artifact_schema, redact_secrets, redact_text
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk import AssistantMessage, ProcessError, ResultError, ResultMessage, TextBlock, ToolUseBlock
 from conftest import POLICY
 
 HARNESS_DIR = Path(__file__).parent.parent / "src" / "aceiro"
@@ -847,17 +847,79 @@ class TestRunFailureModes:
 
 class TestTheEnvelopeOutranksTheTeardownException:
     """ADR-0019. The CLI exits non-zero on purpose after an error result and
-    the SDK re-raises that exit as a bare Exception AFTER delivering the
-    envelope — an exception that escaped every arm of the retry ladder and
-    once killed a run over a process-teardown anomaly (notes §11). Once the
-    envelope arrived, it classifies the session; without one, the exception
-    stays a crash."""
+    the SDK raises a typed ResultError (formerly a bare Exception) after
+    delivering the envelope. Only a captured error envelope can classify that
+    exit; other exceptions must still fail."""
 
     API_ERROR_ENVELOPE = dict(
         subtype="success", is_error=True, terminal_reason="api_error",
         result="API Error: 503 ServiceUnavailable", api_error_status=503,
     )
     TEARDOWN_EXC_TEXT = cc_loop.SDK_STREAM_ERROR_PREFIX + "success"
+
+    def teardown_error(self, error_type):
+        if error_type is ResultError:
+            return ResultError(
+                "Claude Code returned an error result: API Error: 503 ServiceUnavailable",
+                data={**self.API_ERROR_ENVELOPE, "session_id": "s"}, exit_code=1,
+            )
+        return Exception(self.TEARDOWN_EXC_TEXT)
+
+    def test_the_installed_sdk_delivers_the_envelope_before_its_exit_wrapper(self):
+        """Exercise the real SDK reader, so another SDK bump tests this boundary."""
+        from dataclasses import asdict
+
+        from claude_agent_sdk import Transport, query as sdk_query
+
+        envelope = {"type": "result", **asdict(result_message(**self.API_ERROR_ENVELOPE))}
+
+        class ErrorResultTransport(Transport):
+            def __init__(self):
+                self.send, self.receive = anyio.create_memory_object_stream(10)
+
+            async def connect(self):
+                pass
+
+            async def write(self, data):
+                message = json.loads(data)
+                if message["type"] == "control_request":
+                    await self.send.send({
+                        "type": "control_response",
+                        "response": {
+                            "subtype": "success", "request_id": message["request_id"],
+                            "response": {},
+                        },
+                    })
+                elif message["type"] == "user":
+                    await self.send.send(envelope)
+
+            async def read_messages(self):
+                async for message in self.receive:
+                    yield message
+                    if message["type"] == "result":
+                        raise ProcessError("Command failed with exit code 1", exit_code=1)
+
+            async def close(self):
+                await self.send.aclose()
+                await self.receive.aclose()
+
+            def is_ready(self):
+                return True
+
+            async def end_input(self):
+                pass
+
+        async def exercise_sdk():
+            messages = []
+            with anyio.fail_after(5), pytest.raises(ResultError) as raised:
+                async for message in sdk_query(prompt="test", transport=ErrorResultTransport()):
+                    messages.append(message)
+            assert len(messages) == 1 and isinstance(messages[0], ResultMessage)
+            assert messages[0].api_error_status == 503
+            assert raised.value.api_error_status == 503
+            assert cc_loop.is_sdk_stream_error(raised.value)
+
+        anyio.run(exercise_sdk)
 
     def spy_submit(self, monkeypatch):
         created = []
@@ -868,10 +930,12 @@ class TestTheEnvelopeOutranksTheTeardownException:
         )
         return created
 
-    def test_a_teardown_exception_after_an_api_error_envelope_is_retried(self, tmp_path, monkeypatch):
-        # The §11 reproduction: envelope delivered, then the bare Exception.
-        # Before the fix this escaped run() entirely; now the envelope reaches
-        # the api_error arm and the run retries into a successful session.
+    @pytest.mark.parametrize("error_type", [Exception, ResultError])
+    def test_a_teardown_exception_after_an_api_error_envelope_is_retried(
+        self, tmp_path, monkeypatch, error_type,
+    ):
+        # Both SDK exit wrappers must leave the error envelope available to
+        # the retry ladder, including after a rejected partial submission.
         waits = []
         monkeypatch.setattr(cc_loop.time, "sleep", waits.append)
         created = self.spy_submit(monkeypatch)
@@ -881,8 +945,12 @@ class TestTheEnvelopeOutranksTheTeardownException:
         async def _query(prompt, options):
             sessions.append(len(sessions) + 1)
             if len(sessions) == 1:
+                # Run 36433006668 submitted incomplete arguments before the
+                # provider failed. Rejection must survive the session restart.
+                rejection = await created[-1].handler({"findings": [], "residual_risk": "cut off"})
+                assert rejection["is_error"]
                 yield result_message(**self.API_ERROR_ENVELOPE)
-                raise Exception(self.TEARDOWN_EXC_TEXT)
+                raise self.teardown_error(error_type)
             await created[-1].handler(artifact)
             yield result_message()
 
@@ -893,8 +961,13 @@ class TestTheEnvelopeOutranksTheTeardownException:
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
         errors = [e for e in transcript_events(tmp_path) if e["event"] == "api_error"]
         assert errors and errors[0]["api_error_status"] == 503
+        assert len(sessions) == 2
+        assert len([e for e in transcript_events(tmp_path) if e["event"] == "submit_rejected"]) == 1
 
-    def test_a_verified_artifact_survives_the_teardown_exception(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("error_type", [Exception, ResultError])
+    def test_a_verified_artifact_survives_the_teardown_exception(
+        self, tmp_path, monkeypatch, error_type,
+    ):
         # The production stake: the session got a review through the verifier,
         # then died on teardown. Delivering beats retrying, exactly as on the
         # api_error arm this envelope now reaches.
@@ -905,12 +978,80 @@ class TestTheEnvelopeOutranksTheTeardownException:
         async def _query(prompt, options):
             await created[-1].handler(artifact)
             yield result_message(**self.API_ERROR_ENVELOPE)
-            raise Exception(self.TEARDOWN_EXC_TEXT)
+            raise self.teardown_error(error_type)
 
         monkeypatch.setattr(cc_loop, "query", _query)
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 0
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
+
+    def test_typed_error_without_an_envelope_is_not_retried(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not retry"))
+
+        async def _query(prompt, options):
+            raise self.teardown_error(ResultError)
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
+        assert not (tmp_path / "review.json").exists()
+
+    @pytest.mark.parametrize("after_error_result", [False, True])
+    def test_a_plain_process_crash_does_not_inherit_an_envelope(
+        self, tmp_path, monkeypatch, after_error_result,
+    ):
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not retry"))
+
+        async def _query(prompt, options):
+            if after_error_result:
+                yield result_message(**self.API_ERROR_ENVELOPE)
+            raise ProcessError("unexpected process crash", exit_code=9)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
+        assert not (tmp_path / "review.json").exists()
+
+    def test_a_programming_error_after_an_error_envelope_still_propagates(
+        self, tmp_path, monkeypatch,
+    ):
+        async def _query(prompt, options):
+            yield result_message(**self.API_ERROR_ENVELOPE)
+            raise TypeError(self.TEARDOWN_EXC_TEXT)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        with pytest.raises(TypeError):
+            cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+
+    def test_a_typed_error_after_a_success_envelope_is_not_treated_as_teardown(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not retry"))
+
+        async def _query(prompt, options):
+            yield result_message()
+            raise self.teardown_error(ResultError)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
+        assert not (tmp_path / "review.json").exists()
+
+    def test_a_typed_permanent_api_error_preserves_its_diagnosis(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cc_loop.time, "sleep", lambda _s: pytest.fail("must not retry"))
+        fields = {
+            **self.API_ERROR_ENVELOPE,
+            "result": "API Error: 403 not authorized to perform: bedrock:InvokeModel",
+            "api_error_status": 403,
+        }
+
+        async def _query(prompt, options):
+            yield result_message(**fields)
+            raise ResultError("request denied", data=fields, exit_code=1)
+
+        monkeypatch.setattr(cc_loop, "query", _query)
+        assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
+        events = transcript_events(tmp_path)
+        assert next(e for e in events if e["event"] == "api_error")["api_error_status"] == 403
+        assert "unretryable API error" in next(e for e in events if e["event"] == "run_failed")["reason"]
 
     def test_the_exception_without_an_envelope_stays_a_crash(self, tmp_path, monkeypatch):
         # In-order delivery means the prefixed text without an envelope can

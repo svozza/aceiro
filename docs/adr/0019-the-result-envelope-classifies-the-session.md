@@ -85,3 +85,28 @@ connect-time failures, and a mid-stream crash without an envelope escapes as
 a bare exception rather than the arm's clean "exited N without a result
 envelope" failure. That was equally true before this change; it is named
 here so nobody reads the `ProcessError` arm as covering it.
+
+## SDK 0.2.160 update (2026-09-28)
+
+Run [36433006668](https://github.com/svozza/aceiro/actions/runs/36433006668)
+exposed a changed exception type after the SDK upgrade. The reviewer submitted
+incomplete arguments, which verification rejected. Bedrock then returned 503
+errors through ten CLI retries. The stream contained an error `ResultMessage`,
+but the SDK raised its new `ResultError` afterward. That class inherits
+`ProcessError`, so the old exact-`Exception` predicate rejected it and the outer
+handler incorrectly reported an exit without a result envelope. The existing
+API-error record, retry path and verified-artifact preservation were bypassed.
+
+Recognize the SDK's exact `ResultError` type alongside its legacy bare-exception
+wrapper, and recover only after an error result has actually been captured.
+A successful or absent envelope, plain `ProcessError`, and unrelated exception
+remain failures. The existing retry budget, permission-error handling, verifier
+and submission breaker are unchanged. The `api_error` metric still counts
+terminal session API failures; the CLI's internal retries remain visible in
+the captured stream.
+
+The regression tests cover the observed rejected-submission/error-result/typed-
+exception sequence, preserving a verified artifact, refusing permission retries,
+and keeping genuine process and programming errors out of the retry path.
+An in-memory transport also exercises the installed SDK's actual message reader
+and exit-wrapper behavior, rather than relying only on mocked `query()` output.

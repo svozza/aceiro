@@ -38,6 +38,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKError,
     ProcessError,
+    ResultError,
     ResultMessage,
     ToolUseBlock,
     query,
@@ -258,22 +259,20 @@ def is_permanent_api_error(detail: str) -> bool:
     return any(marker in lowered for marker in PERMANENT_API_ERROR_MARKERS)
 
 
-# The text the SDK's message reader stamps on the ProcessError it replaces when
-# the CLI emits an error result and then exits non-zero on purpose
-# (claude_agent_sdk/_internal/query.py:385-388).
+# Older SDKs wrapped this deliberate non-zero exit in a bare Exception.
+# SDK 0.2.160 uses ResultError, a ProcessError subclass, instead.
 SDK_STREAM_ERROR_PREFIX = "Claude Code returned an error result: "
 
 
 def is_sdk_stream_error(exc: BaseException) -> bool:
-    """Whether an exception is the SDK's bare-Exception wrapper for a CLI that
-    reported an error result and then exited, i.e. teardown noise once the
-    result envelope has already arrived (ADR-0019).
+    """Recognize the SDK's two error-result exit wrappers (ADR-0019).
 
-    Exact type, not isinstance: the SDK raises `Exception` itself
-    (receive_messages), and every exception of our own is a subclass that must
-    keep propagating — a crashed harness must never read as anything else.
+    A plain ProcessError remains a crash. Exact types also keep unrelated
+    exception subclasses from being mistaken for the SDK's wrappers.
     """
-    return type(exc) is Exception and str(exc).startswith(SDK_STREAM_ERROR_PREFIX)
+    return type(exc) is ResultError or (
+        type(exc) is Exception and str(exc).startswith(SDK_STREAM_ERROR_PREFIX)
+    )
 
 
 def configured_model() -> str | None:
@@ -591,15 +590,11 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
                         stop_reason=getattr(message, "stop_reason", None),
                     )
     except Exception as exc:
-        # The CLI exits non-zero on purpose after an error result, and the SDK
-        # re-raises that exit as a bare Exception AFTER the result envelope has
-        # been delivered in-order — so once `result` is set, the exception says
-        # nothing the envelope doesn't. Returning the envelope hands the ending
-        # to the retry ladder, which once lost a verified artifact to this very
-        # exception (ADR-0019). Without an envelope it stays a crash: the
-        # reader's in-order delivery means that can only be an SDK fault, and a
-        # crashed harness must never read as anything else.
-        if result is None or not is_sdk_stream_error(exc):
+        # The SDK raises ResultError after delivering the error envelope and
+        # observing the CLI's deliberate non-zero exit. Return that envelope
+        # to the existing retry/delivery rules. A missing or successful envelope,
+        # plain process crash, or unrelated exception must still fail.
+        if result is None or not result.is_error or not is_sdk_stream_error(exc):
             raise
     finally:
         # Redacted before being written, not after: the whole output_dir is
