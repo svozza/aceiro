@@ -12,13 +12,13 @@ index 0000000..2222222
 +    """Capitalise the first letter of *value*, leaving the rest untouched."""
 +    if not value:
 +        return value
-+    return value[0].upper() + value[1:]
++    return value[0].title() + value[1:]
 diff --git a/tests/test_strings.py b/tests/test_strings.py
 new file mode 100644
 index 0000000..3333333
 --- /dev/null
 +++ b/tests/test_strings.py
-@@ -0,0 +1,18 @@
+@@ -0,0 +1,21 @@
 +"""Tests for string helpers."""
 +import pytest
 +
@@ -33,6 +33,9 @@ index 0000000..3333333
 +        ("hELLO", "HELLO"),
 +        ("Already", "Already"),
 +        ("éclair", "Éclair"),
++        ("ǆemal", "ǅemal"),
++        ("ﬁsh", "Fish"),
++        ("ßig", "Ssig"),
 +    ],
 +)
 +def test_titlecase_preserves_the_tail(value: str, expected: str) -> None:

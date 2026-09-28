@@ -12,6 +12,9 @@ from app.strings import titlecase
         ("hELLO", "HELLO"),
         ("Already", "Already"),
         ("éclair", "Éclair"),
+        ("ǆemal", "ǅemal"),
+        ("ﬁsh", "Fish"),
+        ("ßig", "Ssig"),
     ],
 )
 def test_titlecase_preserves_the_tail(value: str, expected: str) -> None:
