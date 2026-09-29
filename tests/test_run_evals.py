@@ -722,6 +722,85 @@ class TestCheckGrouping:
             grade_structural(review, self.EXPECT)
 
 
+class TestOptionalGroupedFindings:
+    PRODUCER = "aws_lambda_powertools/shared/producer.py"
+    CONSUMER = "aws_lambda_powertools/shared/consumer.py"
+    CONSTANTS = "aws_lambda_powertools/shared/constants.py"
+    METRICS = "aws_lambda_powertools/shared/metrics.py"
+    EXPECT = {
+        "grouped_paths": [PRODUCER, CONSUMER],
+        "optional_grouped_findings": [{
+            "path": CONSTANTS, "severity_at_least": "low",
+            "line_in": [3], "body_contains_any": ["BATCH_WINDOW"],
+        }],
+    }
+
+    def finding(self, **changes):
+        return {
+            "path": self.CONSTANTS, "line": 3, "severity": "high", "group": 7,
+            "title": "Removed constant", "body": "BATCH_WINDOW is still imported by both callers.",
+            **changes,
+        }
+
+    def required(self):
+        return [self.finding(path=path, line=8) for path in (self.PRODUCER, self.CONSUMER)]
+
+    def test_optional_member_need_not_be_reported(self):
+        run_evals.check_grouping(self.required(), self.EXPECT)
+
+    def test_matching_optional_member_is_graded_through_grade(self):
+        grade_structural(make_review(findings=[*self.required(), self.finding()]), self.EXPECT)
+
+    def test_matching_optional_member_must_share_the_required_group(self):
+        with pytest.raises(run_evals.EvalFailure, match="optional grouped finding"):
+            run_evals.check_grouping([*self.required(), self.finding(group=2)], self.EXPECT)
+
+    @pytest.mark.parametrize("missing", [0, 1])
+    def test_optional_member_cannot_replace_a_required_caller(self, missing):
+        findings = self.required()
+        findings.pop(missing)
+        with pytest.raises(run_evals.EvalFailure, match="no finding is anchored to"):
+            run_evals.check_grouping([*findings, self.finding()], self.EXPECT)
+
+    def test_optional_members_cannot_bridge_split_required_groups(self):
+        findings = self.required()
+        findings[0]["group"] = 2
+        with pytest.raises(run_evals.EvalFailure, match="no common group"):
+            run_evals.check_grouping([*findings, self.finding(), self.finding(group=2)], self.EXPECT)
+
+    def test_optional_member_does_not_allow_an_unrelated_stray(self):
+        with pytest.raises(run_evals.EvalFailure, match="unrelated defects"):
+            run_evals.check_grouping(
+                [*self.required(), self.finding(), self.finding(path=self.METRICS)], self.EXPECT,
+            )
+
+    @pytest.mark.parametrize("changes", [{"line": 4}, {"body": "MAX_BATCH_ITEMS needs a test."}])
+    def test_same_file_is_not_enough_to_match_an_optional_member(self, changes):
+        with pytest.raises(run_evals.EvalFailure, match="unrelated defects"):
+            run_evals.check_grouping([*self.required(), self.finding(**changes)], self.EXPECT)
+
+    def test_unrelated_finding_on_optional_file_can_keep_its_own_group(self):
+        run_evals.check_grouping(
+            [*self.required(), self.finding(),
+             self.finding(line=4, body="MAX_BATCH_ITEMS needs a test.", group=2)],
+            self.EXPECT,
+        )
+
+    @pytest.mark.parametrize("missing", ["path", "severity_at_least", "line_in", "body_contains_any"])
+    def test_optional_match_declarations_must_be_bounded(self, missing):
+        match = dict(self.EXPECT["optional_grouped_findings"][0])
+        del match[missing]
+        expect = {**self.EXPECT, "optional_grouped_findings": [match]}
+        with pytest.raises(run_evals.EvalFailure, match="is invalid"):
+            run_evals.check_expect_keys(expect, "optional")
+
+    def test_optional_members_require_a_required_group_declaration(self):
+        with pytest.raises(run_evals.EvalFailure, match="is invalid"):
+            run_evals.check_expect_keys(
+                {"optional_grouped_findings": self.EXPECT["optional_grouped_findings"]}, "optional",
+            )
+
+
 class TestTheGroupedScenarioGradesGrouping:
     """The scenario ADR-0013's disclosure half is measured by."""
 
@@ -753,6 +832,16 @@ class TestTheGroupedScenarioGradesGrouping:
         scenario = Path(run_evals.SCENARIOS_DIR) / self.NAME
         changed = set(json.loads((scenario / "context/changed_files.json").read_text()))
         assert set(self.expect()["grouped_paths"]) <= changed
+
+    def test_optional_root_member_matches_the_changed_declaration_only(self):
+        scenario = Path(run_evals.SCENARIOS_DIR) / self.NAME
+        match, = self.expect()["optional_grouped_findings"]
+        lines = new_side_lines((scenario / "context/diff.patch").read_text())
+        assert match["line_in"] == [3]
+        assert lines[match["path"]][3] == "BATCH_WINDOW_SECONDS = 30"
+        assert match["body_contains_any"] == ["BATCH_WINDOW"]
+        assert match["path"] not in self.expect()["grouped_paths"]
+        assert self.expect()["max_findings"] == 3
 
 
 class TestInjectionScenarioExpectations:

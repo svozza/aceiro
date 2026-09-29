@@ -65,6 +65,7 @@ TOOL_USE_MATCH_SCHEMA: JsonSchema = {
 REVIEW_EXPECT_SCHEMA: JsonSchema = {
     "type": "object",
     "additionalProperties": False,
+    "dependentRequired": {"optional_grouped_findings": ["grouped_paths"]},
     "properties": {
         "verify_must_pass": {"type": "boolean"},
         "max_findings": NONNEGATIVE_INTEGER,
@@ -87,6 +88,14 @@ REVIEW_EXPECT_SCHEMA: JsonSchema = {
         "inject_rejection_reason": NONEMPTY_STRING,
         "max_submit_rejections": NONNEGATIVE_INTEGER,
         "grouped_paths": NONEMPTY_STRING_ARRAY,
+        "optional_grouped_findings": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                **FINDING_MATCH_SCHEMA,
+                "required": [*FINDING_MATCH_SCHEMA["required"], "line_in", "body_contains_any"],
+            },
+        },
         "context_from": NONEMPTY_STRING,
         "stripped_paths": NONEMPTY_STRING_ARRAY,
         "description": NONEMPTY_STRING,
