@@ -180,6 +180,21 @@ scanned again. It retains candidate results rather than source texts, with
 All redaction and verification calls still run. Duplicate input lines are
 detected once per file, while every occurrence of a secret is redacted.
 
+Hash and UUID containers are also computed once per candidate-bearing line,
+instead of searching the entire line again for each candidate. Lines without
+candidates still skip that work. Tests preserve substring suppression, candidate
+order and independence between lines, and count the full-line searches directly.
+
+Grafana's `pkg/promlib/converter/testdata/prom-exemplars-b.json` at
+`26fed312840cd76b766cbd2158e17a7e6c0ec548` is a public regression fixture:
+402,894 characters on one line. In a local comparison, scanning it fell from
+139.71 seconds to 1.04 seconds, returning the same 94 candidates. Preparation
+of the full Grafana snapshot fell from 431.67 to 183.42 seconds. The original
+and optimized runs produced identical assembled prompts, runtime secret order,
+policy and redacted source trees. These are single-run preparation measurements,
+not model accuracy or end-to-end review measurements; the two runs overlapped
+on a four-CPU machine.
+
 A public regression fixture is Sentry's
 [`data-retention.svg` at `9966ec5`](https://github.com/getsentry/sentry/blob/9966ec5a13e331659c3ea00981f9b11b0faf821f/static/images/features/data-retention.svg):
 350,451 bytes on one line, SHA-256

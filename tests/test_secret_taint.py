@@ -278,6 +278,51 @@ class TestRepeatedLines:
         assert (head / "config.py").read_text().count(candidates[0].placeholder) == 3
 
 
+class TestLineContainers:
+    def test_many_candidates_scan_containers_once_and_preserve_order(self, monkeypatch):
+        calls = []
+
+        class CountedPattern:
+            def __init__(self, pattern):
+                self.pattern = pattern
+
+            def finditer(self, line):
+                calls.append(self.pattern.pattern)
+                return self.pattern.finditer(line)
+
+        for name in ("_UUID_IN_TEXT_RE", "_COMMON_HASH_IN_TEXT_RE"):
+            monkeypatch.setattr(secret_taint, name, CountedPattern(getattr(secret_taint, name)))
+        # The short hex candidate also occurs inside a full content hash. Keep
+        # the existing suppression rule, alongside real candidates and repeats.
+        line = " ".join([
+            f'password = "{PROPRIETARY_SECRET}"',
+            f'"{HEX_SECRET}abcdef12"',
+            f'"{HEX_SECRET}"',
+            '"123e4567-e89b-12d3-a456-426614174000"',
+            *[f'"{HIGH_ENTROPY}"' for _ in range(100)],
+            f'"{HIGH_ENTROPY[::-1]}"',
+        ])
+        assert detect_candidates(line) == [
+            (PROPRIETARY_SECRET, "Secret Keyword"),
+            (HIGH_ENTROPY, ENTROPY_KIND),
+            (HIGH_ENTROPY[::-1], ENTROPY_KIND),
+        ]
+        assert len(calls) == 2
+
+    def test_a_previous_lines_hash_cannot_hide_a_secret(self):
+        text = f'"{HEX_SECRET}abcdef12"\n"{HEX_SECRET}"'
+        assert detect_candidates(text) == [(HEX_SECRET, "Hex High Entropy String")]
+
+    def test_container_scans_remain_lazy_without_candidates(self, monkeypatch):
+        class UnexpectedScan:
+            def finditer(self, line):
+                raise AssertionError("container scan without a candidate")
+
+        monkeypatch.setattr(secret_taint, "_UUID_IN_TEXT_RE", UnexpectedScan())
+        monkeypatch.setattr(secret_taint, "_COMMON_HASH_IN_TEXT_RE", UnexpectedScan())
+        assert detect_candidates("ordinary review context") == []
+
+
 class TestReviewScanReuse:
     def test_reuses_content_across_roots_but_not_edits_or_lockfile_names(self, tmp_path, monkeypatch):
         original = secret_taint._detect_candidates
