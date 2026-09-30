@@ -230,13 +230,17 @@ def _detect_candidates(text: str, path: Path | None) -> list[tuple[str, str]]:
             matches = [(secret.secret_value, secret.type) for secret in scan_line(line)]
             for plugin in _ENTROPY_PLUGINS:
                 matches.extend((value, plugin.secret_type) for value in _quoted_high_entropy(plugin, line))
+            allowlisted_containers = None
             for value, kind in matches:
                 if value is None:
                     continue
-                allowlisted_containers = [
-                    *(match.group() for match in _UUID_IN_TEXT_RE.finditer(line)),
-                    *(match.group() for match in _COMMON_HASH_IN_TEXT_RE.finditer(line)),
-                ]
+                # These depend only on the line, not on the candidate. A long
+                # generated line can contain thousands of candidate matches.
+                if allowlisted_containers is None:
+                    allowlisted_containers = [
+                        *(match.group() for match in _UUID_IN_TEXT_RE.finditer(line)),
+                        *(match.group() for match in _COMMON_HASH_IN_TEXT_RE.finditer(line)),
+                    ]
                 if any(value in container for container in allowlisted_containers):
                     continue
                 if value in seen or _is_allowlisted(value, kind, path):
