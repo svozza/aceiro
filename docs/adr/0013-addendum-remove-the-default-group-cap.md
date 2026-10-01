@@ -31,6 +31,14 @@ cap configuration. Earlier experiment failures from tests that assumed a
 shipped numeric cap remain in the local evidence; these assertions now test
 the intended default and explicitly configured limits separately.
 
+Release CI also reached the grouping fixture's documented optional-root
+limitation: a correct finding on the removed constant was rejected when
+grouped with its two broken callers. The retained evaluation correction
+allows that exact root location and diagnosis without requiring it. Both
+callers remain required, a reported matching root must share their group,
+unrelated findings remain excluded, and the three-finding scenario maximum
+is unchanged. This changes grading only; the reviewer inputs are unchanged.
+
 Raw trials and source assessments remain private local evidence under
 `/home/ec2-user/aceiro-eval-runs/production-no-cap-20261001` and
 `/home/ec2-user/aceiro-eval-runs/prompt-experiments-20261001`.
