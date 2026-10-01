@@ -620,7 +620,14 @@ def check_grouping(findings: list[dict], expect: dict) -> None:
     directions of that — which is what makes one key enough:
 
     - EVERY finding on those paths carries ONE group, and
-    - no finding OUTSIDE them carries that group.
+    - no finding OUTSIDE them carries that group, except a declared optional
+      member matching its path, line, severity and diagnosis.
+
+    `optional_grouped_findings` uses the existing finding-match vocabulary.
+    Matching findings need not exist, but if present must share the required
+    group's label. They never substitute for a missing required finding or
+    bridge required findings that disagree. Other findings on an optional
+    member's file receive no exemption.
 
     The second half is not decoration. Without it, a model that puts every finding in
     group 1 satisfies the first half trivially, and that answer is worse than no
@@ -682,12 +689,21 @@ def check_grouping(findings: list[dict], expect: dict) -> None:
             "them together (ADR-0013)"
         )
 
-    # The other direction: whatever group they share must be theirs ALONE, or the
-    # claim is "everything is one defect", which the harness would render as a
-    # cross-reference between unrelated findings.
+    optional = [
+        finding for finding in findings
+        if any(finding_matches(finding, match)
+               for match in expect.get("optional_grouped_findings", []))
+    ]
+    if any(finding["group"] not in shared for finding in optional):
+        raise EvalFailure(
+            "an optional grouped finding does not share the required findings' group"
+        )
+
+    # Only explicitly matched optional members may join the required group.
+    # An optional location does not exempt its entire file from the stray check.
     strays = sorted({
         finding["path"] for finding in findings
-        if finding["path"] not in wanted and finding["group"] in shared
+        if finding["path"] not in wanted and finding["group"] in shared and finding not in optional
     })
     if strays:
         raise EvalFailure(

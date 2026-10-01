@@ -384,6 +384,13 @@ def render_constraints(policy: dict) -> str:
     schema = review_properties(policy)
     fields = finding_properties(policy)
     allowlist = policy["markdown"]["link_host_allowlist"]
+    group_cap = policy["review"].get("max_distinct_groups")
+    group_rule = (
+        "- No separate limit on distinct defect groups; the total finding-entry limit still applies.\n"
+        if group_cap is None
+        else f"- At most {group_cap} distinct defect groups across all findings. "
+        "Prioritize the most severe defects; do not combine unrelated defects to fit this limit.\n"
+    )
 
     # The allowlist ships EMPTY (fail-closed: a consumer names the hosts it
     # trusts), so both link clauses have to read correctly with nothing on the
@@ -412,6 +419,7 @@ def render_constraints(policy: dict) -> str:
         "\n\n## Enforced artifact constraints (verifier-rejected if violated)\n\n"
         f"- At most {finding_limit(policy)} findings; severity is one of "
         f"{', '.join(f'`{s}`' for s in severity_values(policy))}.\n"
+        f"{group_rule}"
         f"- Length caps: summary {schema['summary']['maxLength']}, title "
         f"{fields['title']['maxLength']}, body {fields['body']['maxLength']}, "
         f"residual_risk {schema['residual_risk']['maxLength']} characters.\n"

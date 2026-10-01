@@ -39,7 +39,7 @@
     "required": ["summary", "findings", "residual_risk"]
   },
   "review": {
-    "max_distinct_groups": 4
+    "max_distinct_groups": null
   },
   "provenance": {
     "path_must_be_changed_file": true,
