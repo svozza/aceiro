@@ -207,8 +207,7 @@ class TestEveryTopLevelSpecIsEnforced:
 
 
 class TestTheDistinctGroupCapIsABoundThatCanFire:
-    """ADR-0013's second safety property: "The verifier bounds it and never believes
-    it. Integer, range, a cap on distinct groups."
+    """A consumer-configured cap bounds distinct groups without trusting identity.
 
     `check_group_cardinality` and `max_distinct_groups` arrived with ZERO tests —
     every arm was deletable with the suite green, including the call site and the
@@ -216,9 +215,9 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
     `group: [1,10]`, so `len(distinct) > 10` was unsatisfiable: a rule that read as
     enforcement while enforcing nothing.
 
-    The cap bounds the PARTITION, where the per-field range bounds each value. Ten
-    findings in ten groups occupy only `group`'s declared range and satisfy every
-    per-field bound, which is why both bounds exist.
+    The optional cap bounds the PARTITION, where the per-field range bounds each
+    value. The shipped policy allows ten groups within its ten-entry limit;
+    consumers may configure a tighter cap.
 
     Every case runs against a deep-copied policy. policy.json is never mutated by a
     test — the fixture is function-scoped and copied precisely because a dozen
@@ -266,6 +265,7 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
         # SCALAR_KEYS' rule for a key with no reader, applied to a reader with no
         # key: the cap would read as a bound on grouping in a policy where nothing is
         # grouped. Refused rather than passing vacuously.
+        policy["review"]["max_distinct_groups"] = 2
         del policy["artifact_schema"]["properties"]["findings"]["items"]["properties"]["group"]
         policy["artifact_schema"]["properties"]["findings"]["items"]["required"].remove("group")
         artifact = self.grouped([1])
@@ -293,39 +293,13 @@ class TestTheDistinctGroupCapIsABoundThatCanFire:
         del policy["review"]["max_distinct_groups"]
         verify(self.grouped([1, 2, 3, 4, 5]), sample_diff, changed_files, policy)
 
-    def test_the_SHIPPED_cap_is_satisfiable(self, policy):
-        """The assertion whose absence let a vacuous bound ship.
+    def test_the_shipped_policy_has_no_separate_group_cap(self, policy):
+        assert policy["review"]["max_distinct_groups"] is None
 
-        The cap can only fire below `min(max_items, |group range|)` — at or above
-        that number no artifact can reach it. It shipped AT that number, so
-        `len(distinct) > cap` was unsatisfiable and every arm of the check was dead
-        code that read as a safety property.
-
-        Derived from the shipped policy rather than compared against a literal, so a
-        future `max_items` bump or a widened group range cannot silently re-vacate
-        the cap: this fails, and the number moves with the bounds it depends on.
-        """
-        findings = policy["artifact_schema"]["properties"]["findings"]
-        cap = policy["review"]["max_distinct_groups"]
-        group = findings["items"]["properties"]["group"]
-        reachable = min(findings["maxItems"], group["maximum"] - group["minimum"] + 1)
-        assert cap < reachable, (
-            f"max_distinct_groups is {cap} and at most {reachable} distinct groups are reachable "
-            f"(maxItems {findings['maxItems']}, group range [{group['minimum']}, "
-            f"{group['maximum']}]), so no artifact can ever exceed the cap and every arm of "
-            "check_group_cardinality is dead code that reads as a safety property"
-        )
-
-    def test_the_shipped_cap_clears_the_most_demanding_shipped_scenario(self, policy):
-        # The other direction: a cap low enough to be satisfiable must still be high
-        # enough for the reviews this harness asks for. The most demanding shipped
-        # eval scenario is grouped_cross_file_defect at max_findings 3, so a cap
-        # below 3 would refuse an artifact the harness's own evals grade as correct.
-        cap = policy["review"]["max_distinct_groups"]
-        assert cap >= 3, (
-            f"max_distinct_groups is {cap}, below the 3 findings the most demanding shipped eval "
-            "scenario asks for, so the cap can refuse an artifact the harness itself requests"
-        )
+    def test_the_shipped_policy_accepts_the_grouped_scenario(
+        self, sample_diff, changed_files, policy
+    ):
+        verify(self.grouped([1, 2, 3]), sample_diff, changed_files, policy)
 
 
 class TestStandardJsonSchemaIsEnforced:

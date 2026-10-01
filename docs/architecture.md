@@ -214,8 +214,12 @@ such as `properties`, `required`, `additionalProperties`, `maxItems`,
 `residual_risk`, and defines every field of a finding: `path`, `line`,
 `severity`, `group`, `title`, and `body`.
 
-The separate `review.max_distinct_groups` constraint bounds how many defect
-groups an artifact may claim. It remains a verifier phase because JSON Schema
+The optional `review.max_distinct_groups` constraint bounds how many defect
+groups an artifact may claim. The shipped value is `null`: there is no separate
+group cap, while `artifact_schema.properties.findings.maxItems` still limits a
+review to ten entries. The generated constraints state the effective group
+policy, including a numeric cap when a consumer configures one.
+It remains a verifier phase because JSON Schema
 does not project one property from each array item and bound the number of
 distinct projected values. Group identity remains advisory and is never
 trusted to authorize or scope remediation.

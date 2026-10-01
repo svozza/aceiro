@@ -178,8 +178,11 @@ Three properties make this safe rather than a re-run of the refused candidate:
   `markdown_fields()` raises on any undeclared string field. Singleton groups are the
   ordinary case.
 - **The verifier bounds it and never believes it.** Integer, range, a cap on distinct
-  groups. Whether the claim is true is ADR-0005's content question and is not
-  checked, which is why the field can never be the source of a write's scope.
+  groups when configured. The default separate cap was removed on 2026-10-01;
+  see [the addendum](0013-addendum-remove-the-default-group-cap.md). The ten-entry
+  maximum and integer range still bound it. Whether the claim is true is
+  ADR-0005's content question and is not checked, which is why the field can
+  never be the source of a write's scope.
 - **The cross-reference is rendered by the harness, in `post.render`.** A
   model-authored "see also finding 3" cannot name an ordinal: `rendered_findings`
   sorts by severity at render time and the model never sees the sorted list, so
