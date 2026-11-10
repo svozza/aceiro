@@ -616,16 +616,20 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
         with anyio.fail_after(budget_seconds):
             async with ClaudeSDKClient(options) as client:
                 await client.query(user_message)
+                # Whether the investigation was cut short is read off the stream
+                # (no result envelope yet), not off the cancel scope: a
+                # cancellation delivered inside the SDK's reader can end the
+                # iteration without the scope reporting it caught one.
                 out_of_turns = False
-                with anyio.move_on_after(budget_seconds - finalize_seconds) as investigation:
+                with anyio.move_on_after(budget_seconds - finalize_seconds):
                     async for message in client.receive_response():
                         record(message)
                         if finalize_seconds and len(state["api_message_ids"]) >= investigation_turns:
-                            out_of_turns = state["accepted"] is None
+                            out_of_turns = True
                             break
                 if (
                     finalize_seconds
-                    and (investigation.cancelled_caught or out_of_turns)
+                    and result is None
                     and state["accepted"] is None
                     and not state["abort_reason"]
                 ):
