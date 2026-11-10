@@ -815,6 +815,37 @@ class TestRunFailureModes:
         assert code == 1
         assert not (tmp_path / "review.json").exists()
 
+    def test_a_review_out_of_investigation_turns_is_told_to_submit(self, tmp_path, monkeypatch):
+        # A fast provider reaches the turn ceiling long before the clock; the
+        # work behind those turns is delivered rather than discarded.
+        monkeypatch.setattr(cc_loop, "MAX_TURNS", 2)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "what two turns established", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            for number in range(5):
+                yield AssistantMessage(content=[TextBlock(text="reading")], model="m", message_id=f"m{number}")
+
+        async def on_prompt(prompt):
+            if prompt == cc_loop.FINALIZE_MESSAGE:
+                await created[-1].handler(artifact)
+
+        _query.on_prompt = on_prompt
+        _query.followups = [[result_message(subtype="error_during_execution", is_error=True)], [result_message()]]
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        finalization = [e for e in transcript_events(tmp_path) if e["event"] == "finalization"]
+        assert [e["reason"] for e in finalization] == ["turns"] and finalization[0]["api_messages"] == 2
+
     def test_a_review_that_submits_in_time_is_not_finalized(self, tmp_path, monkeypatch):
         code = run_loop(tmp_path, monkeypatch, [[result_message()]])
         assert "finalization" not in [e["event"] for e in transcript_events(tmp_path)]
@@ -1211,7 +1242,7 @@ class TestTheConsumersBudgetGovernsTheSession:
         monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
-        assert query.calls[0].max_turns == 7
+        assert query.calls[0].max_turns == 7 + cc_loop.FINALIZE_TURNS
         granted = next(e for e in transcript_events(tmp_path) if e["event"] == "attempt_budget")
         assert granted["max_turns"] == 7 and granted["consumer_set"] is False
 
@@ -1264,7 +1295,7 @@ class TestTheConsumersBudgetGovernsTheSession:
         assert granted["consumer_set"] is True
         # Proportional to the clock, not the constant beside it.
         assert granted["max_turns"] == cc_loop.turn_ceiling(expected)
-        assert query.calls[0].max_turns == granted["max_turns"]
+        assert query.calls[0].max_turns == granted["max_turns"] + cc_loop.FINALIZE_TURNS
         assert granted["max_turns"] > cc_loop.MAX_TURNS
 
     def test_one_attempt_may_use_nearly_the_whole_job(self, tmp_path, monkeypatch):

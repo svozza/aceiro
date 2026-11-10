@@ -89,7 +89,7 @@ def test_actual_review_loop_needs_no_checkpoint_and_preserves_timeout_failure(tm
         created.append(original(*args, **kwargs))
         return created[-1]
 
-    async def session(message, options, trace, state, result, attempt, policy, seconds, finalize):
+    async def session(message, options, trace, state, result, attempt, policy, seconds, finalize, turns):
         assert message == build_user_message(scenario / "context")
         assert "Review time allowance:" not in message
         assert "save_finding" not in message

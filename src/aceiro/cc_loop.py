@@ -160,6 +160,10 @@ POST_GENERATOR_RESERVE_SECONDS = 120
 # rejected-submission retry.
 FINALIZE_SECONDS = int(os.environ.get("CC_FINALIZE_SECONDS", "180"))
 
+# Turns the CLI is allowed beyond the investigation's ceiling, for the final
+# submission and its rejections.
+FINALIZE_TURNS = MAX_SUBMISSIONS + 2
+
 # Harness-authored, so it carries no contributor text.
 FINALIZE_MESSAGE = (
     "The investigation time for this review is over. Call submit_review now. "
@@ -556,7 +560,8 @@ def serialize_message(message) -> str:
 
 async def _run_session(user_message: str, options: ClaudeAgentOptions, transcript: Transcript,
                        state: dict, output_dir: Path, attempt: int, policy: dict,
-                       budget_seconds: float, finalize_seconds: float = 0) -> ResultMessage | None:
+                       budget_seconds: float, finalize_seconds: float = 0,
+                       investigation_turns: int = 0) -> ResultMessage | None:
     """One CLI session. Returns its last ResultMessage, or None if the stream ended
     without one. The captured stream is written even when the session dies —
     a partial stream is precisely the evidence a hang or crash leaves.
@@ -565,8 +570,9 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
     module so a session cannot run on a budget the loop did not grant it.
 
     A non-zero `finalize_seconds` is held back from that clock: a session with no
-    accepted artifact when only that much remains is interrupted and sent
-    FINALIZE_MESSAGE in the same conversation. The hard clock is unchanged."""
+    accepted artifact when only that much remains, or after `investigation_turns`
+    API turns, is interrupted and sent FINALIZE_MESSAGE in the same conversation.
+    The hard clock is unchanged."""
     lines: list[str] = []
     result = None
 
@@ -610,12 +616,16 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
         with anyio.fail_after(budget_seconds):
             async with ClaudeSDKClient(options) as client:
                 await client.query(user_message)
+                out_of_turns = False
                 with anyio.move_on_after(budget_seconds - finalize_seconds) as investigation:
                     async for message in client.receive_response():
                         record(message)
+                        if finalize_seconds and len(state["api_message_ids"]) >= investigation_turns:
+                            out_of_turns = state["accepted"] is None
+                            break
                 if (
                     finalize_seconds
-                    and investigation.cancelled_caught
+                    and (investigation.cancelled_caught or out_of_turns)
                     and state["accepted"] is None
                     and not state["abort_reason"]
                 ):
@@ -623,7 +633,7 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
                     transcript.log(
                         "finalization",
                         round=attempt,
-                        after_seconds=round(budget_seconds - finalize_seconds),
+                        reason="turns" if out_of_turns else "clock",
                         tool_calls=state["tool_calls"],
                         api_messages=len(state["api_message_ids"]),
                     )
@@ -812,25 +822,28 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         state["api_message_ids"] = set()
         state["cache_read_peak"] = 0
         start_session_on(verify_fn)
-        submit = make_tool(state)
-        server = build_review_server(submit, server_name)
-        options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
-                                server_name, submit_tool_name, turns)
-        review_budget = ReviewBudget(budget, state, transcript) if review_time_feedback else None
-        if review_budget is not None:
-            options.hooks = review_budget.hooks()
-
         # No reserve when it would leave the investigation less than an attempt's
         # minimum: such a budget is spent whole, as before.
         finalize = (
             FINALIZE_SECONDS
-            if review_budget is not None and budget - FINALIZE_SECONDS >= MIN_ATTEMPT_SECONDS
+            if review_time_feedback and budget - FINALIZE_SECONDS >= MIN_ATTEMPT_SECONDS
             else 0
         )
+        submit = make_tool(state)
+        server = build_review_server(submit, server_name)
+        # With a reserve the loop ends the investigation at `turns` itself, so the
+        # CLI's own limit sits above it as the backstop.
+        options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
+                                server_name, submit_tool_name,
+                                turns + FINALIZE_TURNS if finalize else turns)
+        review_budget = ReviewBudget(budget, state, transcript) if review_time_feedback else None
+        if review_budget is not None:
+            options.hooks = review_budget.hooks()
+
         timed_out = False
         try:
             result = anyio.run(_run_session, user_message, options, transcript, state, output_dir,
-                               attempt, policy, budget, finalize)
+                               attempt, policy, budget, finalize, turns)
         except TimeoutError:
             # Recorded here and decided below: the session was cut off, but it may
             # already have got an artifact through the verifier, and this branch
