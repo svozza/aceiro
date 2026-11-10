@@ -169,3 +169,45 @@ def no_network(monkeypatch, request):
     except ImportError:
         return
     monkeypatch.setattr(github_api._OPENER, "open", refuse)
+
+
+def client_from(query):
+    """A ClaudeSDKClient stand-in whose first response is `query`'s stream.
+
+    Later responses (the interrupted turn's envelope, a finalization turn) come
+    from `query.followups`, a list of message lists, when the fake has one;
+    `query.on_prompt` is awaited with each prompt sent.
+    """
+
+    class FakeClient:
+        def __init__(self, options):
+            self.options = options
+            self.prompts = []
+            self.followups = list(getattr(query, "followups", []))
+            self.interrupted = False
+            query.client = self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def query(self, prompt):
+            self.prompts.append(prompt)
+            if on_prompt := getattr(query, "on_prompt", None):
+                await on_prompt(prompt)
+
+        async def interrupt(self):
+            self.interrupted = True
+
+        async def _rest(self):
+            for message in self.followups.pop(0) if self.followups else []:
+                yield message
+
+        def receive_response(self):
+            if len(self.prompts) == 1 and not self.interrupted:
+                return query(prompt=self.prompts[0], options=self.options)
+            return self._rest()
+
+    return FakeClient
