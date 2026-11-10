@@ -59,7 +59,8 @@ class TestStructure:
 
     def test_too_many_findings(self, artifact, sample_diff, changed_files, policy):
         finding = artifact["findings"][0]
-        artifact["findings"] = [dict(finding) for _ in range(11)]
+        cap = policy["artifact_schema"]["properties"]["findings"]["maxItems"]
+        artifact["findings"] = [dict(finding) for _ in range(cap + 1)]
         rejected(artifact, sample_diff, changed_files, policy)
 
     def test_oversized_summary(self, artifact, sample_diff, changed_files, policy):
