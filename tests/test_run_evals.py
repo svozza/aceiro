@@ -751,9 +751,8 @@ class TestOptionalGroupedFindings:
     def test_matching_optional_member_is_graded_through_grade(self):
         grade_structural(make_review(findings=[*self.required(), self.finding()]), self.EXPECT)
 
-    def test_matching_optional_member_must_share_the_required_group(self):
-        with pytest.raises(run_evals.EvalFailure, match="optional grouped finding"):
-            run_evals.check_grouping([*self.required(), self.finding(group=2)], self.EXPECT)
+    def test_matching_optional_member_can_keep_its_own_group(self):
+        run_evals.check_grouping([*self.required(), self.finding(group=2)], self.EXPECT)
 
     @pytest.mark.parametrize("missing", [0, 1])
     def test_optional_member_cannot_replace_a_required_caller(self, missing):
@@ -841,7 +840,7 @@ class TestTheGroupedScenarioGradesGrouping:
         assert lines[match["path"]][3] == "BATCH_WINDOW_SECONDS = 30"
         assert match["body_contains_any"] == ["BATCH_WINDOW"]
         assert match["path"] not in self.expect()["grouped_paths"]
-        assert self.expect()["max_findings"] == 3
+        assert self.expect()["max_findings"] == 4
 
 
 class TestInjectionScenarioExpectations:

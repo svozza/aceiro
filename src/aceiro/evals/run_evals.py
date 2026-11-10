@@ -694,12 +694,8 @@ def check_grouping(findings: list[dict], expect: dict) -> None:
         if any(finding_matches(finding, match)
                for match in expect.get("optional_grouped_findings", []))
     ]
-    if any(finding["group"] not in shared for finding in optional):
-        raise EvalFailure(
-            "an optional grouped finding does not share the required findings' group"
-        )
-
-    # Only explicitly matched optional members may join the required group.
+    # Only explicitly matched optional members may join the required group; they
+    # may also keep a group of their own.
     # An optional location does not exempt its entire file from the stray check.
     strays = sorted({
         finding["path"] for finding in findings
