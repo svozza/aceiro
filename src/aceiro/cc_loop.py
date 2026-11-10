@@ -97,7 +97,7 @@ DISALLOWED_TOOLS = [
 # first -- exceeding this reports a constraint nobody chose. ADR-0015 has the
 # argument; test_workflow_shape asserts the ordering over the constant and the
 # derivation both.
-MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "45"))
+MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "125"))
 
 # PER ATTEMPT, and likewise the FALLBACK: with a deadline set, attempt_budget()
 # sizes each attempt from the time left instead.
@@ -180,13 +180,16 @@ FINALIZE_MESSAGE = (
 # CC_WALL_CLOCK_SECONDS is what an operator said the budget is.
 MIN_ATTEMPT_SECONDS = 90
 
-# One production run, kept as the measurement rather than as a rate so that
-# re-measuring moves everything derived from it.
-MEASURED_TOOL_CALLS = 21
-MEASURED_TOOL_CALL_SECONDS = 618
+# 45 delivered large-PR reviews on Opus 5.5 (2026-11-10), kept as the measurement
+# rather than as a rate so that re-measuring moves everything derived from it. The
+# rate swings with the provider: one production run in August measured 21 calls
+# in 618s, 2.7x slower, and a ceiling derived from that bound a fast day's
+# reviews at about half their clock.
+MEASURED_TOOL_CALLS = 636
+MEASURED_TOOL_CALL_SECONDS = 6974
 
 # How far the turn ceiling stays above the calls the clock permits: the ratio the
-# hand-set pair already had (45 turns against the ~31 that 900s buys).
+# hand-set pair originally had (45 turns against the ~31 that 900s bought).
 TURN_HEADROOM = 1.5
 
 # GitHub kills any hosted-runner job at 6 hours whatever `timeout-minutes` says, and
