@@ -1,7 +1,7 @@
 # A review out of budget submits what it confirmed
 
 Measured 2026-11-10 on 24 public pull requests of 1,500 to 14,000 changed lines
-(evidence: `handoff/delivery-finalization-20261110/RESULTS.md`).
+(evidence: `docs/findings/0005-large-pr-delivery-and-coverage.md`).
 
 A review that reached its wall clock or its turn ceiling without an accepted
 submission delivered nothing, however much it had established. Three facts made

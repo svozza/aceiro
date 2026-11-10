@@ -1,6 +1,6 @@
 # A second pass is shown what the first found
 
-Measured 2026-11-10 (evidence: `handoff/delivery-finalization-20261110/RESULTS.md`).
+Measured 2026-11-10 (evidence: `docs/findings/0005-large-pr-delivery-and-coverage.md`).
 
 A review's findings are almost all real: 98 to 100% were source-supported in
 every arrangement tested. What a single review lacks is coverage. On eight pull
@@ -54,9 +54,11 @@ valid.
 
 - About one more review's cost and latency on pull requests where the first pass
   found something, inside the same `agent-timeout-minutes`.
-- **The finding cap now binds.** Both live two-pass runs on defect-dense pull
-  requests merged to exactly the cap, dropping lower-severity findings. Raising
-  it is a separate decision.
+- **The default finding cap rises from 10 to 20, and the group range with it.**
+  The cap of 10 was inherited from the staging repository with no recorded
+  reason. Merging the measured passes at 10 dropped 1.7 supported families from
+  each large two-pass review it touched (6 of 15); no merged review exceeded 13.
+  A consumer can still set its own through the policy overlay.
 - The "first pass found something" condition rests on three empty-first pull
   requests. It is the cheap direction to be wrong in: a missed second pass costs
   coverage on a review that found nothing, not a wrong finding.
