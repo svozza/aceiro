@@ -100,6 +100,16 @@ on:
         type: string
         required: false
         default: global.anthropic.claude-opus-5-5[1m]
+      second-pass:
+        description: >-
+          Review the change a second time when the first pass reported findings,
+          showing the second pass what the first found so it looks elsewhere
+          (ADR-0022). Costs about one more review on those pull requests and runs
+          inside `agent-timeout-minutes`. The first review is posted unchanged if
+          the second pass fails or there is no time left for it.
+        type: boolean
+        required: false
+        default: false
       agent-timeout-minutes:
         description: >-
           How long the review may take. This is the agent's WHOLE budget: it sets
@@ -401,6 +411,7 @@ jobs:
           ANTHROPIC_MODEL: ${{ inputs.cli-model }}
           CLAUDE_CODE_EFFORT_LEVEL: high
           ACEIRO_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
+          ACEIRO_SECOND_PASS: ${{ inputs.second-pass && '1' || '0' }}
           # No telemetry, no auto-update inside a credential-bearing job.
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
@@ -409,7 +420,7 @@ jobs:
           # and the workspace is the code under review.
           CLAUDE_CONFIG_DIR: ${{ runner.temp }}/claude-config
         run: |
-          python harness/src/aceiro/cc_loop.py \
+          python harness/src/aceiro/review_passes.py \
             --base-root "$GITHUB_WORKSPACE/base" \
             --pr-root "$RUNNER_TEMP/pr-head-quarantine" \
             --context-dir "$RUNNER_TEMP/context" \

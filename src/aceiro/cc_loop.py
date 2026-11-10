@@ -1082,10 +1082,13 @@ def assert_no_symlinks(pr_root: Path, transcript: Transcript) -> None:
 
 
 @reuse_secret_scans()
-def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify) -> int:
+def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify,
+        after_delivery=None) -> int:
     """Return 0 with a verified review.json written, or non-zero with none.
 
     verify_fn is the eval harness's fault-injection seam; production passes none.
+    `after_delivery`, if given, is called with the run's assembled inputs once a
+    review is written; a failure in it never changes the run's answer.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1140,7 +1143,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
 
     guidance = render_rejection_guidance(policy)
 
-    return drive_session(
+    code = drive_session(
         transcript=transcript,
         policy=policy,
         system_prompt=system_prompt,
@@ -1154,6 +1157,16 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         verify_fn=verify_fn,
         review_time_feedback=True,
     )
+    if code == 0 and after_delivery is not None:
+        try:
+            after_delivery(
+                policy=policy, system_prompt=system_prompt, user_message=user_message,
+                base_root=base_root, pr_root=pr_root, output_dir=output_dir, schema=schema,
+                verify_fn=verify_fn, diff_text=diff_text, changed_files=changed_files, guidance=guidance,
+            )
+        except Exception as exc:  # noqa: BLE001 - the first review is already the run's answer
+            print(f"::warning::post-delivery step failed: {type(exc).__name__}", file=sys.stderr)
+    return code
 
 
 def main() -> int:

@@ -118,6 +118,7 @@ HARNESS_FENCE_TAGS = frozenset({
     "untrusted_diff",
     "changed_file_list",
     "commanded_finding",
+    "earlier_findings",
 })
 
 
