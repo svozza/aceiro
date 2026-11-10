@@ -870,6 +870,33 @@ class TestRunFailureModes:
         assert code == 0
         assert json.loads((tmp_path / "run_metadata.json").read_text())["finalized"] is False
 
+    def test_a_session_that_ends_without_submitting_is_told_once(self, tmp_path, monkeypatch):
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "submitted when told nothing was recorded", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            yield result_message()
+
+        async def on_prompt(prompt):
+            if prompt == cc_loop.UNSUBMITTED_MESSAGE:
+                await created[-1].handler(artifact)
+
+        _query.on_prompt = on_prompt
+        _query.followups = [[result_message()]]
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0 and _query.client.prompts[1:] == [cc_loop.UNSUBMITTED_MESSAGE]
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        # A complete review, not one closed early.
+        assert json.loads((tmp_path / "run_metadata.json").read_text())["finalized"] is False
+
     def test_a_review_that_submits_in_time_is_not_finalized(self, tmp_path, monkeypatch):
         code = run_loop(tmp_path, monkeypatch, [[result_message()]])
         assert "finalization" not in [e["event"] for e in transcript_events(tmp_path)]

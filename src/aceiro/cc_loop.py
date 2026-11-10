@@ -173,6 +173,11 @@ FINALIZE_MESSAGE = (
     "you could not confirm and which parts of the change you did not examine."
 )
 
+UNSUBMITTED_MESSAGE = (
+    "No review has been recorded for this session: nothing was posted. Call "
+    "submit_review now with your complete review."
+)
+
 # Twice the ~40s a whole pinned eval session costs, the smallest complete session
 # measured. Below it an attempt cannot reach a submission, so starting one reports
 # a timeout where the honest reason is a spent budget. Applied to a DERIVED budget
@@ -655,6 +660,20 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
                     async for message in client.receive_response():
                         record(message)
                     await client.query(FINALIZE_MESSAGE)
+                    async for message in client.receive_response():
+                        record(message)
+                elif (
+                    finalize_seconds
+                    and result is not None
+                    and not result.is_error
+                    and state["accepted"] is None
+                    and not state["abort_reason"]
+                ):
+                    # The session ended its turn with nothing recorded: observed when
+                    # a submission call was cut off mid-flight and the model, unsure
+                    # whether it had landed, stopped to ask. Told once.
+                    transcript.log("unsubmitted", round=attempt, tool_calls=state["tool_calls"])
+                    await client.query(UNSUBMITTED_MESSAGE)
                     async for message in client.receive_response():
                         record(message)
     except Exception as exc:
