@@ -126,11 +126,33 @@ on the session PATH. All 1,456 Grep calls in the 325 sessions of this study retu
 reviewer arms and the plain Claude Code arm alike. The October studies were not affected (20 of 830
 failed). Production uses Claude Code's built-in Grep and was not affected.
 
-- Every coverage figure above was measured on a reviewer that could Read and Glob but not search.
-  Arms within a batch were equally affected, so their ordering stands as measured under that handicap;
-  the absolute figures and the size of the plain Claude Code gap are not established for a working Grep.
 - The delivery results do not depend on Grep.
 - The shim now pins a ripgrep binary and refuses to start without it.
+
+The coverage arms were re-run the same day with Grep working (202 sessions, 202 delivered, 1,125 of
+1,142 Grep calls succeeded), and re-judged. These replace the coverage table above:
+
+| Arrangement (8 large PRs) | Sessions | Families, no Grep | Families, Grep working |
+|---|---|---|---|
+| One review (4 runs per PR) | 1 | 5.50 | 6.06 |
+| Plain Claude Code (4 runs per PR) | 1 | 6.38 | 6.84 |
+| Two independent reviews | 2 | 6.73 | 7.75 |
+| Two partition reviewers | 2 | 7.56 | 8.25 |
+| Three independent reviews | 3 | 7.54 | 8.81 |
+| Two plain Claude Code runs | 2 | 8.75 | 9.29 |
+| First review + second pass | 2 | 8.88 | 9.00 |
+
+- The pool is 17.1 supported families per PR. 98.6-100% of findings are supported in every arm.
+- The second pass added 2.6 new families against 1.5 from an independent rerun of the same first
+  review (difference 1.1, standard error 0.3, larger on 7 of 8 PRs). That result stands.
+- Second pass against partition reviewers is not separated: 0.75 apart with a standard error of 1.2.
+  The first reviews that fed the second pass were also above average (6.4 against 6.1).
+- Plain Claude Code against the reviewer is +0.8 with a standard error of 0.65: ahead on 6 of 8 PRs,
+  not separated. It made 31 tool calls against 13 and cost $1.53 against $1.84.
+- Mid-size PRs (18, three runs): 3.3 families per review; the second pass added 1.4 on the 15 PRs
+  whose first review found something (a rerun added 0.6) and 0.0 on the 3 where it found nothing.
+  233 of 233 findings supported.
+- Run-to-run standard deviation of one review within a PR: 1.35 families on large PRs, 0.73 on mid-size.
 
 ## Errors of mine that affected batches
 
