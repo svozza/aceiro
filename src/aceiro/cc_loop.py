@@ -627,7 +627,12 @@ async def _run_session(user_message: str, options: ClaudeAgentOptions, transcrip
                 with anyio.move_on_after(budget_seconds - finalize_seconds):
                     async for message in client.receive_response():
                         record(message)
-                        if finalize_seconds and len(state["api_message_ids"]) >= investigation_turns:
+                        # An accepted session is left to close with its own envelope.
+                        if (
+                            finalize_seconds
+                            and state["accepted"] is None
+                            and len(state["api_message_ids"]) >= investigation_turns
+                        ):
                             out_of_turns = True
                             break
                 if (

@@ -846,6 +846,30 @@ class TestRunFailureModes:
         finalization = [e for e in transcript_events(tmp_path) if e["event"] == "finalization"]
         assert [e["reason"] for e in finalization] == ["turns"] and finalization[0]["api_messages"] == 2
 
+    def test_a_review_accepted_on_its_last_investigation_turn_is_delivered(self, tmp_path, monkeypatch):
+        # Observed live: the submission landed on the turn that reached the
+        # ceiling, the loop stopped reading, and the accepted artifact was lost.
+        monkeypatch.setattr(cc_loop, "MAX_TURNS", 1)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "submitted on the last turn", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            await created[-1].handler(artifact)
+            yield AssistantMessage(content=[TextBlock(text="submitted")], model="m", message_id="m0")
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "run_metadata.json").read_text())["finalized"] is False
+
     def test_a_review_that_submits_in_time_is_not_finalized(self, tmp_path, monkeypatch):
         code = run_loop(tmp_path, monkeypatch, [[result_message()]])
         assert "finalization" not in [e["event"] for e in transcript_events(tmp_path)]
