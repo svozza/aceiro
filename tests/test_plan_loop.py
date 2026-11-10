@@ -15,7 +15,7 @@ import anyio
 import cc_loop
 import plan_loop
 import pytest
-from conftest import POLICY
+from conftest import POLICY, client_from
 from plan_verify import verify_plan
 from verify import Rejection
 
@@ -673,7 +673,7 @@ class TestRunWiring:
 
     def test_completing_without_a_submission_fails_closed_naming_submit_plan(self, tmp_path, monkeypatch):
         context, pr_root = self.scenario(tmp_path)
-        monkeypatch.setattr(cc_loop, "query", fake_query([[result_message()]]))
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(fake_query([[result_message()]])))
         out = tmp_path / "out"
         assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
         assert not (out / "plan.json").exists()
@@ -700,7 +700,7 @@ class TestRunWiring:
             await created[-1].handler(plan)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         out = tmp_path / "out"
         assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 0
         assert json.loads((out / "plan.json").read_text()) == plan
@@ -729,7 +729,7 @@ class TestRunWiring:
             responses.append(await created[-1].handler(valid_plan()))
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         out = tmp_path / "out"
         assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
         assert responses[0]["is_error"]
@@ -739,7 +739,7 @@ class TestRunWiring:
     def test_the_session_options_use_the_plan_server_and_tool(self, tmp_path, monkeypatch):
         context, pr_root = self.scenario(tmp_path)
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         plan_loop.run(REPO_ROOT, pr_root, context, tmp_path / "out")
         options = query.calls[0]
         assert plan_loop.SUBMIT_TOOL in options.allowed_tools
@@ -757,7 +757,7 @@ class TestRunWiring:
         context, pr_root = self.scenario(tmp_path)
         monkeypatch.setenv("ACEIRO_PROJECT_DESCRIPTION", "`svozza/artel`, a Rust file syncer")
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         plan_loop.run(REPO_ROOT, pr_root, context, tmp_path / "out")
         prompt = query.calls[0].system_prompt
         assert "svozza/artel" in prompt
@@ -773,7 +773,7 @@ class TestRunWiring:
         context, pr_root = self.scenario(tmp_path)
         monkeypatch.delenv("ACEIRO_PROJECT_DESCRIPTION", raising=False)
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         plan_loop.run(REPO_ROOT, pr_root, context, tmp_path / "out")
         prompt = query.calls[0].system_prompt
         assert "powertools-lambda-python" in prompt
@@ -801,7 +801,7 @@ class TestUnassemblableContextIsLogged:
         # to command and the run fails closed with the reason logged.
         context, pr_root = self.scenario(tmp_path)
         (context / "review.json").write_text(json.dumps({"bogus": "x"}))
-        monkeypatch.setattr(cc_loop, "query", fake_query([[result_message()]]))
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(fake_query([[result_message()]])))
         out = tmp_path / "out"
         assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
         assert not (out / "plan.json").exists()
@@ -811,7 +811,7 @@ class TestUnassemblableContextIsLogged:
         # The OSError arm, reached by removing a file the assembly reads.
         context, pr_root = self.scenario(tmp_path)
         (context / "review.json").unlink()
-        monkeypatch.setattr(cc_loop, "query", fake_query([[result_message()]]))
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(fake_query([[result_message()]])))
         out = tmp_path / "out"
         assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
         assert any("cannot assemble the plan context" in r for r in self.reasons(out))
@@ -822,7 +822,7 @@ class TestUnassemblableContextIsLogged:
         # decode_contributor_bytes' design, so a bad diff.patch is not this arm.
         context, pr_root = self.scenario(tmp_path)
         (context / "changed_files.json").write_bytes(b'["src/app.py \xff\xfe"]')
-        monkeypatch.setattr(cc_loop, "query", fake_query([[result_message()]]))
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(fake_query([[result_message()]])))
         out = tmp_path / "out"
         assert plan_loop.run(REPO_ROOT, pr_root, context, out) == 1
         assert any("cannot assemble the plan context" in r for r in self.reasons(out))

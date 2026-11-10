@@ -89,7 +89,7 @@ def test_actual_review_loop_needs_no_checkpoint_and_preserves_timeout_failure(tm
         created.append(original(*args, **kwargs))
         return created[-1]
 
-    async def session(message, options, trace, state, result, attempt, policy, seconds):
+    async def session(message, options, trace, state, result, attempt, policy, seconds, finalize, turns):
         assert message == build_user_message(scenario / "context")
         assert "Review time allowance:" not in message
         assert "save_finding" not in message
@@ -97,7 +97,7 @@ def test_actual_review_loop_needs_no_checkpoint_and_preserves_timeout_failure(tm
         assert options.extra_args == {"safe-mode": None}
         assert options.setting_sources == []
         assert "Bash" in options.disallowed_tools
-        assert set(options.hooks) == {"PostToolUse", "PostToolUseFailure"}
+        assert set(options.hooks) == {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
         hook = options.hooks["PostToolUse"][0].hooks[0]
         assert await hook(
             {"hook_event_name": "PostToolUse", "tool_name": "Read"}, None, {"signal": None},
@@ -121,3 +121,14 @@ def test_actual_review_loop_needs_no_checkpoint_and_preserves_timeout_failure(tm
     assert not (output / "finding-checkpoints.json").exists()
     events = [json.loads(line) for line in (output / "transcript.jsonl").read_text().splitlines()]
     assert len([event for event in events if event["event"] == "budget_feedback"]) == 1
+
+
+def test_source_reads_are_refused_only_while_finalizing():
+    state = {"accepted": None, "abort_reason": None, "finalized": False}
+    budget = review_budget.ReviewBudget(100, state, Transcript.__new__(Transcript))
+    gate = budget.hooks()["PreToolUse"][0].hooks[0]
+    call = {"hook_event_name": "PreToolUse", "tool_name": "Read"}
+    assert anyio.run(gate, call, None, {"signal": None}) == {}
+    state["finalized"] = True
+    decision = anyio.run(gate, call, None, {"signal": None})["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"

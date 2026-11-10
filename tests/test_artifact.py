@@ -18,6 +18,7 @@ import pytest
 
 from artifact import (
     HARNESS_FENCE_TAGS,
+    annotate_diff,
     WITHHELD,
     build_artifact_schema,
     build_user_message,
@@ -543,3 +544,26 @@ class TestBuildArtifactSchema:
         # cannot disagree.
         schema = build_artifact_schema(POLICY)
         assert set(schema["required"]) == set(schema["properties"])
+
+
+class TestLockfileElision:
+    @staticmethod
+    def lock_diff(name, lines):
+        added = "".join(f"+pkg{i} https://registry.npmjs.org/pkg{i}\n" for i in range(lines - 1))
+        added += "+evil https://evil.example/x\n"
+        return (
+            f"diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n@@ -0,0 +1,{lines} @@\n{added}"
+            "diff --git a/app.py b/app.py\n--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n"
+        )
+
+    def test_a_large_lockfile_diff_is_replaced_by_one_line_naming_its_hosts(self):
+        shown = annotate_diff(self.lock_diff("web/package-lock.json", 300))
+        assert "pkg7" not in shown
+        assert "evil.example, registry.npmjs.org" in shown
+        assert shown.count("not shown") == 1
+        # The file header survives, and the next file is untouched.
+        assert "+++ b/web/package-lock.json" in shown and "1 +new" in shown
+
+    def test_a_small_lockfile_diff_and_a_lookalike_name_are_shown_whole(self):
+        assert "not shown" not in annotate_diff(self.lock_diff("package-lock.json", 50))
+        assert "not shown" not in annotate_diff(self.lock_diff("src/package-lock.json.py", 300))

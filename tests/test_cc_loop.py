@@ -18,7 +18,7 @@ import pytest
 import secret_taint
 from artifact import build_artifact_schema, redact_secrets, redact_text
 from claude_agent_sdk import AssistantMessage, ProcessError, ResultError, ResultMessage, TextBlock, ToolUseBlock
-from conftest import POLICY
+from conftest import POLICY, client_from
 
 HARNESS_DIR = Path(__file__).parent.parent / "src" / "aceiro"
 # base_root: the trusted pre-change tree the model may read. Upstream this was
@@ -68,7 +68,7 @@ def fake_query(messages):
 
 
 def run_loop(tmp_path, monkeypatch, streams, verify_fn=None):
-    monkeypatch.setattr(cc_loop, "query", fake_query(streams))
+    monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(fake_query(streams)))
     scenario = tmp_path / "scenario"
     shutil.copytree(SCENARIO, scenario)
     kwargs = {"verify_fn": verify_fn} if verify_fn else {}
@@ -414,7 +414,7 @@ class TestRunFailureModes:
             prompts.append(prompt)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         out = tmp_path / "out"
 
         assert cc_loop.run(REPO_ROOT, pr_root, context, out) == 1
@@ -460,7 +460,7 @@ class TestRunFailureModes:
             prompts.append(prompt)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         cc_loop.run(REPO_ROOT, pr_root, context, tmp_path / "out")
 
         assert token not in prompts[0]
@@ -513,7 +513,7 @@ class TestRunFailureModes:
             async for message in real_fake(prompt, options):
                 yield message
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 0
         assert waits == [cc_loop.API_ERROR_BACKOFF_SECONDS]
@@ -536,7 +536,7 @@ class TestRunFailureModes:
             await created[-1].handler(artifact)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 0
 
         assert json.loads((tmp_path / "run_metadata.json").read_text())["model"] == "claude-sonnet-4-5"
@@ -580,7 +580,7 @@ class TestRunFailureModes:
                 await created[-1].handler(placeholder)
                 yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path,
                            verify_fn=verify_fn)
         assert code == 1
@@ -621,7 +621,7 @@ class TestRunFailureModes:
             await created[-1].handler(artifact)
             yield result_message(subtype="error_max_turns", is_error=True)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 0
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
 
@@ -640,7 +640,7 @@ class TestRunFailureModes:
             await created[-1].handler({"summary": "ok", "findings": [], "residual_risk": ""})
             yield result_message(subtype="error_max_turns", is_error=True)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         events = transcript_events(tmp_path)
         assert [e for e in events if e["event"] == "run_complete"]
@@ -679,7 +679,7 @@ class TestRunFailureModes:
                 await created[-1].handler(placeholder)
             yield result_message(subtype="error_max_turns", is_error=True)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path,
                            verify_fn=verify_fn)
         assert code == 1
@@ -714,7 +714,7 @@ class TestRunFailureModes:
                 # means the acceptance was thrown away.
                 yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 0
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
@@ -742,7 +742,7 @@ class TestRunFailureModes:
             await anyio.sleep(5)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 0
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
@@ -759,12 +759,147 @@ class TestRunFailureModes:
             await anyio.sleep(5)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 1
         assert not (tmp_path / "review.json").exists()
         reasons = [e["reason"] for e in transcript_events(tmp_path) if e["event"] == "run_failed"]
         assert any("wall-clock timeout" in r for r in reasons)
+
+    def _finalizing_run(self, tmp_path, monkeypatch, artifact):
+        """A review that is still investigating when the finalization reserve
+        begins; `artifact` is what its finalization turn submits, if anything."""
+        monkeypatch.setattr(cc_loop, "WALL_CLOCK_SECONDS", 2)
+        monkeypatch.setattr(cc_loop, "FINALIZE_SECONDS", 1)
+        monkeypatch.setattr(cc_loop, "MIN_ATTEMPT_SECONDS", 0)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+
+        async def _query(prompt, options):
+            await anyio.sleep(5)
+            yield result_message()
+
+        async def on_prompt(prompt):
+            if prompt == cc_loop.FINALIZE_MESSAGE and artifact is not None:
+                await created[-1].handler(artifact)
+
+        _query.on_prompt = on_prompt
+        _query.followups = [
+            [result_message(subtype="error_during_execution", is_error=True)],
+            [result_message()],
+        ]
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        return code, _query.client
+
+    def test_a_review_still_investigating_at_the_reserve_is_told_to_submit(self, tmp_path, monkeypatch):
+        artifact = {"summary": "what was confirmed in time", "findings": [], "residual_risk": "half unread"}
+        code, client = self._finalizing_run(tmp_path, monkeypatch, artifact)
+        assert code == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        assert client.interrupted
+        assert client.prompts[1:] == [cc_loop.FINALIZE_MESSAGE]
+        # The disclosure post.py renders is the harness's, not the model's.
+        assert json.loads((tmp_path / "run_metadata.json").read_text())["finalized"] is True
+        events = [e["event"] for e in transcript_events(tmp_path)]
+        assert "finalization" in events and "wall_clock_timeout" not in events
+
+    def test_a_finalization_that_submits_nothing_still_fails(self, tmp_path, monkeypatch):
+        code, client = self._finalizing_run(tmp_path, monkeypatch, None)
+        assert code == 1
+        assert not (tmp_path / "review.json").exists()
+
+    def test_a_review_out_of_investigation_turns_is_told_to_submit(self, tmp_path, monkeypatch):
+        # A fast provider reaches the turn ceiling long before the clock; the
+        # work behind those turns is delivered rather than discarded.
+        monkeypatch.setattr(cc_loop, "MAX_TURNS", 2)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "what two turns established", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            for number in range(5):
+                yield AssistantMessage(content=[TextBlock(text="reading")], model="m", message_id=f"m{number}")
+
+        async def on_prompt(prompt):
+            if prompt == cc_loop.FINALIZE_MESSAGE:
+                await created[-1].handler(artifact)
+
+        _query.on_prompt = on_prompt
+        _query.followups = [[result_message(subtype="error_during_execution", is_error=True)], [result_message()]]
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        finalization = [e for e in transcript_events(tmp_path) if e["event"] == "finalization"]
+        assert [e["reason"] for e in finalization] == ["turns"] and finalization[0]["api_messages"] == 2
+
+    def test_a_review_accepted_on_its_last_investigation_turn_is_delivered(self, tmp_path, monkeypatch):
+        # Observed live: the submission landed on the turn that reached the
+        # ceiling, the loop stopped reading, and the accepted artifact was lost.
+        monkeypatch.setattr(cc_loop, "MAX_TURNS", 1)
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "submitted on the last turn", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            await created[-1].handler(artifact)
+            yield AssistantMessage(content=[TextBlock(text="submitted")], model="m", message_id="m0")
+            yield result_message()
+
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0
+        assert json.loads((tmp_path / "run_metadata.json").read_text())["finalized"] is False
+
+    def test_a_session_that_ends_without_submitting_is_told_once(self, tmp_path, monkeypatch):
+        created = []
+        original = cc_loop.make_submit_tool
+
+        def spying_make(*args, **kwargs):
+            created.append(original(*args, **kwargs))
+            return created[-1]
+
+        monkeypatch.setattr(cc_loop, "make_submit_tool", spying_make)
+        artifact = {"summary": "submitted when told nothing was recorded", "findings": [], "residual_risk": ""}
+
+        async def _query(prompt, options):
+            yield result_message()
+
+        async def on_prompt(prompt):
+            if prompt == cc_loop.UNSUBMITTED_MESSAGE:
+                await created[-1].handler(artifact)
+
+        _query.on_prompt = on_prompt
+        _query.followups = [[result_message()]]
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
+        code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
+        assert code == 0 and _query.client.prompts[1:] == [cc_loop.UNSUBMITTED_MESSAGE]
+        assert json.loads((tmp_path / "review.json").read_text()) == artifact
+        # A complete review, not one closed early.
+        assert json.loads((tmp_path / "run_metadata.json").read_text())["finalized"] is False
+
+    def test_a_review_that_submits_in_time_is_not_finalized(self, tmp_path, monkeypatch):
+        code = run_loop(tmp_path, monkeypatch, [[result_message()]])
+        assert "finalization" not in [e["event"] for e in transcript_events(tmp_path)]
 
     def test_an_aborted_run_is_not_rescued_by_a_timeout_acceptance(self, tmp_path, monkeypatch):
         # adcd943's ordering, applied to the new path: the breaker's verdict
@@ -794,7 +929,7 @@ class TestRunFailureModes:
             await anyio.sleep(5)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path,
                            verify_fn=verify_fn)
         assert code == 1
@@ -819,7 +954,7 @@ class TestRunFailureModes:
             await created[-1].handler({"summary": "ok", "findings": [], "residual_risk": ""})
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 0
 
         events = transcript_events(tmp_path)
@@ -954,7 +1089,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             await created[-1].handler(artifact)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 0
         assert waits == [cc_loop.API_ERROR_BACKOFF_SECONDS]
@@ -980,7 +1115,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             yield result_message(**self.API_ERROR_ENVELOPE)
             raise self.teardown_error(error_type)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 0
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
@@ -992,7 +1127,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             raise self.teardown_error(ResultError)
             yield  # pragma: no cover
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
         assert not (tmp_path / "review.json").exists()
 
@@ -1007,7 +1142,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
                 yield result_message(**self.API_ERROR_ENVELOPE)
             raise ProcessError("unexpected process crash", exit_code=9)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
         assert not (tmp_path / "review.json").exists()
 
@@ -1018,7 +1153,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             yield result_message(**self.API_ERROR_ENVELOPE)
             raise TypeError(self.TEARDOWN_EXC_TEXT)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         with pytest.raises(TypeError):
             cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
@@ -1031,7 +1166,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             yield result_message()
             raise self.teardown_error(ResultError)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
         assert not (tmp_path / "review.json").exists()
 
@@ -1047,7 +1182,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             yield result_message(**fields)
             raise ResultError("request denied", data=fields, exit_code=1)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         assert cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path) == 1
         events = transcript_events(tmp_path)
         assert next(e for e in events if e["event"] == "api_error")["api_error_status"] == 403
@@ -1061,7 +1196,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             raise Exception(self.TEARDOWN_EXC_TEXT)
             yield  # pragma: no cover — makes this an async generator
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         with pytest.raises(Exception, match="returned an error result"):
             cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
@@ -1072,7 +1207,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             yield result_message()
             raise Exception("Fatal error in message reader: boom")
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         with pytest.raises(Exception, match="message reader"):
             cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
@@ -1118,7 +1253,7 @@ class TestTheEnvelopeOutranksTheTeardownException:
             await created[-1].handler(artifact)
             yield result_message(subtype="error_during_execution", is_error=True, terminal_reason=None)
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 0
         assert json.loads((tmp_path / "review.json").read_text()) == artifact
@@ -1155,10 +1290,10 @@ class TestTheConsumersBudgetGovernsTheSession:
         monkeypatch.delenv(cc_loop.DEADLINE_ENV, raising=False)
         monkeypatch.setattr(cc_loop, "MAX_TURNS", 7)
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
-        assert query.calls[0].max_turns == 7
+        assert query.calls[0].max_turns == 7 + cc_loop.FINALIZE_TURNS
         granted = next(e for e in transcript_events(tmp_path) if e["event"] == "attempt_budget")
         assert granted["max_turns"] == 7 and granted["consumer_set"] is False
 
@@ -1202,7 +1337,7 @@ class TestTheConsumersBudgetGovernsTheSession:
         # End to end: what the loop computed is what the session runs under.
         monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(2000))
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
         expected = 2000 - cc_loop.POST_GENERATOR_RESERVE_SECONDS
@@ -1211,7 +1346,7 @@ class TestTheConsumersBudgetGovernsTheSession:
         assert granted["consumer_set"] is True
         # Proportional to the clock, not the constant beside it.
         assert granted["max_turns"] == cc_loop.turn_ceiling(expected)
-        assert query.calls[0].max_turns == granted["max_turns"]
+        assert query.calls[0].max_turns == granted["max_turns"] + cc_loop.FINALIZE_TURNS
         assert granted["max_turns"] > cc_loop.MAX_TURNS
 
     def test_one_attempt_may_use_nearly_the_whole_job(self, tmp_path, monkeypatch):
@@ -1220,7 +1355,7 @@ class TestTheConsumersBudgetGovernsTheSession:
         # that does occur.
         monkeypatch.setenv(cc_loop.DEADLINE_ENV, self.deadline_in(2000))
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
         granted = next(e for e in transcript_events(tmp_path) if e["event"] == "attempt_budget")
@@ -1253,7 +1388,7 @@ class TestTheConsumersBudgetGovernsTheSession:
             cc_loop.DEADLINE_ENV, self.deadline_in(cc_loop.POST_GENERATOR_RESERVE_SECONDS)
         )
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
 
         assert code == 1
@@ -1272,7 +1407,7 @@ class TestTheConsumersBudgetGovernsTheSession:
         monkeypatch.delenv(cc_loop.DEADLINE_ENV, raising=False)
         monkeypatch.setattr(cc_loop, "WALL_CLOCK_SECONDS", 1)
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert len(query.calls) == 1, "a directly-configured budget was refused as too small"
 
@@ -1288,7 +1423,7 @@ class TestTheConsumersBudgetGovernsTheSession:
             await anyio.sleep(5)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 1
         reason = next(e["reason"] for e in transcript_events(tmp_path)
@@ -1372,7 +1507,7 @@ class TestSessionCostIsAccountedFor:
             await anyio.sleep(5)
             yield result_message()
 
-        monkeypatch.setattr(cc_loop, "query", _query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(_query))
         code = cc_loop.run(REPO_ROOT, SCENARIO / "pr_root", SCENARIO / "context", tmp_path)
         assert code == 1
         timeout = [e for e in transcript_events(tmp_path) if e["event"] == "wall_clock_timeout"][0]
@@ -1689,7 +1824,7 @@ class TestQuarantineContainment:
         shutil.copytree(SCENARIO / "pr_root", pr_root)
         self.plant_link(pr_root, tmp_path)
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         out = tmp_path / "out"
         self.assert_refused_before_the_model_ran(
             cc_loop.run(REPO_ROOT, pr_root, SCENARIO / "context", out), query, out
@@ -1704,7 +1839,7 @@ class TestQuarantineContainment:
         context, pr_root = TestRunWiring().scenario(tmp_path)
         self.plant_link(pr_root, tmp_path)
         query = fake_query([[result_message()]])
-        monkeypatch.setattr(cc_loop, "query", query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(query))
         out = tmp_path / "out"
         self.assert_refused_before_the_model_ran(
             plan_loop.run(REPO_ROOT, pr_root, context, out), query, out
@@ -1806,7 +1941,7 @@ class TestTheStreamCaptureCannotMaskTheSessionsFailure:
             raise TimeoutError("the wall clock fired")
             yield  # pragma: no cover - makes this an async generator
 
-        monkeypatch.setattr(cc_loop, "query", dying_query)
+        monkeypatch.setattr(cc_loop, "ClaudeSDKClient", client_from(dying_query))
         transcript = cc_loop.Transcript(tmp_path / "t.jsonl", POLICY)
         try:
             with pytest.raises(TimeoutError, match="wall clock"):

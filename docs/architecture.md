@@ -217,7 +217,7 @@ such as `properties`, `required`, `additionalProperties`, `maxItems`,
 The optional `review.max_distinct_groups` constraint bounds how many defect
 groups an artifact may claim. The shipped value is `null`: there is no separate
 group cap, while `artifact_schema.properties.findings.maxItems` still limits a
-review to ten entries. The generated constraints state the effective group
+review to twenty entries. The generated constraints state the effective group
 policy, including a numeric cap when a consumer configures one.
 It remains a verifier phase because JSON Schema
 does not project one property from each array item and bound the number of

@@ -8,6 +8,8 @@ from artifact import Transcript
 
 
 class ReviewBudget:
+    SOURCE_TOOLS = ("Read", "Grep", "Glob")
+
     def __init__(self, seconds: float, state: dict, transcript: Transcript):
         self.seconds = seconds
         self.deadline = time.monotonic() + seconds
@@ -16,8 +18,22 @@ class ReviewBudget:
         self.stage = 0
 
     def hooks(self):
-        matcher = HookMatcher(matcher="Read|Grep|Glob", hooks=[self.after_source], timeout=2)
-        return {"PostToolUse": [matcher], "PostToolUseFailure": [matcher]}
+        names = "|".join(self.SOURCE_TOOLS)
+        matcher = HookMatcher(matcher=names, hooks=[self.after_source], timeout=2)
+        gate = HookMatcher(matcher=names, hooks=[self.before_source], timeout=2)
+        return {"PreToolUse": [gate], "PostToolUse": [matcher], "PostToolUseFailure": [matcher]}
+
+    async def before_source(
+        self, data: HookInput, tool_use_id: str | None, context: HookContext,
+    ) -> HookJSONOutput:
+        """Refuse source reads once the session is finalizing."""
+        if not self.state.get("finalized"):
+            return {}
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "The investigation time is over. Call submit_review now.",
+        }}
 
     async def after_source(
         self, data: HookInput, tool_use_id: str | None, context: HookContext,
@@ -25,7 +41,7 @@ class ReviewBudget:
         event = data["hook_event_name"]
         if event not in ("PostToolUse", "PostToolUseFailure"):
             return {}
-        if data.get("tool_name") not in ("Read", "Grep", "Glob"):
+        if data.get("tool_name") not in self.SOURCE_TOOLS:
             return {}
         if self.state["accepted"] is not None or self.state["abort_reason"]:
             return {}

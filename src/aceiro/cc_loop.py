@@ -36,12 +36,12 @@ import anyio
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ClaudeSDKClient,
     ClaudeSDKError,
     ProcessError,
     ResultError,
     ResultMessage,
     ToolUseBlock,
-    query,
     tool,
 )
 from mcp.server import Server
@@ -97,7 +97,7 @@ DISALLOWED_TOOLS = [
 # first -- exceeding this reports a constraint nobody chose. ADR-0015 has the
 # argument; test_workflow_shape asserts the ordering over the constant and the
 # derivation both.
-MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "45"))
+MAX_TURNS = int(os.environ.get("CC_MAX_TURNS", "125"))
 
 # PER ATTEMPT, and likewise the FALLBACK: with a deadline set, attempt_budget()
 # sizes each attempt from the time left instead.
@@ -152,6 +152,32 @@ DEADLINE_ENV = "ACEIRO_AGENT_DEADLINE"
 # job's first step, so setup is spent inside the consumer's number.
 POST_GENERATOR_RESERVE_SECONDS = 120
 
+# Held back INSIDE a review attempt for a forced final submission. A review that
+# is still investigating when this much of its attempt remains is interrupted
+# and told to submit what it has confirmed: a session cut off by the wall clock
+# otherwise delivers nothing, however much it had established. Sized for one
+# composing turn (~110s for a ten-finding artifact at ~75 tok/s) plus a
+# rejected-submission retry.
+FINALIZE_SECONDS = int(os.environ.get("CC_FINALIZE_SECONDS", "180"))
+
+# Turns the CLI is allowed beyond the investigation's ceiling, for the final
+# submission and its rejections.
+FINALIZE_TURNS = MAX_SUBMISSIONS + 2
+
+# Harness-authored, so it carries no contributor text.
+FINALIZE_MESSAGE = (
+    "The investigation time for this review is over. Call submit_review now. "
+    "Report the defects you have already confirmed from the code you read in this "
+    "session; do not turn unresolved concerns into findings to fill the review. "
+    "Further Read, Grep and Glob calls are refused. In residual_risk, state what "
+    "you could not confirm and which parts of the change you did not examine."
+)
+
+UNSUBMITTED_MESSAGE = (
+    "No review has been recorded for this session: nothing was posted. Call "
+    "submit_review now with your complete review."
+)
+
 # Twice the ~40s a whole pinned eval session costs, the smallest complete session
 # measured. Below it an attempt cannot reach a submission, so starting one reports
 # a timeout where the honest reason is a spent budget. Applied to a DERIVED budget
@@ -159,13 +185,16 @@ POST_GENERATOR_RESERVE_SECONDS = 120
 # CC_WALL_CLOCK_SECONDS is what an operator said the budget is.
 MIN_ATTEMPT_SECONDS = 90
 
-# One production run, kept as the measurement rather than as a rate so that
-# re-measuring moves everything derived from it.
-MEASURED_TOOL_CALLS = 21
-MEASURED_TOOL_CALL_SECONDS = 618
+# 45 delivered large-PR reviews on Opus 5.5 (2026-11-10), kept as the measurement
+# rather than as a rate so that re-measuring moves everything derived from it. The
+# rate swings with the provider: one production run in August measured 21 calls
+# in 618s, 2.7x slower, and a ceiling derived from that bound a fast day's
+# reviews at about half their clock.
+MEASURED_TOOL_CALLS = 636
+MEASURED_TOOL_CALL_SECONDS = 6974
 
 # How far the turn ceiling stays above the calls the clock permits: the ratio the
-# hand-set pair already had (45 turns against the ~31 that 900s buys).
+# hand-set pair originally had (45 turns against the ~31 that 900s bought).
 TURN_HEADROOM = 1.5
 
 # GitHub kills any hosted-runner job at 6 hours whatever `timeout-minutes` says, and
@@ -539,56 +568,114 @@ def serialize_message(message) -> str:
 
 async def _run_session(user_message: str, options: ClaudeAgentOptions, transcript: Transcript,
                        state: dict, output_dir: Path, attempt: int, policy: dict,
-                       budget_seconds: float) -> ResultMessage | None:
-    """One CLI session. Returns its ResultMessage, or None if the stream ended
+                       budget_seconds: float, finalize_seconds: float = 0,
+                       investigation_turns: int = 0) -> ResultMessage | None:
+    """One CLI session. Returns its last ResultMessage, or None if the stream ended
     without one. The captured stream is written even when the session dies —
     a partial stream is precisely the evidence a hang or crash leaves.
 
     `budget_seconds` is this attempt's clock, passed rather than read from the
-    module so a session cannot run on a budget the loop did not grant it."""
+    module so a session cannot run on a budget the loop did not grant it.
+
+    A non-zero `finalize_seconds` is held back from that clock: a session with no
+    accepted artifact when only that much remains, or after `investigation_turns`
+    API turns, is interrupted and sent FINALIZE_MESSAGE in the same conversation.
+    The hard clock is unchanged."""
     lines: list[str] = []
     result = None
+
+    def record(message) -> None:
+        nonlocal result
+        lines.append(serialize_message(message))
+        if isinstance(message, AssistantMessage):
+            # The model that ACTUALLY answered, which is the only
+            # honest source for the posted attribution: the two arms
+            # are configured by different inputs, and configuration
+            # cannot say which one ran.
+            state["model"] = message.model
+            _note_api_turn(message, state)
+            for block in message.content:
+                if isinstance(block, ToolUseBlock):
+                    transcript.log("tool_request", round=attempt, tool=block.name, input=block.input)
+                    state["tool_calls"] += 1
+        if isinstance(message, ResultMessage):
+            result = message
+            # The aggregate, in the SMALL file. duration_api_ms against
+            # duration_ms settles "was this slow, and why": they were 397726
+            # against 396325 on a real run, so the wall clock was the provider
+            # generating, not the harness waiting on anything local.
+            usage = getattr(message, "usage", None) or {}
+            transcript.log(
+                "session_usage",
+                round=attempt,
+                duration_ms=getattr(message, "duration_ms", None),
+                duration_api_ms=getattr(message, "duration_api_ms", None),
+                num_turns=getattr(message, "num_turns", None),
+                api_messages=len(state["api_message_ids"]),
+                tool_calls=state["tool_calls"],
+                output_tokens=usage.get("output_tokens"),
+                cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
+                cache_read_input_tokens=usage.get("cache_read_input_tokens"),
+                total_cost_usd=getattr(message, "total_cost_usd", None),
+                stop_reason=getattr(message, "stop_reason", None),
+            )
+
     try:
         with anyio.fail_after(budget_seconds):
-            async for message in query(prompt=user_message, options=options):
-                lines.append(serialize_message(message))
-                if isinstance(message, AssistantMessage):
-                    # The model that ACTUALLY answered, which is the only
-                    # honest source for the posted attribution: the two arms
-                    # are configured by different inputs, and configuration
-                    # cannot say which one ran.
-                    state["model"] = message.model
-                    _note_api_turn(message, state)
-                    for block in message.content:
-                        if isinstance(block, ToolUseBlock):
-                            transcript.log("tool_request", round=attempt, tool=block.name, input=block.input)
-                            state["tool_calls"] += 1
-                if isinstance(message, ResultMessage):
-                    result = message
-                    # The aggregate, in the SMALL file. It is already in the
-                    # captured stream, but that stream is a few hundred KB of
-                    # redacted messages whose per-event usage reads as a
-                    # fraction of the truth, so the numbers that answer "was
-                    # this slow, and why" were effectively unfindable.
-                    # duration_api_ms against duration_ms is the one that
-                    # settles it: they were 397726 against 396325 on a real
-                    # run, so the wall clock was the provider generating, not
-                    # the harness waiting on anything local.
-                    usage = getattr(message, "usage", None) or {}
+            async with ClaudeSDKClient(options) as client:
+                await client.query(user_message)
+                # Whether the investigation was cut short is read off the stream
+                # (no result envelope yet), not off the cancel scope: a
+                # cancellation delivered inside the SDK's reader can end the
+                # iteration without the scope reporting it caught one.
+                out_of_turns = False
+                with anyio.move_on_after(budget_seconds - finalize_seconds):
+                    async for message in client.receive_response():
+                        record(message)
+                        # An accepted session is left to close with its own envelope.
+                        if (
+                            finalize_seconds
+                            and state["accepted"] is None
+                            and len(state["api_message_ids"]) >= investigation_turns
+                        ):
+                            out_of_turns = True
+                            break
+                if (
+                    finalize_seconds
+                    and result is None
+                    and state["accepted"] is None
+                    and not state["abort_reason"]
+                ):
+                    state["finalized"] = True
                     transcript.log(
-                        "session_usage",
+                        "finalization",
                         round=attempt,
-                        duration_ms=getattr(message, "duration_ms", None),
-                        duration_api_ms=getattr(message, "duration_api_ms", None),
-                        num_turns=getattr(message, "num_turns", None),
-                        api_messages=len(state["api_message_ids"]),
+                        reason="turns" if out_of_turns else "clock",
                         tool_calls=state["tool_calls"],
-                        output_tokens=usage.get("output_tokens"),
-                        cache_creation_input_tokens=usage.get("cache_creation_input_tokens"),
-                        cache_read_input_tokens=usage.get("cache_read_input_tokens"),
-                        total_cost_usd=getattr(message, "total_cost_usd", None),
-                        stop_reason=getattr(message, "stop_reason", None),
+                        api_messages=len(state["api_message_ids"]),
                     )
+                    await client.interrupt()
+                    # The interrupted turn closes with its own result envelope,
+                    # which must be consumed before the next query's response.
+                    async for message in client.receive_response():
+                        record(message)
+                    await client.query(FINALIZE_MESSAGE)
+                    async for message in client.receive_response():
+                        record(message)
+                elif (
+                    finalize_seconds
+                    and result is not None
+                    and not result.is_error
+                    and state["accepted"] is None
+                    and not state["abort_reason"]
+                ):
+                    # The session ended its turn with nothing recorded: observed when
+                    # a submission call was cut off mid-flight and the model, unsure
+                    # whether it had landed, stopped to ask. Told once.
+                    transcript.log("unsubmitted", round=attempt, tool_calls=state["tool_calls"])
+                    await client.query(UNSUBMITTED_MESSAGE)
+                    async for message in client.receive_response():
+                        record(message)
     except Exception as exc:
         # The SDK raises ResultError after delivering the error envelope and
         # observing the CLI's deliberate non-zero exit. Return that envelope
@@ -686,6 +773,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
     state = {
         "round": 0, "repeated": 0, "last_fingerprint": None,
         "accepted": None, "abort_reason": None, "tool_calls": 0, "model": None,
+        "finalized": False,
         # Counted by message_id rather than by event, for serialize_message's
         # reason: one API message arrives as several events. This is the only
         # turn count a session that DIES still has — a ResultMessage carries
@@ -716,13 +804,14 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         # posts. Configuration cannot supply this: both arms are configured on
         # every run and only one of them invoked a model.
         (output_dir / "run_metadata.json").write_text(
-            json.dumps({"model": state["model"]}), encoding="utf-8"
+            json.dumps({"model": state["model"], "finalized": state["finalized"]}), encoding="utf-8"
         )
         transcript.log("artifact", sha256=sha256(json.dumps(artifact, sort_keys=True)))
         # The model that answered joins the completion record, so the transcript
         # carries both halves of the attribution: what was configured (run_start)
         # and what actually ran.
-        transcript.log("run_complete", rounds=state["round"], model=state["model"])
+        transcript.log("run_complete", rounds=state["round"], model=state["model"],
+                       finalized=state["finalized"])
         transcript.close()
         return 0
 
@@ -764,10 +853,20 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         state["api_message_ids"] = set()
         state["cache_read_peak"] = 0
         start_session_on(verify_fn)
+        # No reserve when it would leave the investigation less than an attempt's
+        # minimum: such a budget is spent whole, as before.
+        finalize = (
+            FINALIZE_SECONDS
+            if review_time_feedback and budget - FINALIZE_SECONDS >= MIN_ATTEMPT_SECONDS
+            else 0
+        )
         submit = make_tool(state)
         server = build_review_server(submit, server_name)
+        # With a reserve the loop ends the investigation at `turns` itself, so the
+        # CLI's own limit sits above it as the backstop.
         options = build_options(system_prompt, base_root.resolve(), pr_root.resolve(), server,
-                                server_name, submit_tool_name, turns)
+                                server_name, submit_tool_name,
+                                turns + FINALIZE_TURNS if finalize else turns)
         review_budget = ReviewBudget(budget, state, transcript) if review_time_feedback else None
         if review_budget is not None:
             options.hooks = review_budget.hooks()
@@ -775,7 +874,7 @@ def drive_session(*, transcript: Transcript, policy: dict, system_prompt: str, u
         timed_out = False
         try:
             result = anyio.run(_run_session, user_message, options, transcript, state, output_dir,
-                               attempt, policy, budget)
+                               attempt, policy, budget, finalize, turns)
         except TimeoutError:
             # Recorded here and decided below: the session was cut off, but it may
             # already have got an artifact through the verifier, and this branch
@@ -1002,10 +1101,13 @@ def assert_no_symlinks(pr_root: Path, transcript: Transcript) -> None:
 
 
 @reuse_secret_scans()
-def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify) -> int:
+def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, verify_fn=verify,
+        after_delivery=None) -> int:
     """Return 0 with a verified review.json written, or non-zero with none.
 
     verify_fn is the eval harness's fault-injection seam; production passes none.
+    `after_delivery`, if given, is called with the run's assembled inputs once a
+    review is written; a failure in it never changes the run's answer.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1060,7 +1162,7 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
 
     guidance = render_rejection_guidance(policy)
 
-    return drive_session(
+    code = drive_session(
         transcript=transcript,
         policy=policy,
         system_prompt=system_prompt,
@@ -1074,6 +1176,16 @@ def run(base_root: Path, pr_root: Path, context_dir: Path, output_dir: Path, ver
         verify_fn=verify_fn,
         review_time_feedback=True,
     )
+    if code == 0 and after_delivery is not None:
+        try:
+            after_delivery(
+                policy=policy, system_prompt=system_prompt, user_message=user_message,
+                base_root=base_root, pr_root=pr_root, output_dir=output_dir, schema=schema,
+                verify_fn=verify_fn, diff_text=diff_text, changed_files=changed_files, guidance=guidance,
+            )
+        except Exception as exc:  # noqa: BLE001 - the first review is already the run's answer
+            print(f"::warning::post-delivery step failed: {type(exc).__name__}", file=sys.stderr)
+    return code
 
 
 def main() -> int:
