@@ -12,7 +12,8 @@ import json
 import re
 import time
 import unicodedata
-from pathlib import Path
+from collections import Counter
+from pathlib import Path, PurePosixPath
 
 from canonicalize import (
     DEFAULT_IGNORABLE_RANGES,
@@ -472,6 +473,21 @@ def rendered_findings(artifact: dict, order: dict[str, int]) -> list[dict]:
     return sorted(artifact["findings"], key=lambda f: order[f["severity"]])
 
 
+# Dependency lockfiles, by exact basename. Machine-written, and on large PRs
+# often most of the diff (measured: 17-75% of the bytes on 5 of 24 PRs).
+LOCKFILES = frozenset({
+    "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock",
+    "deno.lock", "Cargo.lock", "poetry.lock", "uv.lock", "pdm.lock", "Pipfile.lock",
+    "Gemfile.lock", "composer.lock", "go.sum", "packages.lock.json", "flake.lock",
+    "mix.lock", "Podfile.lock", "pubspec.lock", "gradle.lockfile",
+})
+
+# A lockfile diff at or under this many lines is shown whole.
+LOCKFILE_SHOWN_LINES = 200
+
+_HOST_RE = re.compile(r"https?://([A-Za-z0-9.-]+)")
+
+
 def annotate_diff(diff_text: str) -> str:
     """Prefix every hunk line with the new-file line number it will have.
 
@@ -483,14 +499,36 @@ def annotate_diff(diff_text: str) -> str:
     Numbers come from the same walk parse_diff_hunks uses for provenance
     (asserted by a test), so the set shown is the set the verifier accepts.
     Removed lines get none; non-hunk lines are padded to keep the column aligned.
+
+    The hunks of a large lockfile diff are replaced by one line naming the file,
+    the hunk size and every host its added lines name. Only the display changes:
+    the verifier still accepts anchors there and the file stays readable.
     """
     positions = walk_diff(diff_text)
     width = max((len(str(p.new_line)) for p in positions if p.new_line is not None), default=1)
     blank = " " * width
-    # Each position carries its own line, so the pairing cannot come apart.
-    return "\n".join(
-        f"{blank} {p.text}" if p.new_line is None else f"{p.new_line:>{width}} {p.text}" for p in positions
-    )
+    sizes = Counter(p.path for p in positions if p.path and PurePosixPath(p.path).name in LOCKFILES)
+    elided = {path for path, lines in sizes.items() if lines > LOCKFILE_SHOWN_LINES}
+    out: list[str] = []
+    in_elided_hunks = False
+    for p in positions:
+        # A hunk line never starts with `diff --git `, so that ends a file's hunks.
+        if p.text.startswith("diff --git "):
+            in_elided_hunks = False
+        elif p.is_hunk_header and p.path in elided and not in_elided_hunks:
+            in_elided_hunks = True
+            added = (q.text for q in positions if q.path == p.path and q.text.startswith("+"))
+            hosts = sorted({host for text in added for host in _HOST_RE.findall(text)})
+            out.append(
+                f"{blank} [{sizes[p.path]} diff lines of this lockfile are not shown. It is still "
+                "under review: Read or Grep it under the PR head root. Hosts named on its "
+                f"added lines: {', '.join(hosts) or 'none'}]"
+            )
+        if in_elided_hunks:
+            continue
+        # Each position carries its own line, so the pairing cannot come apart.
+        out.append(f"{blank} {p.text}" if p.new_line is None else f"{p.new_line:>{width}} {p.text}")
+    return "\n".join(out)
 
 
 def build_user_message(context_dir: Path) -> str:

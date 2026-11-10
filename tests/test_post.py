@@ -1211,3 +1211,10 @@ class TestModelStamp:
         post.main()
 
         assert f"model: `{model}`" in posted["body"]
+
+
+def test_a_review_closed_at_its_time_budget_says_so(valid_artifact):
+    plain = post.render(valid_artifact, METADATA, SEVERITY_ORDER)
+    cut = post.render(valid_artifact, {**METADATA, "finalized": True}, SEVERITY_ORDER)
+    assert "closed early" in cut and "closed early" not in plain
+    assert cut.index("closed early") < cut.index("### Summary")
