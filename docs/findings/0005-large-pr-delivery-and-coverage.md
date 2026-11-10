@@ -119,6 +119,19 @@ cap. The repo eval scenarios do not exercise it.
 - 8 PRs for coverage, 2 runs per arm per PR; 4 PRs for lockfile elision, one of them lockfile-heavy.
 - The plain baseline had source-only tools, not a shell.
 
+## Correction (2026-11-10, after merge): Grep failed in every session
+
+The experiment's source-tool shim resolved ripgrep with `shutil.which('rg')`, and no `rg` binary was
+on the session PATH. All 1,456 Grep calls in the 325 sessions of this study returned an error, in the
+reviewer arms and the plain Claude Code arm alike. The October studies were not affected (20 of 830
+failed). Production uses Claude Code's built-in Grep and was not affected.
+
+- Every coverage figure above was measured on a reviewer that could Read and Glob but not search.
+  Arms within a batch were equally affected, so their ordering stands as measured under that handicap;
+  the absolute figures and the size of the plain Claude Code gap are not established for a working Grep.
+- The delivery results do not depend on Grep.
+- The shim now pins a ripgrep binary and refuses to start without it.
+
 ## Errors of mine that affected batches
 
 - exp2a/exp2b ran before I fixed a cancel-scope race that dropped some finalizations.
