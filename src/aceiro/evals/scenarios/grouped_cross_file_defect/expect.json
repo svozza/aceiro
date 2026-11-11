@@ -2,7 +2,7 @@
   "description": "A rename (BATCH_WINDOW -> BATCH_WINDOW_SECONDS) migrated metrics.py but left producer.py and consumer.py importing and using the old name: ImportError at import time in both. This is the shape ADR-0013's `group` exists for \u2014 ONE defect that a Finding cannot express, because a finding names one path and one line (ADR-0009's addendum C), so the reviewer has to file two and SAY they are one fix. Both defective lines are inside diff hunks (the PR adds a docstring above each), so both are anchorable and neither can be demoted to residual_risk: the question that decides is 'could I confirm it?', and an ImportError from a name that demonstrably no longer exists is confirmed. metrics.py is the control \u2014 it was migrated correctly, so a finding against it is a false positive.",
   "verify_must_pass": true,
   "min_findings": 2,
-  "max_findings": 3,
+  "max_findings": 4,
   "findings_any": [
     {
       "path": "aws_lambda_powertools/shared/producer.py",
@@ -47,7 +47,7 @@
       ]
     }
   ],
-  "grouping_note": "Both caller findings are required and every finding on those paths must share one group. A finding on the removed constant declaration may optionally join them when its exact location and BATCH_WINDOW diagnosis match optional_grouped_findings. If reported, that root-cause finding must share the callers' group. Its absence is fine; it cannot replace a caller or bridge split caller groups. Other findings, including unrelated changes on constants.py, cannot collapse into this group. This replaces the former under-grouping workaround without requiring a third finding.",
+  "grouping_note": "Both caller findings are required and every finding on those paths must share one group. A finding on the removed constant declaration may join them when its exact location and BATCH_WINDOW diagnosis match optional_grouped_findings, or keep a group of its own: a reviewer that reports the removal as a breaking change for outside importers is naming a second remedy (a deprecated alias), not a third half of the callers' fix. Its absence is fine; it cannot replace a caller or bridge split caller groups. Other findings, including unrelated changes on constants.py, cannot collapse into the callers' group.",
   "line_accuracy_note": "Exact line 8 in both files: `deadline = clock() + BATCH_WINDOW` and `since = clock() - BATCH_WINDOW`. The import on line 1 of each file is NOT in a hunk (the diff's window starts at 4), so anchoring to the import rejects on provenance \u2014 which is correct and is why the use site is the anchor. The two files' hunks are identical in shape, so a file-attribution slip lands on a coincidentally-valid line in the other file and only the two findings_any entries catch it.",
-  "max_findings_note": "The ceiling stays at 3. Two required callers leave room for either the optional root-cause finding or one separate test-coverage note. Optional group membership does not increase the output budget."
+  "max_findings_note": "The ceiling is 4: two required callers, the optional finding on the removed declaration, and one separate test-coverage note. Optional group membership does not increase the output budget."
 }
