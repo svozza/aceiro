@@ -1,5 +1,8 @@
 # The review passes are a count
 
+**SUPERSEDED by [ADR-0024](0024-a-review-is-up-to-four-passes-each-shown-what-came-before.md)
+(2026-11-11).**
+
 Measured 2026-11-11 on prompt v6 (raw runs under
 `aceiro-eval-runs/delivery-finalization-20261110`, batches `st1`, `st2`, `st3m`,
 `st3l`).
