@@ -100,16 +100,18 @@ on:
         type: string
         required: false
         default: global.anthropic.claude-opus-5-5[1m]
-      second-pass:
+      review-passes:
         description: >-
-          Review the change a second time when the first pass reported findings,
-          showing the second pass what the first found so it looks elsewhere
-          (ADR-0022). Costs about one more review on those pull requests and runs
-          inside `agent-timeout-minutes`. The first review is posted unchanged if
-          the second pass fails or there is no time left for it.
-        type: boolean
+          How many review passes to run, 1 to 4. A pass after the first is shown
+          what the earlier ones found so it looks elsewhere, and the passes are
+          merged into one review (ADR-0022, ADR-0023). Later passes stop as soon
+          as one adds nothing, and none runs when the first pass found nothing.
+          Each costs about one more review and runs inside
+          `agent-timeout-minutes`. The review so far is posted unchanged if a
+          later pass fails or there is no time left for it.
+        type: number
         required: false
-        default: false
+        default: 1
       agent-timeout-minutes:
         description: >-
           How long the review may take. This is the agent's WHOLE budget: it sets
@@ -411,7 +413,7 @@ jobs:
           ANTHROPIC_MODEL: ${{ inputs.cli-model }}
           CLAUDE_CODE_EFFORT_LEVEL: high
           ACEIRO_PROJECT_DESCRIPTION: ${{ inputs.project-description }}
-          ACEIRO_SECOND_PASS: ${{ inputs.second-pass && '1' || '0' }}
+          ACEIRO_REVIEW_PASSES: ${{ inputs.review-passes }}
           # No telemetry, no auto-update inside a credential-bearing job.
           DISABLE_TELEMETRY: "1"
           DISABLE_ERROR_REPORTING: "1"
