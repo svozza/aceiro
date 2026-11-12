@@ -1,5 +1,8 @@
 # Addendum to ADR-0022: the coverage figures re-measured with search working
 
+**SUPERSEDED by [ADR-0024](0024-a-review-is-up-to-four-passes-each-shown-what-came-before.md)
+(2026-11-11).**
+
 ADR-0022's figures came from an experiment harness in which every Grep call
 failed (`docs/findings/0005-large-pr-delivery-and-coverage.md`, Correction). The
 arms were re-run on 2026-11-10 with Grep working: 202 sessions, all delivered.

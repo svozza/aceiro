@@ -1,7 +1,7 @@
 """The review generator's entry point: one pass, and optionally more.
 
 Each later pass is shown what the earlier ones reported and told to look
-elsewhere; the passes are merged into one artifact (ADR-0022, ADR-0023).
+elsewhere; the passes are merged into one artifact (ADR-0024).
 Review-only: the remediation generator shares cc_loop and must not reach this
 module.
 
@@ -20,7 +20,7 @@ import cc_loop
 from artifact import Transcript, fence, severity_ranks, sha256
 from verify import Rejection
 
-# How many review passes the consumer asked for (ADR-0023), set by the review
+# How many review passes the consumer asked for (ADR-0024), set by the review
 # workflow's `review-passes` input.
 PASSES_ENV = "ACEIRO_REVIEW_PASSES"
 MAX_PASSES = 4

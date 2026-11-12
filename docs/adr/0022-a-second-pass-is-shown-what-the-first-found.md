@@ -1,5 +1,8 @@
 # A second pass is shown what the first found
 
+**SUPERSEDED by [ADR-0024](0024-a-review-is-up-to-four-passes-each-shown-what-came-before.md)
+(2026-11-11).**
+
 Measured 2026-11-10 (evidence: `docs/findings/0005-large-pr-delivery-and-coverage.md`).
 
 A review's findings are almost all real: 98 to 100% were source-supported in
